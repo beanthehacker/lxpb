@@ -1,0 +1,59 @@
+=== Trade Simulation Summary ===
+Total Trades: 1169
+Overall Win Rate: 10.01%
+Average Win: 10.00 points
+Average Loss: -5.00 points
+Total PnL: -4090.00 points
+Average Distance to D1: 6.73 points
+Average MAE: 4.65 points
+Average MFE: 1.61 points
+Average Max Drawdown: 3.67 points
+
+=== Entry Type Statistics ===
+Spike Trades: 1119 (Win Rate: 10.46%)
+Swing Trades: 50 (Win Rate: 0.00%)
+Basic Trades: 0 (Win Rate: 0.00%)
+
+
+Spike Entry Statistics:
+Total Trades: 1119
+Average Distance to D1: 6.63 points
+
+  TARGET Outcomes (117 trades):
+    Average PnL: 10.00 points
+    Average MAE: 1.53 points
+    Average MFE: 10.00 points
+    Average Max Drawdown: 7.78 points
+    Average Distance to D1: 7.21 points
+
+  STOP Outcomes (1002 trades):
+    Average PnL: -5.00 points
+    Average MAE: 5.00 points
+    Average MFE: 0.71 points
+    Average Max Drawdown: 3.26 points
+    Average Distance to D1: 6.56 points
+
+Swing Entry Statistics:
+Total Trades: 50
+Average Distance to D1: 9.00 points
+
+  STOP Outcomes (50 trades):
+    Average PnL: -5.00 points
+    Average MAE: 5.00 points
+    Average MFE: 0.00 points
+    Average Max Drawdown: 2.15 points
+    Average Distance to D1: 9.00 points
+
+=== Distribution Statistics ===
+
+PnL Distribution (points):
+Min: -5.00, Q1: -5.00, Median: -5.00, Q3: -5.00, Max: 10.00
+
+Distance to D1 Distribution (points):
+Min: 0.00, Q1: 5.00, Median: 7.50, Q3: 9.00, Max: 10.00
+
+MAE Distribution (points):
+Min: 0.00, Q1: 5.00, Median: 5.00, Q3: 5.00, Max: 5.00
+
+MFE Distribution (points):
+Min: 0.00, Q1: 0.00, Median: 0.00, Q3: 0.00, Max: 10.00
