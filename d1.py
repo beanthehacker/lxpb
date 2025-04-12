@@ -3,34 +3,6 @@ import numpy as np
 from datetime import datetime
 import os
 
-def ensure_price_continuity(df):
-    # print("\nPrice Continuity Check:")
-    df_corrected = df.copy()
-    
-    for i in range(1, len(df_corrected)):
-        prev_close = df_corrected.iloc[i-1]['Close']
-        current_open = df_corrected.iloc[i]['Open']
-        current_high = df_corrected.iloc[i]['High']
-        current_low = df_corrected.iloc[i]['Low']
-        
-        # print(f"\nBar {i}:")
-        # print(f"Previous Close: {prev_close}")
-        # print(f"Before adjustment - Open: {current_open}, High: {current_high}, Low: {current_low}")
-        
-        df_corrected.iloc[i, df_corrected.columns.get_loc('Open')] = prev_close
-        
-        if prev_close > current_high:
-            df_corrected.iloc[i, df_corrected.columns.get_loc('High')] = prev_close
-            # print("Adjusted High due to gap up")
-            
-        if prev_close < current_low:
-            df_corrected.iloc[i, df_corrected.columns.get_loc('Low')] = prev_close
-            # print("Adjusted Low due to gap down")
-        
-        # print(f"After adjustment - Open: {df_corrected.iloc[i]['Open']}, High: {df_corrected.iloc[i]['High']}, Low: {df_corrected.iloc[i]['Low']}")
-    
-    return df_corrected
-
 def load_and_process_csv(csv_path):
     """Load and process the CSV file containing D1 data."""
     df = pd.read_csv(csv_path)
@@ -55,7 +27,7 @@ def load_and_process_csv(csv_path):
     
     return df
 
-def find_d1_levels(df_d1):
+def lxpb_analysis(df_d1):
     # print("\nProcessing D1 Levels:")
     results = []
     zero_touch_levels = []
@@ -107,12 +79,15 @@ def find_d1_levels(df_d1):
             if row['Low'] <= price <= row['High']:
                 # print(f"Bar touches level at {price}")
                 is_breakout = False
+                is_1t_retest = False
                 if is_high:  # LHPB
                     is_breakout = row['Open'] < price and row['Close'] > price
                     # print(f"LHPB Breakout {is_breakout} at {price}, {row['Open']} : {price} :{row['Close']}")
+                    is_1t_retest = row['Open'] > price and row['Low'] < price
                 else:  # LLPB
                     is_breakout = row['Open'] > price and row['Close'] < price
                     # print(f"LLPB Breakout {is_breakout} at {price}, {row['Open']} : {price} :{row['Close']}")
+                    is_1t_retest = row['Open'] < price and row['High'] < price
                 if is_breakout:
                     one_touch_levels.append((price, formation_time, current_time, is_high))
                     results.append({
@@ -123,6 +98,9 @@ def find_d1_levels(df_d1):
                         'type': 'LHPB' if is_high else 'LLPB',
                         'status': 'one_touch'
                     })
+                if is_1t_retest:
+                    # print(f"Retest detected at {price, formation_time, current_time}")
+                    is_1t_retest = True #do nothing, just for debugging
             else:
                 remaining_zero_touch.append(level)
         
@@ -136,7 +114,7 @@ def find_d1_levels(df_d1):
         # print(f"Current zero-touch levels: {zero_touch_levels}")
         # print(f"Current one-touch levels: {one_touch_levels}")
     
-    return pd.DataFrame(results)
+    return pd.DataFrame(results), pd.DataFrame(one_touch_levels)
 
 def main():
     current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -148,18 +126,21 @@ def main():
         # print("\nInitial Data:")
         # print(df_d1)
         
-        levels_df = find_d1_levels(df_d1)
+        levels_d1, lxpb_naked = lxpb_analysis(df_d1)
         
         # print("\nFinal Results:")
         # print(levels_df)
         
         output_file = os.path.join(output_dir, f'D1_Levels_{current_time}.csv')
-        levels_df.to_csv(output_file, index=False)
+        levels_d1.to_csv(output_file, index=False)
+
+        output_file_naked_lxpb = os.path.join(output_dir, f'D1_Levels_Naked_{current_time}.csv')
+        lxpb_naked.to_csv(output_file_naked_lxpb, index=False)
         # print(f"\nResults saved to: {output_file}")
         
-        total_levels = len(levels_df)
-        one_touch = len(levels_df[levels_df['status'] == 'one_touch'])
-        retested = len(levels_df[levels_df['status'] == 'retested'])
+        total_levels = len(levels_d1)
+        one_touch = len(levels_d1[levels_d1['status'] == 'one_touch'])
+        retested = len(levels_d1[levels_d1['status'] == 'retested'])
         
         # print("\nSummary:")
         # print(f"Total valid levels found: {total_levels}")
