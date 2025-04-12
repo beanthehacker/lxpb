@@ -122,7 +122,8 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     
     try:
-        df_d1 = load_and_process_csv('data/es-d1-9sep1997-11apr2025.csv')  # Use the test file instead
+        df_d1 = load_and_process_csv('data/es-d1-9sep1997-11apr2025.csv')
+        # df_h1 = load_and_process_csv('data/es-h1-8apr2021-7apr2025.csv')
         # print("\nInitial Data:")
         # print(df_d1)
         
