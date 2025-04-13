@@ -74,13 +74,12 @@ def process_instrument(lxpb_file, m5_file, output_file):
 
 def main():
     # Define file paths
-    timepath = "20250412_081429"
-    lxpb_folder = f"LxPB_{timepath}"
-    es_lxpb = f"{lxpb_folder}/ES_LxPB_{timepath}.csv"
-    nq_lxpb = f"{lxpb_folder}/NQ_LxPB_{timepath}.csv"
+    lxpb_folder = f"LxPB_20250412_174521"
+    es_lxpb = f"{lxpb_folder}/ES_{lxpb_folder}.csv"
+    nq_lxpb = f"{lxpb_folder}/NQ_{lxpb_folder}.csv"
     
-    es_m5 = "data/es-m5-h25.csv"
-    nq_m5 = "data/nq-m5-h25.csv"
+    es_m5 = "data/es-m5-m25-till11apr2025.csv"
+    nq_m5 = "data/nq-m5-m25-till11apr2025.csv"
     
     # Process ES
     process_instrument(
