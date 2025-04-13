@@ -51,8 +51,10 @@ def lxpb_analysis(df_d1):
             if row['Low'] <= price <= row['High']:
                 # print(f"Bar touches level at {price}")
                 # add more conditions later
+                hours_since_breakout = (current_time - breakout_time).total_seconds() / 3600
                 is_valid_retest = (row['High'] >= price and 
-                                     row['Low'] <= price)
+                                     row['Low'] <= price and
+                                     hours_since_breakout >= 4)
                 
                 if is_valid_retest:
                     # print(f"Valid retest detected at {price}")
@@ -118,35 +120,45 @@ def lxpb_analysis(df_d1):
 
 def main():
     current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = f'D1_Levels_{current_time}'
+    output_dir = f'LxPB_{current_time}'
     os.makedirs(output_dir, exist_ok=True)
     
     try:
-        df_d1 = load_and_process_csv('data/es-d1-9sep1997-11apr2025.csv')
-        # df_h1 = load_and_process_csv('data/es-h1-8apr2021-7apr2025.csv')
+        # df_d1 = load_and_process_csv('data/es-d1-9sep1997-11apr2025.csv')
+        es_df_h1 = load_and_process_csv('data/es-h1-8apr2021-7apr2025.csv')
+        nq_df_h1 = load_and_process_csv('data/nq-h1-4apr2021-11apr2025.csv')
         # print("\nInitial Data:")
         # print(df_d1)
         
-        levels_d1, lxpb_naked = lxpb_analysis(df_d1)
-        
+        # levels_d1, lxpb_naked = lxpb_analysis(df_d1)
+        lxpb_es_h1, lxpb_es_h1_naked = lxpb_analysis(es_df_h1)
+        lxpb_nq_h1, lxpb_nq_h1_naked = lxpb_analysis(nq_df_h1)
         # print("\nFinal Results:")
         # print(levels_df)
         
-        output_file = os.path.join(output_dir, f'D1_Levels_{current_time}.csv')
-        levels_d1.to_csv(output_file, index=False)
+        output_file_es = os.path.join(output_dir, f'ES_LxPB_{current_time}.csv')
+        output_file_nq = os.path.join(output_dir, f'NQ_LxPB_{current_time}.csv')
+        lxpb_es_h1.to_csv(output_file_es, index=False)
+        lxpb_nq_h1.to_csv(output_file_nq, index=False)
 
-        output_file_naked_lxpb = os.path.join(output_dir, f'D1_Levels_Naked_{current_time}.csv')
-        lxpb_naked.to_csv(output_file_naked_lxpb, index=False)
+        output_file_naked_lxpb_es = os.path.join(output_dir, f'ES_LxPB_Naked_{current_time}.csv')
+        output_file_naked_lxpb_nq = os.path.join(output_dir, f'NQ_LxPB_Naked_{current_time}.csv')
+        lxpb_es_h1_naked.to_csv(output_file_naked_lxpb_es, index=False)
+        lxpb_nq_h1_naked.to_csv(output_file_naked_lxpb_nq, index=False)
         # print(f"\nResults saved to: {output_file}")
         
-        total_levels = len(levels_d1)
-        one_touch = len(levels_d1[levels_d1['status'] == 'one_touch'])
-        retested = len(levels_d1[levels_d1['status'] == 'retested'])
+        total_lxpb_es = len(lxpb_es_h1)
+        one_touch_es = len(lxpb_es_h1[lxpb_es_h1['status'] == 'one_touch'])
+        retested_es = len(lxpb_es_h1[lxpb_es_h1['status'] == 'retested'])
+
+        total_lxpb_nq = len(lxpb_nq_h1)
+        one_touch_nq = len(lxpb_nq_h1[lxpb_nq_h1['status'] == 'one_touch'])
+        retested_nq = len(lxpb_nq_h1[lxpb_nq_h1['status'] == 'retested'])
         
         # print("\nSummary:")
-        # print(f"Total valid levels found: {total_levels}")
-        # print(f"One-touch levels: {one_touch}")
-        # print(f"Retested levels: {retested}")
+        # print(f"Total valid lxpb found: {total_lxpb}")
+        print(f"One-touch lxpb in es remaining: {one_touch_es}")
+        # print(f"Retested lxpb: {retested}")
         
     except Exception as e:
         print(f"Error: {str(e)}")

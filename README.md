@@ -1,3 +1,8 @@
+a) lxpb.py does the 0t 1t 2t analysis and outputs lxpb levels in csv file, this has all hourly data: formation, breakout, retest times
+b) m5-retest-analysis.py: takes output of a) and outputs m5 retest times
+c) join_es_nq_retests.py: takes output of b) and joins the files if the retest on m5 times overlap +-5min
+
+
 Focusing on how the levels are calculated and maintained across different timeframes.
 
 Overview of the Script

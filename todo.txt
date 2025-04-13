@@ -1,0 +1,12 @@
+todo:
+
+add D1 + H1 logic
+add strong flush/price action coming into the level
+time-based stop? ones that work, work very quickly with little mae on price+time
+
+add volatility into filter
+add ATR based range expansion?
+filter slow drift coming into the level?
+add FTA if wick is > x points?
+add ATR filter
+
