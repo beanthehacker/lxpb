@@ -26,11 +26,11 @@ def find_m5_retest(row, m5_data):
     
     # Look at M5 bars within that hour and the next hour to be safe
     start_time = retest_hour - timedelta(minutes=5)
-    end_time = retest_hour + timedelta(minutes=5)
+    end_time = retest_hour + timedelta(minutes=65)
     
     # Filter M5 data to this time window
     m5_window = m5_data[start_time:end_time]
-    
+
     # Find the first M5 bar that touches the level
     level_price = row['price']
     for idx, m5_bar in m5_window.iterrows():
