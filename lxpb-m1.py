@@ -147,6 +147,11 @@ def simulate_trades(data: pd.DataFrame, m1: dict) -> pd.DataFrame:
         # Calculate R Values
         reward = row[f'{symbol}_fta'] - m1[symbol].loc[latest, "close"]
         risk   = m1[symbol].loc[latest, "close"] - row[f'{symbol}_stop_loss']
+        # Convert to scalar values if they are Series
+        if isinstance(reward, pd.Series):
+            reward = reward.iat[0] if len(reward) > 0 else 0
+        if isinstance(risk, pd.Series):
+            risk = risk.iat[0] if len(risk) > 0 else 0
         cur_R = (reward / risk) if risk > 0 else 0
         if cur_R > max_R:
           max_R = cur_R
@@ -283,7 +288,7 @@ if __name__ == "__main__":
   print(f'TotaL RTY retests       : {len(rty_retest)}')
   print(f'Joined ES-NQ-RTY retests: {len(joined_retest)}')
   print(f'Unmatched ES retests    : {len(es_unmatched)}')
-  print(f'Match rate:             : {len(joined_retest) / len(es_retest) * 100:.2f}%')
+  print(f'Match rate:             : {(1 - len(es_unmatched) / len(es_retest)) * 100:.2f}%')
 
   # Simulate Trades & Output
   trades = simulate_trades(joined_retest, { "es": es_m1, "nq": nq_m1, "rty": rty_m1 })
@@ -296,6 +301,7 @@ if __name__ == "__main__":
 
   print(f'Win       : {(len(trades[trades["outcome"] == "WIN"])  / len(trades)) * 100:6.2f}%')
   print(f'Loss      : {(len(trades[trades["outcome"] == "LOSS"]) / len(trades)) * 100:6.2f}%')
-  print(f'Total PnL : {(trades["pnl"] / abs(trades["entry_price"] - trades["stop_price"])).sum():.2f}')
+  print(f'Total PnL : {(trades["pnl"] / (trades["entry_price"] - trades["stop_price"]).abs()).sum():.2f}')
+  print("\n")
 
 # ------------------------------------------------------------------- #
