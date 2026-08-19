@@ -205,27 +205,44 @@ which only contains 2026 bars, so every retest found on it is already a
 1. **H1 context chart** -- formation -> breakout -> retest, reusing
    `render_labels_report.build_row_chart` unchanged (same gap-compressed
    window, markers, confluence price-lines).
-2. **1s candles + Bid Volume + Ask Volume**, synced pan/zoom + crosshair
-   (same lightweight-charts@4 engine as `../lxpb-es-vol/render_report.py`),
-   built from REAL ticks read directly from the local Sierra Chart
-   `F.US.EP{H26,M26,U26}.scid` files (`D:\SC\Data`), choosing whichever
-   contract was actually front-month at that retest using the exact same
-   roll-switch instants (`roll_switch_utc`) as
-   `build_es_h1_2026_backadjusted.py` -- so the bid/ask volume always
-   comes from the real traded contract, never a fixed/wrong one. Because
-   an H1 bar only pins a retest to a whole hour, this script first finds
-   the actual 1-second bar within that hour where price really touched
-   (or gapped past) the level -- lxpb.py's Phase 3 touched/gap_over rule,
-   applied at 1s resolution -- and centers the chart on that instant
-   (`--pad-seconds`, default +/-150s).
+2. **1s candles + Bid Volume + Ask Volume** (left column), synced pan/zoom
+   + crosshair (same lightweight-charts@4 engine as
+   `../lxpb-es-vol/render_report.py`), built from REAL ticks read directly
+   from the local Sierra Chart `F.US.EP{H26,M26,U26}.scid` files
+   (`D:\SC\Data`), choosing whichever contract was actually front-month at
+   that retest using the exact same roll-switch instants
+   (`roll_switch_utc`) as `build_es_h1_2026_backadjusted.py` -- so the
+   bid/ask volume always comes from the real traded contract, never a
+   fixed/wrong one. Because an H1 bar only pins a retest to a whole hour,
+   this script first finds the actual 1-second bar within that hour where
+   price really touched (or gapped past) the level -- lxpb.py's Phase 3
+   touched/gap_over rule, applied at 1s resolution -- and centers the
+   chart on that instant (`--pad-seconds`, default +/-150s). The level
+   price shown/plotted is back-converted from the back-adjusted CSV value
+   to the RAW price of that same front-month contract (subtracting its
+   `TV_GROUND_TRUTH_OFFSETS` offset) so it lines up with the raw `.scid`
+   ticks; both raw and back-adjusted values are shown in the title/price-line.
+3. **1min candle chart** (right column), standalone (own crosshair legend,
+   not pan/zoom-synced to the 1s trio) -- +/-`--one-min-pad-minutes`
+   (default 20) around the retest instant, resampled from the same 1s
+   ticks (no second `.scid` fetch), giving broader before/after context
+   than the tight 1s window.
+
+A **"Vol @ Retest" filter** (checkbox chips, default both checked) flags
+whether the same-side volume -- Bid Volume for LHPB/LONG retests, Ask
+Volume for LLPB/SHORT retests -- on the EXACT 1s bar the retest touched on
+exceeds `--vol-threshold` (default 300); the results table also shows the
+raw Bid/Ask volume at that instant as columns.
 
 ```
-python render_lxpb_retest_1s_report.py [--limit 200] [--order desc] [--pad-seconds 150]
+python render_lxpb_retest_1s_report.py [--limit 0] [--order desc] [--pad-seconds 150] [--one-min-pad-minutes 20] [--vol-threshold 300]
 ```
 
-`--limit`/`--order` control how many retests are rendered (most-recent-first
-by default) -- keep this bounded since each row embeds its own 1s
-candle/bid/ask JSON (unlike the H1-only labeling report above). Output:
-`lxpb_retest_1s_report.html` (disposable build artifact, regenerate any
-time).
+`--limit 0` (default) renders every 2026 retest (922 as of the latest
+`es-h1-2026-backadjusted.csv`); `--order` controls most-recent-first vs.
+oldest-first. Each row embeds its own 1s candle/bid/ask + 1min JSON
+(unlike the H1-only labeling report above), so the full-2026 output is
+large (~60MB) -- acceptable, but pass `--limit N` for a quicker/smaller
+build while iterating. Output: `lxpb_retest_1s_report.html` (disposable
+build artifact, regenerate any time).
 
