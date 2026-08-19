@@ -200,11 +200,15 @@ artificial jumps at either roll boundary.
 A second, non-hand-labeling HTML report: one expandable row per completed
 2026 `detect_lxpb_h1` retest (run on `data/es-h1-2026-backadjusted.csv`,
 which only contains 2026 bars, so every retest found on it is already a
-2026 retest), showing on expand:
+2026 retest), **excluding gap instances** from the rendered rows (see
+below), showing on expand:
 
 1. **H1 context chart** -- formation -> breakout -> retest, reusing
    `render_labels_report.build_row_chart` unchanged (same gap-compressed
-   window, markers, confluence price-lines).
+   window, markers, confluence price-lines), centered horizontally (fixed
+   candle width via `barSpacing`, not `fitContent()` -- blank space is
+   split evenly left/right instead of stretching a handful of bars to
+   fill a wide monitor).
 2. **1s candles + Bid Volume + Ask Volume** (left column), synced pan/zoom
    + crosshair (same lightweight-charts@4 engine as
    `../lxpb-es-vol/render_report.py`), built from REAL ticks read directly
@@ -217,16 +221,32 @@ which only contains 2026 bars, so every retest found on it is already a
    this script first finds the actual 1-second bar within that hour where
    price really touched (or gapped past) the level -- lxpb.py's Phase 3
    touched/gap_over rule, applied at 1s resolution -- and centers the
-   chart on that instant (`--pad-seconds`, default +/-150s). The level
-   price shown/plotted is back-converted from the back-adjusted CSV value
-   to the RAW price of that same front-month contract (subtracting its
-   `TV_GROUND_TRUTH_OFFSETS` offset) so it lines up with the raw `.scid`
-   ticks; both raw and back-adjusted values are shown in the title/price-line.
+   chart on that instant (`--pad-seconds`, default +/-45s -- tight enough
+   that the retesting candle itself is clearly visible).
 3. **1min candle chart** (right column), standalone (own crosshair legend,
    not pan/zoom-synced to the 1s trio) -- +/-`--one-min-pad-minutes`
    (default 20) around the retest instant, resampled from the same 1s
    ticks (no second `.scid` fetch), giving broader before/after context
-   than the tight 1s window.
+   than the tight 1s window; other nearby same-type LXPB levels are drawn
+   as unlabeled dashed background lines (same confluence tolerance/colors
+   as the H1 chart), but formation/breakout markers are NOT shown here --
+   it's a zoomed-in view of the retest itself, not the level's history.
+
+All price labels/lines are in ADJUSTED (back-adjusted continuous) terms
+across all three charts; the RAW price actually traded (and which
+contract) is shown once per row in the results table's "Raw (Contract)"
+column rather than repeated on every chart panel.
+
+**Gap exclusion**: retests are excluded from the rendered rows (though
+`lxpb.py`'s own consuming/invalidation logic in `advance_one_bar` is
+untouched -- this is purely a report-display filter applied after
+detection) if either:
+- **gap breakout** -- the level's breakout bar opened/stayed entirely
+  beyond the level (`breakout_low > price` for LHPB, `breakout_high <
+  price` for LLPB) -- lxpb.py Phase 2's gap-breakout branch, or
+- **gap retest** (gap-over) -- the retest bar gapped clean past the level
+  instead of actually touching it, i.e. `NOT(retest_low <= entry_price <=
+  retest_high)` -- lxpb.py Phase 3's gap-over branch.
 
 A **"Vol @ Retest" filter** (checkbox chips, default both checked) flags
 whether the same-side volume -- Bid Volume for LHPB/LONG retests, Ask
@@ -235,14 +255,15 @@ exceeds `--vol-threshold` (default 300); the results table also shows the
 raw Bid/Ask volume at that instant as columns.
 
 ```
-python render_lxpb_retest_1s_report.py [--limit 0] [--order desc] [--pad-seconds 150] [--one-min-pad-minutes 20] [--vol-threshold 300]
+python render_lxpb_retest_1s_report.py [--limit 0] [--order desc] [--pad-seconds 45] [--one-min-pad-minutes 20] [--vol-threshold 300]
 ```
 
-`--limit 0` (default) renders every 2026 retest (922 as of the latest
-`es-h1-2026-backadjusted.csv`); `--order` controls most-recent-first vs.
+`--limit 0` (default) renders every non-gap 2026 retest (859 as of the
+latest `es-h1-2026-backadjusted.csv`, out of 922 total -- 63 gap
+instances excluded); `--order` controls most-recent-first vs.
 oldest-first. Each row embeds its own 1s candle/bid/ask + 1min JSON
 (unlike the H1-only labeling report above), so the full-2026 output is
-large (~60MB) -- acceptable, but pass `--limit N` for a quicker/smaller
+large (~23MB) -- acceptable, but pass `--limit N` for a quicker/smaller
 build while iterating. Output: `lxpb_retest_1s_report.html` (disposable
 build artifact, regenerate any time).
 
