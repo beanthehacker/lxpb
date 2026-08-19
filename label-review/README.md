@@ -170,3 +170,36 @@ freely-available, unadjusted *hourly* data only goes back to 2024-08-19
 would need a paid tick-data vendor, so this dataset intentionally does not
 cover 2015-2024.
 
+### Back-adjusted 2026-only series (for strategy backtesting)
+
+The unadjusted series above is correct for absolute S/R-level detection,
+but a real strategy backtest wants a **back-adjusted, jump-free**
+continuous contract (no artificial price gaps at each quarterly roll),
+matching what TradingView's `ES1!` shows. `data/build_es_h1_2026_backadjusted.py`
+builds exactly that, for 2026 only, producing `data/es-h1-2026-backadjusted.csv`.
+
+Reverse-engineered TradingView roll rule (confirmed to the bar, not
+estimated): TradingView switches `ES1!` to the next front-month contract
+at the exact start of the Globex session **3 business days before the
+expiring contract's 3rd-Friday expiration** (17:00 CT the evening
+before). Diffing this repo's scid-based splice against
+`../data/es-h1-2015-14aug2026.csv` around both 2026 rolls shows the
+residual is exactly 0.00 up to that instant and exactly 0.00 from that
+instant onward -- for every bar, on both the H26->M26 and M26->U26
+rolls, confirming this is a general rule, not a coincidence for one roll.
+The back-adjustment offset itself (the real spread applied cumulatively
+to older segments) is TradingView-confirmed exactly: +114.50 (H26),
++68.00 (M26), 0.00 (U26/current) -- these constants were measured
+directly by diffing against the TradingView export, since independently
+re-deriving them from raw `.scid` ticks alone is only accurate to a few
+points (a real inter-contract calendar spread fluctuates constantly, so
+which exact tick TradingView's backend snapshots can't be pinned to
+sub-tick precision from a retail tick feed -- see the script's docstring
+for the full analysis).
+
+Result: Open/Close match the TradingView export almost exactly (mean
+diff ~0.002-0.003pt, 100% of bars within 1pt across all three 2026
+contract segments); High/Low differ by up to ~1-1.5pt on ~40% of bars
+from ordinary cross-vendor tick noise (acceptable/expected, not a bug).
+No artificial jumps at either roll boundary.
+
