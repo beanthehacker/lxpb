@@ -82,20 +82,22 @@ drift between two copies.
   logic (see `D:\lxpb\README.md`), and `L.MIN_HOURS_BEFORE_RETEST = 2` is
   still applied as a module-global override the same way.
 - **`combine_and_scan.py`**, **`consumption_impact_diagnostic.py`**,
-  **`render_report.py`**: `H1_CSV` now points at this repo's local
-  `../data/es-h1-4apr2021-11apr2025.csv` instead of daily-analysis's
-  `D:\daily-analysis\data\ES1!-H1.csv`.
-  **Caveat:** the local H1 CSV only covers 2021-04-04 through
-  2025-04-11. The included example 1s session (`ES_20260813_...`, dated
-  2026-08-13) is therefore *outside* this H1 file's coverage, so running
-  `combine_and_scan.py`/`render_report.py` as-is against the bundled
-  example data will find **zero confirmed signals** (all candidate bursts
-  are dropped at the zone-confluence gate for lack of any H1 level
-  history at that date) — this is a data-coverage artifact of using two
-  differently-dated local datasets, not a logic bug. To get meaningful
-  results, either point `H1_CSV` at an H1 file covering the same dates as
-  your 1s data, or export a 1s session from a date range inside
-  2021-2025.
+  **`render_report.py`**: `H1_CSV` now points at this monorepo's shared
+  canonical `../data/es-h1-continuous-backadjusted.csv` — a single,
+  back-adjusted, jump-free ES H1 series covering 2015-01-01 through
+  present (built by `../data/build_es_h1_continuous.py`; see
+  `../label-review/README.md`'s "ES H1 data" section for how it's built
+  and kept up to date). This supersedes an earlier local
+  `../data/es-h1-4apr2021-11apr2025.csv` (2021-04-04 through 2025-04-11
+  only, still used by the unrelated `../simulate-joined-retests.py`
+  legacy pipeline), which did not cover the bundled example 1s session's
+  date (2026-08-13); the new canonical file's data range does (verified
+  directly against the CSV: it has H1 bars for 2026-08-13). Note: this
+  repo currently has a separate, pre-existing issue unrelated to this H1
+  data change -- `absorption_backtest.py` (imported by `combine_and_scan.py`)
+  is missing from disk though still tracked in git -- so an actual
+  end-to-end run currently cannot be smoke-tested here until that's
+  resolved.
 - **`combine_and_scan.py`**: added a defensive column-typed empty
   `DataFrame` fallback in `scan()` so a zero-signal run (see caveat above)
   still writes a valid (empty) output CSV instead of raising `KeyError` on

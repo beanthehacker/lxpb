@@ -72,9 +72,11 @@ import lxpb_cache
 _HERE = os.path.dirname(os.path.abspath(__file__))
 CSV_1S = os.path.join(_HERE, "ES_20260813_0800-0930_PT_1s.csv")
 # Ported from daily-analysis (was: r"D:\daily-analysis\data\ES1!-H1.csv").
-# Points at this repo's own local ES H1 history instead of the original
-# external/absolute path.
-H1_CSV = os.path.join(_HERE, "..", "data", "es-h1-4apr2021-11apr2025.csv")
+# Points at this repo's canonical back-adjusted, jump-free continuous ES H1
+# series (see data/build_es_h1_continuous.py) -- covers 2015 through present,
+# kept fresh by extending with real front-month .scid data rather than
+# re-exporting from TradingView (see that script's docstring for why).
+H1_CSV = os.path.join(_HERE, "..", "data", "es-h1-continuous-backadjusted.csv")
 OUT_CSV = os.path.join(_HERE, "lxpb_volume_strat_triggers.csv")
 
 N_TICKS = 20

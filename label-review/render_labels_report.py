@@ -40,8 +40,8 @@ in JS_TEMPLATE (id/label/hint) plus its default rule in compute_hints's
 persistence, and CSV export/import are all driven off the FEATURES list.
 
 Usage:
-    python render_labels_report.py --data ../data/es-h1-4apr2021-11apr2025.csv --limit 300
-    python render_labels_report.py --data ../data/es-h1-4apr2021-11apr2025.csv --all --output all_labels.html
+    python render_labels_report.py --data ../data/es-h1-continuous-backadjusted.csv --limit 300
+    python render_labels_report.py --data ../data/es-h1-continuous-backadjusted.csv --all --output all_labels.html
 """
 import os
 import sys
@@ -71,13 +71,15 @@ from candle_utils import (  # noqa: E402
     has_large_lower_wick as _pp_has_large_lower_wick,
 )
 
-# ../data/es-h1-2015-14aug2026.csv is a TradingView back-adjusted continuous contract --
-# its historical absolute price levels drift by hundreds of points every time it's
-# re-exported (verified) and are not real traded prices. label-review instead uses its own
-# locally-built, non-back-adjusted, contract-tagged continuous series (see
-# data/build_es_h1_continuous.py); this only affects label-review, not other tools/tests
-# in this monorepo that still read ../data/es-h1-2015-14aug2026.csv directly.
-DEFAULT_DATA = os.path.join(_HERE, "data", "es-h1-continuous.csv")
+# ../data/es-h1-continuous-backadjusted.csv is the whole-monorepo canonical, back-adjusted,
+# jump-free continuous ES H1 series (see data/build_es_h1_continuous.py at repo root),
+# used consistently by lxpb.py/lxpb-es-vol/label-review. It is built by taking the frozen,
+# internally-consistent TradingView back-adjusted export (data/es-h1-2015-14aug2026.csv) as
+# the historical base and extending it with fresh, real front-month .scid data (which
+# always carries a +0 offset as the current contract) -- so it stays accurate without ever
+# needing a fresh TradingView re-export (which is what caused the original drift bug: each
+# re-export recalculates ALL history relative to a new anchor date).
+DEFAULT_DATA = os.path.join(_REPO_ROOT, "data", "es-h1-continuous-backadjusted.csv")
 DEFAULT_OUTPUT = os.path.join(_HERE, "lxpb_labels_report.html")
 
 BARS_BEFORE = 8     # H1 bars of context shown before Phase 0 (formation)

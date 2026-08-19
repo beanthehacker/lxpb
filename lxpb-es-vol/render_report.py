@@ -41,7 +41,9 @@ TRIGGERS_CSV = os.path.join(_HERE, "lxpb_volume_strat_triggers.csv")
 OUT_HTML = os.path.join(_HERE, "lxpb_volume_strat_report.html")
 TITLE = "LXPB + Volume-Absorption Strategy — 2026-08-13 08:00-09:30 PT (ES)"
 # Ported from daily-analysis (was: r"D:\daily-analysis\data\ES1!-H1.csv").
-H1_CSV = os.path.join(_HERE, "..", "data", "es-h1-4apr2021-11apr2025.csv")
+# Points at this repo's canonical back-adjusted, jump-free continuous ES H1
+# series (see data/build_es_h1_continuous.py) -- covers 2015 through present.
+H1_CSV = os.path.join(_HERE, "..", "data", "es-h1-continuous-backadjusted.csv")
 
 WINDOW_S = 90          # seconds of context on each side of a trigger (1s panes)
 N_TICKS = 20

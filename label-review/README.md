@@ -17,7 +17,7 @@ python render_labels_report.py [options]
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--data` | `data/es-h1-continuous.csv` | H1 OHLC CSV to run `detect_lxpb_h1` against -- own locally-built, non-back-adjusted continuous series (2024-08-19 through present; see "ES H1 data" below) |
+| `--data` | `../data/es-h1-continuous-backadjusted.csv` | H1 OHLC CSV to run `detect_lxpb_h1` against -- whole-monorepo canonical, back-adjusted, jump-free continuous series (2015-present; see "ES H1 data" below) |
 | `--output` | `lxpb_labels_report.html` | Output HTML path |
 | `--title` | auto | Report `<h1>` title |
 | `--n-ticks` | 20 | Confluence radius (ticks) for the "nearby broken-out levels" hint/overlay |
@@ -127,79 +127,105 @@ Workflow:
   Regenerate any time; this file is a disposable build artifact, not
   source of truth (labels live in each browser's `localStorage` / your
   exported CSV, not in this HTML).
-- `data/es-h1-continuous.csv` -- default input dataset, built by
-  `data/build_es_h1_continuous.py`. Covers 2024-08-19 through present.
+- `../data/es-h1-continuous-backadjusted.csv` -- default input dataset,
+  the whole-monorepo canonical ES H1 series, built by
+  `../data/build_es_h1_continuous.py`. Covers 2015-01-01 through present.
 
 ## ES H1 data
 
-`../data/es-h1-2015-14aug2026.csv` (used elsewhere in this monorepo) is a
-TradingView "ES1!" **back-adjusted** continuous contract: every re-export
+This repo previously had (and label-review previously defaulted to) its
+own locally-built, *non*-back-adjusted continuous splice, separate from
+what the rest of the monorepo used. That has been retired: label-review
+and every other tool in this monorepo (`../lxpb.py`, `../lxpb-es-vol/*`)
+now share **one canonical, back-adjusted, jump-free** continuous ES H1
+series: `../data/es-h1-continuous-backadjusted.csv`, built by
+`../data/build_es_h1_continuous.py`.
+
+Background on why back-adjustment was originally a problem, and how it's
+now handled correctly:
+
+`../data/es-h1-2015-14aug2026.csv` is a TradingView "ES1!"
+**back-adjusted** continuous contract export: every *re-export*
 recalculates all historical bars relative to whichever contract is
-currently front-month, so old absolute price levels are not real traded
-prices and drift over time. Verified by diffing two export vintages ~16
-months apart for identical timestamps: average +280pt / up to +412pt
-difference on the same historical bar. This makes any absolute-price-level
-logic (S/R zones, LXPB levels) non-reproducible and historically
-inaccurate the further back you go (near-zero drift right at the export's
-anchor date, growing to hundreds of points a couple of years back).
+currently front-month, so re-exporting it periodically and swapping the
+file makes old absolute price levels silently drift over time (verified
+by diffing two export vintages ~16 months apart for identical
+timestamps: average +280pt / up to +412pt difference on the same bar).
+That drift-on-re-export behavior was the actual bug -- **not** the fact
+that the data is back-adjusted (back-adjustment itself is normal/correct
+for strategy backtesting: it trades absolute historical price accuracy
+for zero artificial jumps at each contract roll).
 
-For **label-review only** (this fix is intentionally scoped here and does
-not touch `../data/es-h1-2015-14aug2026.csv` or anything else in the
-monorepo, so other tools/tests that depend on it are unaffected),
-`data/build_es_h1_continuous.py` builds a real, non-back-adjusted,
-contract-tagged continuous H1 series instead, by splicing:
+The fix: treat that TradingView export as a **frozen, one-time snapshot**
+(internally self-consistent -- every roll in that single file is
+adjusted relative to the same anchor date) rather than something to
+re-export and swap out, and only ever *extend* it forward with fresh,
+**real, unadjusted** front-month `.scid` data (which needs no
+back-adjustment math at all, since the current/front contract always
+carries a +0 offset by definition). `../data/build_es_h1_continuous.py`
+does exactly this:
 
-1. **Recent window** (real front-month tick data): local Sierra Chart
-   `.scid` files (`D:\SC\Data\F.US.EP{H26,M26,U26}.scid`), read via
-   `D:\acheron\AcheronUtils\scidReader.py`, restricted to each contract's
-   real front-month window per CME's standard quarterly roll calendar
-   (switch ~8 calendar days before the expiring contract's own 3rd-Friday
-   expiry) -- verified byte-exact against TradingView's own current-quarter
-   bars.
-2. **Older window** (back to 2024-08-19, the oldest free intraday data
-   available with no back-adjustment): Yahoo Finance's public,
-   unauthenticated chart API for `ES=F` (continuous front-month, never
-   back-adjusted) -- verified against known real historical prints
-   elsewhere (e.g. the actual March 2020 COVID-crash low).
+1. Takes `../data/es-h1-2015-14aug2026.csv` as-is for all history through
+   its own last bar (2026-08-14).
+2. Appends real H1 bars built from the local Sierra Chart
+   `F.US.EPU26.scid` file (current front contract, read via
+   `D:\acheron\AcheronUtils\scidReader.py`) for every bar after that.
+3. Re-run any time new `.scid` data lands to keep the tail current; once
+   the front contract itself rolls (U26->Z26 in Sep 2026), add the new
+   quarter's symbol to `FRONT_CONTRACTS` in that script (see its
+   docstring for the reverse-engineered TradingView roll-timing rule --
+   3 business days before 3rd-Friday expiry, 17:00 CT session open --
+   confirmed bar-for-bar against real `.scid` overlap data for both 2026
+   rolls).
 
-Every row is tagged with its `contract`/`source` for provenance, and
-re-running the build script reproduces identical historical bars every
-time (unlike the back-adjusted TradingView export). **Known limitation**:
-freely-available, unadjusted *hourly* data only goes back to 2024-08-19
-(Yahoo's intraday history cap) -- extending real unadjusted H1 further back
-would need a paid tick-data vendor, so this dataset intentionally does not
-cover 2015-2024.
+### 2026-only reconstruction (`build_es_h1_2026_backadjusted.py`)
 
-### Back-adjusted 2026-only series (for strategy backtesting)
+A separate, narrower script/dataset --
+`data/build_es_h1_2026_backadjusted.py` / `data/es-h1-2026-backadjusted.csv`
+-- independently rebuilds a 2026-only back-adjusted series entirely from
+local `.scid` contract data (H26/M26/U26), without relying on the frozen
+TradingView export at all. This is what originally reverse-engineered
+TradingView's roll rule (documented in its module docstring) and is kept
+because `render_lxpb_retest_1s_report.py` (below) imports it directly for
+its roll-timing logic (`roll_switch_utc`) to pick the correct real
+front-month contract's 1-second ticks per retest. Validated result:
+Open/Close match the TradingView export almost exactly (mean diff
+~0.002-0.003pt, 100% of bars within 1pt across all three 2026 contract
+segments); High/Low differ by up to ~1-1.5pt on ~40% of bars from
+ordinary cross-vendor tick noise (acceptable/expected, not a bug). No
+artificial jumps at either roll boundary.
 
-The unadjusted series above is correct for absolute S/R-level detection,
-but a real strategy backtest wants a **back-adjusted, jump-free**
-continuous contract (no artificial price gaps at each quarterly roll),
-matching what TradingView's `ES1!` shows. `data/build_es_h1_2026_backadjusted.py`
-builds exactly that, for 2026 only, producing `data/es-h1-2026-backadjusted.csv`.
+## 2026 retest report: H1 + 1s bid/ask volume (`render_lxpb_retest_1s_report.py`)
 
-Reverse-engineered TradingView roll rule (confirmed to the bar, not
-estimated): TradingView switches `ES1!` to the next front-month contract
-at the exact start of the Globex session **3 business days before the
-expiring contract's 3rd-Friday expiration** (17:00 CT the evening
-before). Diffing this repo's scid-based splice against
-`../data/es-h1-2015-14aug2026.csv` around both 2026 rolls shows the
-residual is exactly 0.00 up to that instant and exactly 0.00 from that
-instant onward -- for every bar, on both the H26->M26 and M26->U26
-rolls, confirming this is a general rule, not a coincidence for one roll.
-The back-adjustment offset itself (the real spread applied cumulatively
-to older segments) is TradingView-confirmed exactly: +114.50 (H26),
-+68.00 (M26), 0.00 (U26/current) -- these constants were measured
-directly by diffing against the TradingView export, since independently
-re-deriving them from raw `.scid` ticks alone is only accurate to a few
-points (a real inter-contract calendar spread fluctuates constantly, so
-which exact tick TradingView's backend snapshots can't be pinned to
-sub-tick precision from a retail tick feed -- see the script's docstring
-for the full analysis).
+A second, non-hand-labeling HTML report: one expandable row per completed
+2026 `detect_lxpb_h1` retest (run on `data/es-h1-2026-backadjusted.csv`,
+which only contains 2026 bars, so every retest found on it is already a
+2026 retest), showing on expand:
 
-Result: Open/Close match the TradingView export almost exactly (mean
-diff ~0.002-0.003pt, 100% of bars within 1pt across all three 2026
-contract segments); High/Low differ by up to ~1-1.5pt on ~40% of bars
-from ordinary cross-vendor tick noise (acceptable/expected, not a bug).
-No artificial jumps at either roll boundary.
+1. **H1 context chart** -- formation -> breakout -> retest, reusing
+   `render_labels_report.build_row_chart` unchanged (same gap-compressed
+   window, markers, confluence price-lines).
+2. **1s candles + Bid Volume + Ask Volume**, synced pan/zoom + crosshair
+   (same lightweight-charts@4 engine as `../lxpb-es-vol/render_report.py`),
+   built from REAL ticks read directly from the local Sierra Chart
+   `F.US.EP{H26,M26,U26}.scid` files (`D:\SC\Data`), choosing whichever
+   contract was actually front-month at that retest using the exact same
+   roll-switch instants (`roll_switch_utc`) as
+   `build_es_h1_2026_backadjusted.py` -- so the bid/ask volume always
+   comes from the real traded contract, never a fixed/wrong one. Because
+   an H1 bar only pins a retest to a whole hour, this script first finds
+   the actual 1-second bar within that hour where price really touched
+   (or gapped past) the level -- lxpb.py's Phase 3 touched/gap_over rule,
+   applied at 1s resolution -- and centers the chart on that instant
+   (`--pad-seconds`, default +/-150s).
+
+```
+python render_lxpb_retest_1s_report.py [--limit 200] [--order desc] [--pad-seconds 150]
+```
+
+`--limit`/`--order` control how many retests are rendered (most-recent-first
+by default) -- keep this bounded since each row embeds its own 1s
+candle/bid/ask JSON (unlike the H1-only labeling report above). Output:
+`lxpb_retest_1s_report.html` (disposable build artifact, regenerate any
+time).
 

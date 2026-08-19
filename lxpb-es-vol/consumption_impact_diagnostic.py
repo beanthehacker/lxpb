@@ -29,7 +29,7 @@ STACK_THRESHOLD = 2
 L.MIN_HOURS_BEFORE_RETEST = 2
 
 # Ported from daily-analysis (was: r"D:\daily-analysis\data\ES1!-H1.csv").
-H1_CSV = os.path.join(_HERE, "..", "data", "es-h1-4apr2021-11apr2025.csv")
+H1_CSV = os.path.join(_HERE, "..", "data", "es-h1-continuous-backadjusted.csv")
 TRIGGERS_CSV = os.path.join(_HERE, "lxpb_volume_strat_triggers.csv")
 
 

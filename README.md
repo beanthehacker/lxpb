@@ -29,7 +29,7 @@ confirmed bugs relative to the corrected version (see below).
 ## Usage
 
 ```bash
-python lxpb.py --data data/es-h1-4apr2021-11apr2025.csv
+python lxpb.py --data data/es-h1-continuous-backadjusted.csv
 python lxpb.py --data data/nq-h1-4apr2021-11apr2025.csv --output retests.csv
 ```
 

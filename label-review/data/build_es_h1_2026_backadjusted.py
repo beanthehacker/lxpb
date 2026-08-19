@@ -1,9 +1,18 @@
 """
-Build a JUMP-FREE, back-adjusted continuous ES H1 series for 2026 only, for
-LXPB strategy backtesting (as opposed to data/build_es_h1_continuous.py,
-which is the UNADJUSTED splice used by the label-review tool itself for
-absolute S/R-level detection -- these are two different, deliberate
-choices for two different consumers).
+Build a JUMP-FREE, back-adjusted continuous ES H1 series for 2026 only,
+used by render_lxpb_retest_1s_report.py (which also imports this module
+directly for its `roll_switch_utc`/`CONTRACTS` roll-timing logic, to pick
+the correct real front-month contract's 1-second ticks per retest).
+
+label-review's own main report (render_labels_report.py) instead defaults
+to the whole-monorepo canonical file `../data/es-h1-continuous-backadjusted.csv`
+(see `../data/build_es_h1_continuous.py`), which covers 2015-present by
+reusing TradingView's own frozen back-adjusted history plus a live
+front-month `.scid` extension. This script produces a narrower, from-
+scratch 2026-only reconstruction instead because it needed to reverse-
+engineer TradingView's exact roll rule from real overlapping `.scid` data
+(see below) -- that reverse-engineered rule is what the canonical script
+also documents/reuses for its own future extensions.
 
 Reverse-engineered TradingView ES1! roll rule (fully confirmed, exact)
 =======================================================================
