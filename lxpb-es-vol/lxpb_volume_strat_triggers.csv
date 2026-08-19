@@ -1,0 +1,2 @@
+time_pt,direction,trigger_close,tested_price,volume,delta,vol_z,run_delta_sum,reject_ticks,level_type,confluence_count,confluence_prices,nearest_level_ticks
+2026-08-13 08:59:11-07:00,LONG,7798.25,7797.75,680,-276,5.26,-565.0,2.0,LHPB,4,7794.00;7795.25;7796.00;7798.00,1.0

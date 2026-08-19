@@ -17,7 +17,7 @@ python render_labels_report.py [options]
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--data` | `../data/es-h1-2015-14aug2026.csv` | H1 OHLC CSV to run `detect_lxpb_h1` against (current dataset, 2015-01-01 through 2026-08-14) |
+| `--data` | `data/es-h1-continuous.csv` | H1 OHLC CSV to run `detect_lxpb_h1` against -- own locally-built, non-back-adjusted continuous series (2024-08-19 through present; see "ES H1 data" below) |
 | `--output` | `lxpb_labels_report.html` | Output HTML path |
 | `--title` | auto | Report `<h1>` title |
 | `--n-ticks` | 20 | Confluence radius (ticks) for the "nearby broken-out levels" hint/overlay |
@@ -127,6 +127,46 @@ Workflow:
   Regenerate any time; this file is a disposable build artifact, not
   source of truth (labels live in each browser's `localStorage` / your
   exported CSV, not in this HTML).
-- `../data/es-h1-2015-14aug2026.csv` -- default input dataset (copy of
-  `D:\daily-analysis\data\ES1!-H1.csv`), covers 2015-01-01 through
-  2026-08-14.
+- `data/es-h1-continuous.csv` -- default input dataset, built by
+  `data/build_es_h1_continuous.py`. Covers 2024-08-19 through present.
+
+## ES H1 data
+
+`../data/es-h1-2015-14aug2026.csv` (used elsewhere in this monorepo) is a
+TradingView "ES1!" **back-adjusted** continuous contract: every re-export
+recalculates all historical bars relative to whichever contract is
+currently front-month, so old absolute price levels are not real traded
+prices and drift over time. Verified by diffing two export vintages ~16
+months apart for identical timestamps: average +280pt / up to +412pt
+difference on the same historical bar. This makes any absolute-price-level
+logic (S/R zones, LXPB levels) non-reproducible and historically
+inaccurate the further back you go (near-zero drift right at the export's
+anchor date, growing to hundreds of points a couple of years back).
+
+For **label-review only** (this fix is intentionally scoped here and does
+not touch `../data/es-h1-2015-14aug2026.csv` or anything else in the
+monorepo, so other tools/tests that depend on it are unaffected),
+`data/build_es_h1_continuous.py` builds a real, non-back-adjusted,
+contract-tagged continuous H1 series instead, by splicing:
+
+1. **Recent window** (real front-month tick data): local Sierra Chart
+   `.scid` files (`D:\SC\Data\F.US.EP{H26,M26,U26}.scid`), read via
+   `D:\acheron\AcheronUtils\scidReader.py`, restricted to each contract's
+   real front-month window per CME's standard quarterly roll calendar
+   (switch ~8 calendar days before the expiring contract's own 3rd-Friday
+   expiry) -- verified byte-exact against TradingView's own current-quarter
+   bars.
+2. **Older window** (back to 2024-08-19, the oldest free intraday data
+   available with no back-adjustment): Yahoo Finance's public,
+   unauthenticated chart API for `ES=F` (continuous front-month, never
+   back-adjusted) -- verified against known real historical prints
+   elsewhere (e.g. the actual March 2020 COVID-crash low).
+
+Every row is tagged with its `contract`/`source` for provenance, and
+re-running the build script reproduces identical historical bars every
+time (unlike the back-adjusted TradingView export). **Known limitation**:
+freely-available, unadjusted *hourly* data only goes back to 2024-08-19
+(Yahoo's intraday history cap) -- extending real unadjusted H1 further back
+would need a paid tick-data vendor, so this dataset intentionally does not
+cover 2015-2024.
+

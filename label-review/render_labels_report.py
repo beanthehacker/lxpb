@@ -71,7 +71,13 @@ from candle_utils import (  # noqa: E402
     has_large_lower_wick as _pp_has_large_lower_wick,
 )
 
-DEFAULT_DATA = os.path.join(_REPO_ROOT, "data", "es-h1-2015-14aug2026.csv")
+# ../data/es-h1-2015-14aug2026.csv is a TradingView back-adjusted continuous contract --
+# its historical absolute price levels drift by hundreds of points every time it's
+# re-exported (verified) and are not real traded prices. label-review instead uses its own
+# locally-built, non-back-adjusted, contract-tagged continuous series (see
+# data/build_es_h1_continuous.py); this only affects label-review, not other tools/tests
+# in this monorepo that still read ../data/es-h1-2015-14aug2026.csv directly.
+DEFAULT_DATA = os.path.join(_HERE, "data", "es-h1-continuous.csv")
 DEFAULT_OUTPUT = os.path.join(_HERE, "lxpb_labels_report.html")
 
 BARS_BEFORE = 8     # H1 bars of context shown before Phase 0 (formation)

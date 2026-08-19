@@ -1,112 +1,131 @@
-a) lxpb.py does the 0t 1t 2t analysis and outputs lxpb levels in csv file, this has all hourly data: formation, breakout, retest times
-b) m5-retest-analysis.py: takes output of a) and outputs m5 retest times
-c) join_es_nq_retests.py: takes output of b) and joins the files if the retest on m5 times overlap +-5min
+# LXPB
 
+`lxpb.py` — H1 LXPB (Last High/Low Pre-Breakout) detector: streams H1 OHLC
+bars through a small state machine and outputs each completed retest with
+its entry price, FTA (First Target Available) profit target, stop loss,
+and a spike/swing classification.
 
-Focusing on how the levels are calculated and maintained across different timeframes.
+This logic is a synced port of the canonical implementation at
+`D:\daily-analysis\lxpb-h1-apr2026\lxpb_h1_detect.py` (kept there as the
+source of truth; ported here so this repo's downstream scripts and tests
+can use it directly). It replaces the previous `lxpb.py` and
+`LxPB-ES-D1-H1-M5-tradingview.py`, whose H1 detection logic had three
+confirmed bugs relative to the corrected version (see below).
 
-Overview of the Script
-This script implements a trading strategy called "Last High Pre Breakout" (LHPB) and its mirror/opposite, called "Last Low Pre Breakout" (LLPB). It analyzes price data across multiple timeframes (Daily, Hourly, and 5-minute) to identify potential trading opportunities based on price levels that are broken and then retested.
+## Other scripts
 
-Key Components
-1. Data Loading and Processing
-The script loads data from CSV files for different timeframes (D1, H1, M5)
-It ensures price continuity by adjusting gaps between any two consecutive bars
-It processes timestamps and standardizes column names
+- `lxpb-m1.py`, `m5-retest-analysis.py`, `join_es_nq_retests.py`,
+  `process_m5_data.py`, `simulate-joined-retests.py` — unrelated
+  downstream M1/M5 retest/analysis pipeline, unaffected by this change.
+- The old D1-level logic, D1↔H1 confluence, and trade-simulation pipeline
+  (previously in `LxPB-ES-D1-H1-M5-tradingview.py`) were removed along
+  with the buggy H1 detector and have no replacement here yet.
+- `lxpb-es-vol/` — a separate strategy: LXPB stacked-level confluence +
+  1-second order-flow absorption detection for ES, ported wholesale from
+  `D:\daily-analysis\lxpb-volume-strat\` and wrapping this repo's
+  `lxpb.py` as its H1 detector. See `lxpb-es-vol/README.md` for details
+  and porting notes.
 
-2. Level Identification
-The script identifies potential price levels on D1 and H1 timeframes
-It classifies levels as "zero-touch" or "one-touch" based on how many times they've been tested
-It tracks when levels are formed, broken, and retested
+## Usage
 
-3. Trade Simulation
-The script simulates trades based on the identified levels
-It calculates entry, exit, stop loss, and target prices
-It tracks trade outcomes and performance metrics (you can ignore metrics).
+```bash
+python lxpb.py --data data/es-h1-4apr2021-11apr2025.csv
+python lxpb.py --data data/nq-h1-4apr2021-11apr2025.csv --output retests.csv
+```
 
-Level Calculation and Maintenance
-Let's focus on how levels are calculated and maintained:
-1. D1 Level Identification
-The find_d1_levels_simple function identifies D1 levels:
+## Algorithm — step by step
 
-A) D1 Level Maintenance Process:
-1. Zero-Touch Levels:
-Every bar's high and low are added as potential zero-touch levels
-When a bar overlaps with a zero-touch level, it checks for a breakout
-A breakout occurs when:
-  For LHPB: Bar opens below the level and closes above it
-  For LLPB: Bar opens above the level and closes below it
-When a breakout occurs, the level is moved to one-touch levels
-If no breakout occurs, the level remains in zero-touch
-Special case: For LHPB, if a bar opens below or equal to LHPB price and closes back below it then remove this LHPB price from zero-touch level and also don't promote it to one-touch level. Vice-versa for LLPB.
+Three lists are maintained across the full bar history:
 
-2. One-Touch Levels:
-These are levels that have been broken once
-When a bar overlaps with a one-touch level, it checks for a valid retest
-A valid retest occurs when:
-  For LHPB: Bar opens above the level and closes at or below it (retest from above)
-  For LLPB: Bar opens below the level and closes at or above it (retest from below)
-If a valid retest occurs and enough time has passed since breakout, the level is added to results. "Enough time" is configurable, set to default 4 hours since breakout time
-After a second touch (whether valid retest or not), the level is removed
-If no second touch occurs, the level remains in one-touch forever until retested
+| List | Contents |
+|------|----------|
+| `touch_lv0` | Zero-touch levels: formed, not yet broken out |
+| `touch_lv1` | One-touch levels: broken out, awaiting retest |
+| `retests` | Completed retests: one-touch level returned to after ≥4 hours |
 
-B) H1 Level Identification
-The find_h1_levels_with_classification function identifies H1 levels with additional classification
+Per-bar processing order: **Phase 0** (finalize pending swing classification)
+→ **Phase 3** (retest check) → **Phase 2** (breakout check) → **Phase 1**
+(register new levels from this bar's high/low) → **Phase 4** (update
+running FTA).
 
-H1 Level Maintenance Process:
+### Breakout (Phase 2)
 
-1.Zero-Touch Levels:
-Similar to D1, every bar's high and low are added as potential zero-touch levels
-When a bar overlaps with a zero-touch level, it checks for a breakout
-When a breakout occurs, the level is classified as:
-  Spike: If it forms a shooting star (for LLPB) or hammer (for LHPB)
-  Swing: If it forms a swing high (for LHPB) or swing low (for LLPB)
-The level is then moved to one-touch levels with its classification
+A zero-touch level breaks out when the bar's body crosses it:
+- **LHPB**: bar opens below the level and closes above it (or the bar
+  gaps up entirely above the level).
+- **LLPB**: bar opens above the level and closes below it (or gaps down
+  entirely below it).
 
-2. One-Touch Levels:
-Similar to D1, these are levels that have been broken once
-When a bar overlaps with a one-touch level, it checks for a valid retest
-If a valid retest occurs and enough time has passed since breakout, the level is added to results
-After a second touch, the level is removed
-If no second touch occurs, the level remains in one-touch
+A bar whose range merely touches the level without the close crossing it
+does **not** break the level out — but the level *is* consumed either way
+(removed from `touch_lv0`) once a bar's range overlaps it.
 
+### Retest (Phase 3)
 
-C) Level Relationship and Trade Simulation
-The script then establishes relationships between D1 and H1 levels and simulates trades.
-Level Relationship Process:
-The script creates mappings between D1 and H1 levels that are within a specified distance
-It maintains two dictionaries:
-d1_to_h1: Maps each D1 level to a list of H1 levels that are close to it
-h1_to_d1: Maps each H1 level to a list of D1 levels that are close to it
-When simulating trades, it prioritizes H1 levels based on:
-  Spike levels (highest priority)
-  Swing levels (second priority)
-  Basic levels (lowest priority)
-Each D1 level is only used once for a trade, and H1 levels are removed after they're used
+A one-touch level is retested when a later bar's range overlaps the level
+(or gaps cleanly past it) **and** at least `MIN_HOURS_BEFORE_RETEST` (4h)
+have elapsed since breakout. **No directional open/close condition is
+required** — any touch (or gap-over) after the wait qualifies. The level
+is consumed on any touch regardless of whether the wait was satisfied.
 
+### Gap handling
 
-Summary of Level Bookkeeping
-a) Level Creation:
-Every bar's high and low are added as potential zero-touch levels
-These are the initial candidates for trading levels
-b) Level Progression:
-Zero-touch → One-touch → Results (or removal)
-A level starts as zero-touch
-When broken, it becomes one-touch
-When retested, it either becomes a valid trade or is removed
-c) Level Classification:
-H1 levels are classified as spike, swing, or basic
-This classification affects trade priority
-d) Level Relationships:
-D1 and H1 levels are related based on proximity
-This relationship is used to find confluence for trade entries
-e) Level Removal:
-Levels are removed after a second touch (whether valid retest or not)
-Used levels are removed to prevent reuse
+A bar entirely on the far side of a level (never actually trading at the
+level's price) still counts as a breakout or retest — the level has been
+passed, even without a wick touching it. For gap-over retests, `entry_price`
+is the (synthetic) level price, not the bar's own OHLC; detect this case
+via `not (retest_low <= entry_price <= retest_high)`.
 
-This bookkeeping system ensures that:
-Each level is properly tracked through its lifecycle
-Levels are only used once for trades
-The most significant levels (spike, swing) are prioritized
-Levels with confluence between timeframes are identified
-The entire process creates a systematic way to identify, track, and utilize price levels for trading decisions, with a focus on finding high-probability setups based on price action and level confluence.
+### Spike / swing classification
+
+Every level is classified when formed:
+- **`is_spike`**: the formation bar itself is a hammer (LHPB) or shooting
+  star (LLPB) — single-bar pattern, finalized immediately.
+- **`is_swing`**: the formation bar's high/low is more extreme than both
+  the bar immediately before and immediately after it. Since the "after"
+  bar isn't known until the next iteration, this is finalized one bar
+  later, in Phase 0 — always before that level's earliest possible
+  breakout.
+
+### FTA (First Target Available) & stop loss
+
+| Type | FTA | Stop loss |
+|------|-----|-----------|
+| LHPB (long)  | `min(low)` of bars strictly between breakout and retest | `low` of the breakout bar |
+| LLPB (short) | `max(high)` of bars strictly between breakout and retest | `high` of the breakout bar |
+
+## Output columns
+
+`type`, `formation_time`, `price`, `is_spike`, `is_swing`, `breakout_time`,
+`breakout_open/high/low/close`, `retest_time`, `retest_open/high/low/close`,
+`entry_price`, `fta`, `stop_loss`.
+
+## Fixed vs. the old logic (confirmed bugs)
+
+1. **Retest required a directional open/close condition** — the old
+   version only counted a retest as valid if the bar opened on the far
+   side and closed back across the level. Real retests are just a touch
+   after the wait period; direction isn't required.
+2. **No gap handling** — a bar that gapped clean through a level (never
+   trading at that price) was silently ignored instead of counting as a
+   breakout/retest.
+3. **No spike/swing classification** — now added (see above).
+4. **No FTA / stop loss on output** — now computed and included on every
+   retest.
+
+## Tests
+
+`tests/test_lxpb.py` — unit tests for each of the four fixes above, plus
+golden-file regression tests (`tests/fixtures/*_golden.csv`) run against
+real recent H1 data in `dataTest/` (ES, NQ, RTY). Run repeatedly to catch
+any future behavior change:
+
+```bash
+python -m pytest tests/test_lxpb.py -v
+```
+
+Only regenerate fixtures after verifying a logic change is intentional:
+
+```bash
+python tests/generate_golden.py
+```
