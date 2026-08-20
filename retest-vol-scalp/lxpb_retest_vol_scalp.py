@@ -402,6 +402,7 @@ def simulate_trades_for_combo(trades_df, bars_1s, stop_ticks, target_ticks, hori
         exit_time = bars_1s.index[exit_pos] if exit_pos is not None else None
         rows.append({
             "type": row.type, "direction": row.direction,
+            "formation_time": row.formation_time, "breakout_time": row.breakout_time,
             "retest_time": row.retest_time, "touch_time_utc": row.touch_time_utc,
             "entry_price": entry,
             "stop_price": round(entry - direction * stop_pts, 2),
@@ -410,8 +411,129 @@ def simulate_trades_for_combo(trades_df, bars_1s, stop_ticks, target_ticks, hori
             "outcome": outcome, "exit_time_utc": exit_time,
             "pnl_pts": None if pnl_pts is None else round(pnl_pts, 2),
             "r_mult": None if pnl_pts is None else round(pnl_pts / stop_pts, 3),
+            "pos": pos, "exit_pos": exit_pos,
         })
     return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Per-trade charts (H1 context + 1s candles/Bid/Ask trio + 1min context) --
+# same lightweight-charts@4 visual pattern as
+# ../../label-review/render_lxpb_retest_1s_report.py, with stop/target
+# price lines and a win/loss-colored exit marker added on top.
+# ---------------------------------------------------------------------------
+CHART_PAD_SECONDS_1S = 180          # +/- context around the touch instant
+CHART_PAD_MINUTES_1MIN = 20         # +/- context for the standalone 1min chart
+CHART_PAD_HOURS_H1_BEFORE = 8       # H1 context before the formation bar
+CHART_PAD_HOURS_H1_AFTER = 4        # H1 context after the retest bar
+CHART_MAX_WINDOW_SECONDS = 1800     # cap on how far the 1s window extends to reach a late exit
+
+ENTRY_COLOR = "#60a5fa"
+STOP_COLOR = "#f87171"
+TARGET_COLOR = "#4ade80"
+BID_COLOR_C = "#f87171"
+ASK_COLOR_C = "#4ade80"
+
+
+def _resample_1min_from_1s(bars):
+    out = bars.resample("1min").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
+    return out.dropna(subset=["Close"])
+
+
+def build_trade_chart(row, h1_df, bars_1s):
+    """Build the embeddable chart-data dict for one simulated trade (a row
+    from simulate_trades_for_combo's output, as a namedtuple/Series)."""
+    is_long = row.type == "LHPB"
+    entry, stop, target = float(row.entry_price), float(row.stop_price), float(row.target_price)
+    touch_time = pd.Timestamp(row.touch_time_utc)
+    pos = int(row.pos)
+    exit_pos = None if pd.isna(row.exit_pos) else int(row.exit_pos)
+    n = len(bars_1s)
+
+    # --- 1s candles + Bid/Ask volume trio ---------------------------------
+    lo_pos = max(0, pos - CHART_PAD_SECONDS_1S)
+    if exit_pos is not None:
+        hi_pos = max(pos + CHART_PAD_SECONDS_1S, exit_pos + 30)
+        hi_pos = min(hi_pos, pos + CHART_MAX_WINDOW_SECONDS)
+    else:
+        hi_pos = pos + CHART_PAD_SECONDS_1S
+    hi_pos = min(n - 1, hi_pos)
+    window = bars_1s.iloc[lo_pos:hi_pos + 1]
+
+    candles = [{"time": int(t.timestamp()), "open": float(r.Open), "high": float(r.High),
+                "low": float(r.Low), "close": float(r.Close)} for t, r in window.iterrows()]
+    bid = [{"time": int(t.timestamp()), "value": float(r.BidVolume), "color": BID_COLOR_C}
+           for t, r in window.iterrows()]
+    ask = [{"time": int(t.timestamp()), "value": float(r.AskVolume), "color": ASK_COLOR_C}
+           for t, r in window.iterrows()]
+
+    price_lines = [
+        {"price": entry, "color": ENTRY_COLOR, "lineWidth": 1, "lineStyle": 2, "title": f"entry {entry:.2f}"},
+        {"price": stop, "color": STOP_COLOR, "lineWidth": 1, "lineStyle": 2, "title": f"stop {stop:.2f}"},
+        {"price": target, "color": TARGET_COLOR, "lineWidth": 1, "lineStyle": 2, "title": f"target {target:.2f}"},
+    ]
+    markers = [{
+        "time": int(touch_time.timestamp()),
+        "position": "belowBar" if is_long else "aboveBar",
+        "color": ENTRY_COLOR, "shape": "arrowUp" if is_long else "arrowDown", "text": "ENTRY",
+    }]
+    if exit_pos is not None:
+        exit_time = bars_1s.index[exit_pos]
+        win = row.outcome == "target"
+        markers.append({
+            "time": int(exit_time.timestamp()),
+            "position": "aboveBar" if is_long else "belowBar",
+            "color": TARGET_COLOR if win else STOP_COLOR,
+            "shape": "circle", "text": row.outcome.upper(),
+        })
+
+    pt = touch_time.tz_convert("America/Los_Angeles")
+    chart_1s = {
+        "title": f"1s @ retest -- {pt.strftime('%Y-%m-%d %H:%M:%S')} PT "
+                  f"({'LONG' if is_long else 'SHORT'})  |  entry {entry:.2f}  outcome {row.outcome}",
+        "candles": candles, "bid": bid, "ask": ask,
+        "markers": markers, "priceLines": price_lines, "precision": 2,
+    }
+
+    # --- standalone 1min context chart ------------------------------------
+    lo_1m = touch_time - pd.Timedelta(minutes=CHART_PAD_MINUTES_1MIN)
+    hi_1m = touch_time + pd.Timedelta(minutes=CHART_PAD_MINUTES_1MIN)
+    slice_1m_src = bars_1s.loc[(bars_1s.index >= lo_1m) & (bars_1s.index <= hi_1m)]
+    bars_1min = _resample_1min_from_1s(slice_1m_src)
+    one_min = {
+        "title": f"1min -- +/-{CHART_PAD_MINUTES_1MIN}min around retest  |  entry {entry:.2f}",
+        "candles": [{"time": int(t.timestamp()), "open": float(r.Open), "high": float(r.High),
+                     "low": float(r.Low), "close": float(r.Close)} for t, r in bars_1min.iterrows()],
+        "markers": [dict(m) for m in markers],
+        "priceLines": [dict(pl) for pl in price_lines],
+        "precision": 2,
+    }
+
+    # --- H1 context chart (formation -> breakout -> retest) --------------
+    h1_lo = pd.Timestamp(row.formation_time) - pd.Timedelta(hours=CHART_PAD_HOURS_H1_BEFORE)
+    h1_hi = pd.Timestamp(row.retest_time) + pd.Timedelta(hours=CHART_PAD_HOURS_H1_AFTER)
+    h1_window = h1_df.loc[(h1_df.index >= h1_lo) & (h1_df.index <= h1_hi)]
+    # h1_df.index is naive-UTC (see lxpb.py's epoch-seconds convention) --
+    # localize before .timestamp() (naive Timestamp.timestamp() otherwise
+    # assumes the SYSTEM's local tz, silently shifting every H1 bar).
+    h1_candles = [{"time": int(t.tz_localize("UTC").timestamp()), "open": float(r.open), "high": float(r.high),
+                   "low": float(r.low), "close": float(r.close)} for t, r in h1_window.iterrows()]
+    h1_retest_marker = {
+        "time": int(pd.Timestamp(row.retest_time, tz="UTC").timestamp()),
+        "position": "belowBar" if is_long else "aboveBar",
+        "color": ENTRY_COLOR, "shape": "arrowUp" if is_long else "arrowDown", "text": "RETEST",
+    }
+    h1 = {
+        "title": f"H1 context -- {row.type} formed {pd.Timestamp(row.formation_time)} "
+                  f"-> retest {pd.Timestamp(row.retest_time)}",
+        "candles": h1_candles, "markers": [h1_retest_marker], "priceLines": price_lines,
+        "precision": 2,
+    }
+
+    return {"h1": h1, "trio": chart_1s, "oneMin": one_min}
+
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +566,25 @@ tr.best { outline:2px solid var(--accent); }
 .open { color:var(--muted); }
 .note { color:var(--muted); font-size:0.85em; margin:6px 0 16px; }
 code { background:#1c2029; padding:1px 5px; border-radius:4px; }
+
+/* --- per-trade chart expand/collapse (lightweight-charts@4) --- */
+.expand-cell { text-align:center; }
+.expand-btn { background:var(--surface); color:var(--text); border:1px solid var(--border);
+              border-radius:4px; padding:2px 8px; cursor:pointer; }
+.expand-btn.open { background:#1e3a5f; color:#7bb4f5; border-color:#1d3a5c; }
+tr.trade-row { cursor:pointer; }
+.chart-stack { display:flex; flex-direction:column; gap:8px; padding:8px 0; }
+.chart-h1 { height:220px; }
+.chart-row-2col { display:grid; grid-template-columns: 1fr 1fr; gap:8px; align-items:start; }
+.chart-col-1s { display:grid; grid-template-rows: 300px 100px 100px; gap:8px; }
+.chart-col-1m .chart-cell { height:516px; }
+.chart-cell { background:#000; border:1px solid var(--border); border-radius:5px; overflow:hidden; }
+.chart-title { color:#cccccc; padding:5px 8px; font-size:0.75em;
+               font-family:ui-monospace,monospace; background:#0a0a0a;
+               border-bottom:1px solid #1f1f1f; white-space:nowrap;
+               overflow:hidden; text-overflow:ellipsis; }
+.chart-ph { height:calc(100% - 24px); width:100%; }
+.hidden { display:none !important; }
 """
 
 
@@ -480,16 +621,26 @@ def _grid_table_html(df, id_attr, highlight_key=None):
             f"<tbody>{''.join(body_rows)}</tbody></table>")
 
 
-def _trades_table_html(trades_df):
+def _trades_table_html(trades_df, charts=None):
+    """`charts` (optional): list of build_trade_chart() dicts, same length/order
+    as trades_df, used to embed per-trade expandable H1 + 1s + 1min charts."""
     if trades_df.empty:
-        return "<p class='note'>(no trades)</p>"
+        return "<p class='note'>(no trades)</p>", {}
     rows_html = []
-    for _, r in trades_df.iterrows():
+    charts_json = {}
+    for i, (_, r) in enumerate(trades_df.iterrows()):
         cls = _outcome_class(r["outcome"])
         pnl = "-" if r["pnl_pts"] is None else f"{r['pnl_pts']:+.2f}"
         rmult = "-" if r["r_mult"] is None else f"{r['r_mult']:+.2f}"
+        has_chart = charts is not None and charts[i] is not None
+        expand_cell = (
+            f"<td class='expand-cell'><button class='expand-btn' data-idx='{i}' "
+            f"onclick='event.stopPropagation();toggleChart({i})'>&#9654;</button></td>"
+            if has_chart else "<td></td>"
+        )
+        row_onclick = f" onclick='toggleChart({i})'" if has_chart else ""
         rows_html.append(
-            "<tr>"
+            f"<tr class='trade-row'{row_onclick}>"
             f"<td class='left'>{_fmt_ts(r['retest_time'])}</td>"
             f"<td class='left'>{r['type']}</td>"
             f"<td class='left'>{r['direction']}</td>"
@@ -503,18 +654,38 @@ def _trades_table_html(trades_df):
             f"<td class='left'>{_fmt_ts(r['exit_time_utc'])}</td>"
             f"<td class='{cls}'>{pnl}</td>"
             f"<td class='{cls}'>{rmult}</td>"
+            f"{expand_cell}"
             "</tr>"
         )
+        if has_chart:
+            charts_json[i] = charts[i]
+            rows_html.append(f"""
+<tr class="chart-row hidden" id="chart-row-{i}">
+  <td colspan="14"><div class="chart-stack">
+    <div class="chart-cell chart-h1"><div class="chart-title" id="th1-{i}"></div><div class="chart-ph" id="ch1-{i}"></div></div>
+    <div class="chart-row-2col">
+      <div class="chart-col-1s">
+        <div class="chart-cell"><div class="chart-title" id="tc-{i}"></div><div class="chart-ph" id="cc-{i}"></div></div>
+        <div class="chart-cell"><div class="chart-title" id="tb-{i}">Bid Volume</div><div class="chart-ph" id="cb-{i}"></div></div>
+        <div class="chart-cell"><div class="chart-title" id="ta-{i}">Ask Volume</div><div class="chart-ph" id="ca-{i}"></div></div>
+      </div>
+      <div class="chart-col-1m">
+        <div class="chart-cell"><div class="chart-title" id="t1m-{i}"></div><div class="chart-ph" id="c1m-{i}"></div></div>
+      </div>
+    </div>
+  </div></td>
+</tr>""")
     head = ("<th class='left'>Retest Time (H1)</th><th class='left'>Type</th>"
             "<th class='left'>Dir</th><th class='left'>Touch Time (1s, UTC)</th>"
             "<th>Entry</th><th>Stop</th><th>Target</th><th>BidVol@R</th><th>AskVol@R</th>"
             "<th class='left'>Outcome</th><th class='left'>Exit Time (UTC)</th>"
-            "<th>PnL (pts)</th><th>R</th>")
-    return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(rows_html)}</tbody></table>"
+            "<th>PnL (pts)</th><th>R</th><th>&#9654;</th>")
+    table_html = f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(rows_html)}</tbody></table>"
+    return table_html, charts_json
 
 
 def build_report_html(signals, grid_df, best_row, best_trades_df, months, vol_threshold,
-                       horizon_s, min_closed):
+                       horizon_s, min_closed, h1_df=None, bars_1s=None):
     n_retests = len(signals)
     n_pass = int(signals["passes_vol_filter"].sum()) if not signals.empty else 0
     n_long = int(((signals["type"] == "LHPB") & signals["passes_vol_filter"]).sum()) if not signals.empty else 0
@@ -527,7 +698,13 @@ def build_report_html(signals, grid_df, best_row, best_trades_df, months, vol_th
         .sort_values("total_pts", ascending=False).head(15)
     best_key = (best_row["stop_ticks"], best_row["target_ticks"]) if best_row is not None else None
 
+    charts_json = {}
     if best_row is not None:
+        charts = None
+        if h1_df is not None and bars_1s is not None and not best_trades_df.empty:
+            charts = [build_trade_chart(row, h1_df, bars_1s)
+                      for row in best_trades_df.itertuples(index=False)]
+        trades_table, charts_json = _trades_table_html(best_trades_df, charts)
         summary_boxes = f"""
       <div class="box good"><div class="label">Best Stop / Target</div>
         <strong>{best_row['stop_ticks']:.0f}t / {best_row['target_ticks']:.0f}t</strong>
@@ -541,7 +718,10 @@ def build_report_html(signals, grid_df, best_row, best_trades_df, months, vol_th
         trade_log_section = (
             f"<h2>Best combo trade log (stop={best_row['stop_ticks']:.0f}t, "
             f"target={best_row['target_ticks']:.0f}t)</h2>"
-            + _trades_table_html(best_trades_df)
+            f"<p class='note'>Click a row (or the &#9654; button) to expand its H1 context + 1s "
+            f"candles/Bid/Ask-volume + 1min chart, with entry/stop/target price lines and a "
+            f"win/loss exit marker.</p>"
+            + trades_table
             + f"<p class='note'>Min {min_closed} closed trades required for a combo to be eligible as \"best\".</p>"
         )
     else:
@@ -550,6 +730,7 @@ def build_report_html(signals, grid_df, best_row, best_trades_df, months, vol_th
 
     body = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>LXPB Retest + Volume Scalp -- {', '.join(str(m) for m in months)} 2026</title>
+<script src="https://unpkg.com/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
 <style>{_CSS}</style></head>
 <body>
 <h1>LXPB H1 Retest + 1s Raw Volume-Threshold Scalp</h1>
@@ -568,6 +749,7 @@ def build_report_html(signals, grid_df, best_row, best_trades_df, months, vol_th
 </div>
 
 {trade_log_section}
+
 
 <p class="note"><strong>Caveat on "Total R" ranking:</strong> avg_R/total_R normalize P&amp;L by the
 stop distance (R = pts&nbsp;/&nbsp;stop_pts), so a 1-tick stop can rank at the top purely because its
@@ -590,8 +772,215 @@ excludes stops tighter than a typical spread.</p>
 <h2>Top 15 combos by Total Points, stop &ge; 4 ticks (practical/spread-aware)</h2>
 {_grid_table_html(top_by_totalpts_practical, "grid-total-pts-practical", best_key)}
 
-</body></html>"""
+</body>
+<script>
+const CHARTS = {json.dumps(charts_json)};
+{_CHART_JS_TEMPLATE}
+</script>
+</html>"""
     return body
+
+
+# JS charting engine -- same lightweight-charts@4 pattern (dark theme, lazy
+# per-row render on expand, crosshair + pan/zoom sync across the 1s trio) as
+# ../../label-review/render_lxpb_retest_1s_report.py, adapted for a single
+# best-combo trade log instead of a full retest catalogue.
+_CHART_JS_TEMPLATE = r"""
+const rendered = {};
+const PT_TZ = 'America/Los_Angeles';
+const timeFmt = new Intl.DateTimeFormat('en-US', { timeZone: PT_TZ,
+  hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
+const timeFmtH1 = new Intl.DateTimeFormat('en-US', { timeZone: PT_TZ,
+  month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false });
+const FIXED_BAR_SPACING = 6;
+
+function _baseOpts(tickFmt) {
+  return {
+    autoSize: true,
+    layout: { background:{type:'solid', color:'#000000'}, textColor:'#cccccc',
+              fontFamily:"'Courier New', monospace", fontSize:9 },
+    grid: { vertLines:{visible:false}, horzLines:{visible:false} },
+    crosshair: { mode: 0 },
+    rightPriceScale: { borderColor:'#333', scaleMargins:{top:0.08, bottom:0.08} },
+    timeScale: { borderColor:'#333', timeVisible:true, secondsVisible:true,
+      tickMarkFormatter: (t) => tickFmt.format(new Date(t * 1000)) },
+    localization: { timeFormatter: (t) => tickFmt.format(new Date(t * 1000)) },
+  };
+}
+
+function _addCandles(chart, precision) {
+  return chart.addCandlestickSeries({
+    upColor:'#DDDDD0', downColor:'#888888',
+    borderUpColor:'#DDDDD0', borderDownColor:'#888888',
+    wickUpColor:'#DDDDD0', wickDownColor:'#888888',
+    priceFormat: { type:'price', precision: precision, minMove: 0.25 },
+  });
+}
+
+function _centerLogicalRange(chart, el, nBars) {
+  if (!nBars) return;
+  const barsVisible = Math.max(1, el.clientWidth / FIXED_BAR_SPACING);
+  const halfPad = Math.max(0, (barsVisible - nBars) / 2);
+  chart.timeScale().setVisibleLogicalRange({ from: -halfPad, to: (nBars - 1) + halfPad });
+}
+
+function _renderH1(i, cd) {
+  const el = document.getElementById('ch1-' + i);
+  const titleEl = document.getElementById('th1-' + i);
+  const baseTitle = cd.title;
+  titleEl.textContent = baseTitle;
+  const chart = LightweightCharts.createChart(el, Object.assign(_baseOpts(timeFmtH1), {
+    autoSize: false, width: el.clientWidth || 800, height: el.clientHeight || 320,
+  }));
+  const series = _addCandles(chart, cd.precision);
+  series.setData(cd.candles);
+  if (cd.markers && cd.markers.length) series.setMarkers(cd.markers);
+  (cd.priceLines || []).forEach(pl => series.createPriceLine(pl));
+  const prec = cd.precision || 2;
+  chart.subscribeCrosshairMove((param) => {
+    const d = param.seriesData && param.seriesData.get(series);
+    if (d && d.open != null) {
+      titleEl.textContent = baseTitle + '  |  O ' + d.open.toFixed(prec)
+        + '  H ' + d.high.toFixed(prec) + '  L ' + d.low.toFixed(prec)
+        + '  C ' + d.close.toFixed(prec);
+    } else { titleEl.textContent = baseTitle; }
+  });
+  chart.timeScale().applyOptions({ barSpacing: FIXED_BAR_SPACING });
+  _centerLogicalRange(chart, el, cd.candles.length);
+  const ro = new ResizeObserver((entries) => {
+    const r = entries[0].contentRect;
+    if (r.width > 0 && r.height > 0) {
+      chart.resize(r.width, r.height);
+      chart.timeScale().applyOptions({ barSpacing: FIXED_BAR_SPACING });
+      _centerLogicalRange(chart, el, cd.candles.length);
+    }
+  });
+  ro.observe(el);
+}
+
+function _renderTrio(i, cd) {
+  const elC = document.getElementById('cc-' + i);
+  const elB = document.getElementById('cb-' + i);
+  const elA = document.getElementById('ca-' + i);
+  const titleElC = document.getElementById('tc-' + i);
+  const titleElB = document.getElementById('tb-' + i);
+  const titleElA = document.getElementById('ta-' + i);
+  const baseTitleC = cd.title;
+  const baseTitleB = 'Bid Volume';
+  const baseTitleA = 'Ask Volume';
+  titleElC.textContent = baseTitleC;
+  titleElB.textContent = baseTitleB;
+  titleElA.textContent = baseTitleA;
+
+  const chartC = LightweightCharts.createChart(elC, _baseOpts(timeFmt));
+  const seriesC = _addCandles(chartC, cd.precision);
+  seriesC.setData(cd.candles);
+  if (cd.markers && cd.markers.length) seriesC.setMarkers(cd.markers);
+  (cd.priceLines || []).forEach(pl => seriesC.createPriceLine(pl));
+
+  const chartB = LightweightCharts.createChart(elB, _baseOpts(timeFmt));
+  const seriesB = chartB.addHistogramSeries({ priceFormat:{type:'volume'} });
+  seriesB.setData(cd.bid);
+
+  const chartA = LightweightCharts.createChart(elA, _baseOpts(timeFmt));
+  const seriesA = chartA.addHistogramSeries({ priceFormat:{type:'volume'} });
+  seriesA.setData(cd.ask);
+
+  const cMap = {}; (cd.candles || []).forEach(b => cMap[b.time] = b);
+  const bMap = {}; (cd.bid || []).forEach(b => bMap[b.time] = b.value);
+  const aMap = {}; (cd.ask || []).forEach(b => aMap[b.time] = b.value);
+  const prec = cd.precision || 2;
+
+  const panes = [
+    { chart: chartC, series: seriesC, titleEl: titleElC, base: baseTitleC },
+    { chart: chartB, series: seriesB, titleEl: titleElB, base: baseTitleB },
+    { chart: chartA, series: seriesA, titleEl: titleElA, base: baseTitleA },
+  ];
+
+  function updateLegends(time) {
+    const c = time != null ? cMap[time] : null;
+    titleElC.textContent = baseTitleC + (c ? ('  |  O ' + c.open.toFixed(prec)
+      + '  H ' + c.high.toFixed(prec) + '  L ' + c.low.toFixed(prec)
+      + '  C ' + c.close.toFixed(prec)) : '');
+    const b = time != null ? bMap[time] : null;
+    titleElB.textContent = baseTitleB + (b != null ? ('  |  ' + b) : '');
+    const a = time != null ? aMap[time] : null;
+    titleElA.textContent = baseTitleA + (a != null ? ('  |  ' + a) : '');
+  }
+
+  let syncingCH = false;
+  panes.forEach((p, idx) => {
+    p.chart.subscribeCrosshairMove((param) => {
+      if (syncingCH) return;
+      syncingCH = true;
+      const time = (param && param.time != null) ? param.time : null;
+      updateLegends(time);
+      panes.forEach((other, j) => {
+        if (j === idx) return;
+        if (time == null) { other.chart.clearCrosshairPosition(); return; }
+        let val = null;
+        if (other.series === seriesC) val = cMap[time] ? cMap[time].close : null;
+        else if (other.series === seriesB) val = bMap[time];
+        else val = aMap[time];
+        if (val != null) other.chart.setCrosshairPosition(val, time, other.series);
+        else other.chart.clearCrosshairPosition();
+      });
+      syncingCH = false;
+    });
+  });
+
+  let syncingRange = false;
+  panes.forEach((p, idx) => {
+    p.chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      if (!range || syncingRange) return;
+      syncingRange = true;
+      panes.forEach((other, j) => { if (j !== idx) other.chart.timeScale().setVisibleLogicalRange(range); });
+      syncingRange = false;
+    });
+  });
+  chartC.timeScale().fitContent();
+}
+
+function _renderOneMin(i, cd) {
+  const el = document.getElementById('c1m-' + i);
+  const titleEl = document.getElementById('t1m-' + i);
+  const baseTitle = cd.title;
+  titleEl.textContent = baseTitle;
+  const chart = LightweightCharts.createChart(el, _baseOpts(timeFmtH1));
+  const series = _addCandles(chart, cd.precision);
+  series.setData(cd.candles);
+  if (cd.markers && cd.markers.length) series.setMarkers(cd.markers);
+  (cd.priceLines || []).forEach(pl => series.createPriceLine(pl));
+  const prec = cd.precision || 2;
+  chart.subscribeCrosshairMove((param) => {
+    const d = param.seriesData && param.seriesData.get(series);
+    if (d && d.open != null) {
+      titleEl.textContent = baseTitle + '  |  O ' + d.open.toFixed(prec)
+        + '  H ' + d.high.toFixed(prec) + '  L ' + d.low.toFixed(prec)
+        + '  C ' + d.close.toFixed(prec);
+    } else { titleEl.textContent = baseTitle; }
+  });
+  chart.timeScale().fitContent();
+}
+
+function _renderStack(i) {
+  const cd = CHARTS[i];
+  if (!cd) return;
+  if (cd.h1) _renderH1(i, cd.h1);
+  _renderTrio(i, cd.trio);
+  if (cd.oneMin) _renderOneMin(i, cd.oneMin);
+}
+
+function toggleChart(i) {
+  const row = document.getElementById('chart-row-' + i);
+  const btn = document.querySelector('.expand-btn[data-idx="' + i + '"]');
+  if (!row) return;
+  const opening = row.classList.contains('hidden');
+  row.classList.toggle('hidden', !opening);
+  if (btn) { btn.classList.toggle('open', opening); btn.innerHTML = opening ? '&#9660;' : '&#9654;'; }
+  if (opening && !rendered[i]) { _renderStack(i); rendered[i] = true; }
+}
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -657,7 +1046,8 @@ if __name__ == "__main__":
         print(f"Saved full grid -> {GRID_OUT_PREFIX}.csv")
 
     html = build_report_html(signals, grid_df, best_row, best_trades_df, months,
-                              args.vol_threshold, args.horizon_s, args.min_closed)
+                              args.vol_threshold, args.horizon_s, args.min_closed,
+                              h1_df=L.load_ohlc_data(args.h1_csv), bars_1s=bars_1s)
     with open(args.output, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"Saved HTML report -> {args.output}")
