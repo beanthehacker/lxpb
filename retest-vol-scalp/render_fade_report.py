@@ -23,6 +23,7 @@ Output: lxpb_fade_report.html
 import os
 import sys
 import json
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -52,6 +53,8 @@ CANDLE_DOWN = "#888888"
 TOUCH_COLOR = "#60a5fa"
 MFE_COLOR = "#4ade80"
 WINDOW_COLOR = "#fbbf24"
+PT_TZ = ZoneInfo("America/Los_Angeles")
+DEFAULT_POST_TOUCH_FOCUS_S = 300  # how much post-entry reaction to show by default (rest is zoomable)
 
 # ---------------------------------------------------------------------------
 # Example selection -- real rows from lxpb_fade_features.csv (rid = row
@@ -178,6 +181,8 @@ def build_1s_chart(df1s, row, window_s, mfe_label="mfe_30m", mae_label="mae_befo
     entry = float(row["entry_price"])
     direction = int(row["direction"])
     touch_ep = _epoch(touch)
+    touch_pt_str = (pd.Timestamp(touch).tz_localize("UTC").tz_convert(PT_TZ)
+                     .strftime("%H:%M:%S PT"))
 
     feat_bits = []
     if window_s:
@@ -197,39 +202,55 @@ def build_1s_chart(df1s, row, window_s, mfe_label="mfe_30m", mae_label="mae_befo
     if pd.notna(pcs) and (window_s == 30 or window_s is None):
         feat_bits.append(f"preconsol30s={int(pcs)}s")
 
+    entry_label = f"ENTRY {touch_pt_str}"
+    if feat_bits:
+        entry_label += " " + " ".join(feat_bits)
     markers = [{
         "time": touch_ep, "position": "belowBar" if direction == 1 else "aboveBar",
         "color": TOUCH_COLOR, "shape": "arrowUp" if direction == 1 else "arrowDown",
-        "text": "ENTRY " + " ".join(feat_bits) if feat_bits else "ENTRY",
+        "text": entry_label, "size": 2,
     }]
     if window_s:
         w0 = touch - pd.Timedelta(seconds=window_s)
         if w0 >= win["time_utc"].iloc[0]:
             markers.append({"time": _epoch(w0), "position": "aboveBar", "color": WINDOW_COLOR,
-                             "shape": "circle", "text": f"<- {window_s}s window start"})
+                             "shape": "circle", "text": f"<- {window_s}s window start", "size": 1.5})
 
     t2peak_col = "time_to_peak_s_30m"
     mfe = row.get(mfe_label)
     mae = row.get(mae_label)
     t2peak = row.get(t2peak_col)
+    peak_ts = None
     if pd.notna(mfe) and pd.notna(t2peak):
         peak_ts = touch + pd.Timedelta(seconds=int(t2peak))
         markers.append({"time": _epoch(peak_ts), "position": "aboveBar" if direction == 1 else "belowBar",
-                         "color": MFE_COLOR, "shape": "circle", "text": f"MFE +{mfe:.2f}pt"})
+                         "color": MFE_COLOR, "shape": "circle", "text": f"MFE +{mfe:.2f}pt", "size": 1.5})
     markers.sort(key=lambda m: m["time"])
 
-    price_lines = [{"price": entry, "color": LEVEL_COLOR, "lineWidth": 1, "lineStyle": 2,
+    price_lines = [{"price": entry, "color": LEVEL_COLOR, "lineWidth": 2, "lineStyle": 2,
                      "title": f"{row['type']} entry {entry:.2f}"}]
+
+    # Default zoom: the pre-touch lookback window is only ~30-360s while the full
+    # forward horizon is 30min, so fitting the *entire* series by default squeezes
+    # the touch/entry instant (the whole point of the chart) into a sliver a few
+    # percent from the left edge. Instead default to lookback -> entry + a modest
+    # reaction window (extended to cover the MFE peak marker if it lands sooner
+    # than that), and let the user scroll/zoom out to see the rest of the 30min.
+    focus_end = touch + pd.Timedelta(seconds=max(DEFAULT_POST_TOUCH_FOCUS_S, lookback * 2))
+    focus_end = min(focus_end, win["time_utc"].iloc[-1])
+    focus_range = {"from": _epoch(t0), "to": _epoch(focus_end)}
 
     meta = {
         "type": row["type"], "direction": "LONG" if direction == 1 else "SHORT",
         "entry": round(entry, 2), "retest_time": str(row["retest_time"]),
+        "touch_time_pt": touch_pt_str,
         "mfe_30m": None if pd.isna(mfe) else round(float(mfe), 2),
         "mae_30m": None if pd.isna(mae) else round(float(mae), 2),
         "quality_30m": None if pd.isna(row.get("quality_30m")) else round(float(row["quality_30m"]), 2),
     }
     return {"candles": candles, "bidvol": bidvol, "askvol": askvol, "markers": markers,
-            "priceLines": price_lines, "title": f"1s -- {row['type']} touch {touch}", "meta": meta}
+            "priceLines": price_lines, "focusRange": focus_range,
+            "title": f"1s -- {row['type']} touch {touch}", "meta": meta}
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +445,7 @@ function _addCandles(chart) {
     upColor:'#DDDDD0', downColor:'#888888', borderUpColor:'#DDDDD0', borderDownColor:'#888888',
     wickUpColor:'#DDDDD0', wickDownColor:'#888888',
     priceFormat: { type:'price', precision:2, minMove:0.25 },
+    lastValueVisible:false, priceLineVisible:false,
   });
 }
 function _addHist(chart, color) {
@@ -463,7 +485,11 @@ function renderTrio(key, cd) {
     charts.forEach(o => { if (o !== c) o.timeScale().setVisibleLogicalRange(range); });
     syncing = false;
   }));
-  charts.forEach(c => c.timeScale().fitContent());
+  if (cd.focusRange) {
+    charts.forEach(c => c.timeScale().setVisibleRange(cd.focusRange));
+  } else {
+    charts.forEach(c => c.timeScale().fitContent());
+  }
 }
 
 Object.keys(EXAMPLES).forEach(key => {
@@ -503,9 +529,11 @@ def main():
     </div>
   </div>
   <div class="meta-row">
-    <b>{m['direction']}</b> {m['type']} retest at {m['retest_time']} &nbsp;|&nbsp;
+    <b>{m['direction']}</b> {m['type']} retest H1 bar {m['retest_time']}, exact 1s touch
+    <b>{m['touch_time_pt']}</b> (blue arrow below) &nbsp;|&nbsp;
     MFE(30m) <b>{m['mfe_30m']}</b>pt &nbsp; MAE-before-peak(30m) <b>{m['mae_30m']}</b>pt &nbsp;
-    quality_30m <b>{m['quality_30m']}</b>pt
+    quality_30m <b>{m['quality_30m']}</b>pt &nbsp;|&nbsp;
+    <i>1s chart defaults to a zoomed-in view around the touch -- scroll/drag to see the full 30min.</i>
   </div>
 </div>
 """,
@@ -553,6 +581,17 @@ below are real but noisy, directional evidence, not a finished, guaranteed edge.
 <div class="toc">{''.join(f'<a href="#{c}">{t}</a><br>' for c, t in CAT_TITLES.items())}</div>
 <h2>Glossary</h2>
 <dl class="glossary">{glossary_html}</dl>
+<h2>How to read the bucket tables</h2>
+<p class="lead">Every category below splits that feature into <b>terciles</b> -- three
+roughly-equal-count groups (low / mid / high, computed with pandas <code>qcut</code> across
+all {n_rows} retests, so group edges are wherever the data falls, not round numbers). Columns:
+<b>n</b> = retests in that group. <b>mean quality_30m</b> = average of MFE &minus;
+MAE-before-peak (points) for the group -- the main outcome score. <b>win rate</b> = % of that
+group's retests with quality_30m &gt; 0, i.e. the eventual favorable move outran the drawdown
+endured to reach it (a directional proxy, since no fixed stop/target was assumed). <b>mean
+MFE</b> / <b>mean MAE</b> are the average favorable/adverse excursions (points) in isolation.
+Some categories (e.g. is_swing, confluence) use 2 natural groups instead of 3 when the raw
+feature only takes a couple of distinct values.</p>
 """
 
     charts_json = json.dumps(chart_map).replace("</", "<\\/")
