@@ -229,6 +229,8 @@ const CHARTS = __CHARTS_JSON__;
 const rendered = {};
 const FIXED_BAR_SPACING = 6;
 const PT_TZ = 'America/Los_Angeles';
+const timeFmt = new Intl.DateTimeFormat('en-US', { timeZone: PT_TZ,
+  hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
 const timeFmtH1 = new Intl.DateTimeFormat('en-US', { timeZone: PT_TZ,
   month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false });
 
@@ -293,6 +295,118 @@ function _renderH1(i, cd) {
   });
   ro.observe(el);
 }
+function _renderTrio(i, cd) {
+  const elC = document.getElementById('cc-' + i);
+  const elB = document.getElementById('cb-' + i);
+  const elA = document.getElementById('ca-' + i);
+  const titleElC = document.getElementById('tc-' + i);
+  const titleElB = document.getElementById('tb-' + i);
+  const titleElA = document.getElementById('ta-' + i);
+  if (!elC || !elB || !elA) return;
+  const baseTitleC = cd.title;
+  const baseTitleB = 'Bid Volume';
+  const baseTitleA = 'Ask Volume';
+  titleElC.textContent = baseTitleC;
+  titleElB.textContent = baseTitleB;
+  titleElA.textContent = baseTitleA;
+
+  const chartC = LightweightCharts.createChart(elC, _baseOpts(timeFmt));
+  const seriesC = _addCandles(chartC, cd.precision);
+  seriesC.setData(cd.candles);
+  if (cd.markers && cd.markers.length) seriesC.setMarkers(cd.markers);
+  (cd.priceLines || []).forEach(pl => seriesC.createPriceLine(pl));
+
+  const chartB = LightweightCharts.createChart(elB, _baseOpts(timeFmt));
+  const seriesB = chartB.addHistogramSeries({ priceFormat:{type:'volume'} });
+  seriesB.setData(cd.bid);
+
+  const chartA = LightweightCharts.createChart(elA, _baseOpts(timeFmt));
+  const seriesA = chartA.addHistogramSeries({ priceFormat:{type:'volume'} });
+  seriesA.setData(cd.ask);
+
+  const cMap = {}; (cd.candles || []).forEach(b => cMap[b.time] = b);
+  const bMap = {}; (cd.bid || []).forEach(b => bMap[b.time] = b.value);
+  const aMap = {}; (cd.ask || []).forEach(b => aMap[b.time] = b.value);
+  const prec = cd.precision || 2;
+
+  const panes = [
+    { chart: chartC, series: seriesC, titleEl: titleElC, base: baseTitleC },
+    { chart: chartB, series: seriesB, titleEl: titleElB, base: baseTitleB },
+    { chart: chartA, series: seriesA, titleEl: titleElA, base: baseTitleA },
+  ];
+
+  function updateLegends(time) {
+    const c = time != null ? cMap[time] : null;
+    titleElC.textContent = baseTitleC + (c ? ('  |  O ' + c.open.toFixed(prec)
+      + '  H ' + c.high.toFixed(prec) + '  L ' + c.low.toFixed(prec)
+      + '  C ' + c.close.toFixed(prec)) : '');
+    const b = time != null ? bMap[time] : null;
+    titleElB.textContent = baseTitleB + (b != null ? ('  |  ' + b) : '');
+    const a = time != null ? aMap[time] : null;
+    titleElA.textContent = baseTitleA + (a != null ? ('  |  ' + a) : '');
+  }
+
+  let syncingCH = false;
+  panes.forEach((p, idx) => {
+    p.chart.subscribeCrosshairMove((param) => {
+      if (syncingCH) return;
+      syncingCH = true;
+      const time = (param && param.time != null) ? param.time : null;
+      updateLegends(time);
+      panes.forEach((other, j) => {
+        if (j === idx) return;
+        if (time == null) { other.chart.clearCrosshairPosition(); return; }
+        let val = null;
+        if (other.series === seriesC) val = cMap[time] ? cMap[time].close : null;
+        else if (other.series === seriesB) val = bMap[time];
+        else val = aMap[time];
+        if (val != null) other.chart.setCrosshairPosition(val, time, other.series);
+        else other.chart.clearCrosshairPosition();
+      });
+      syncingCH = false;
+    });
+  });
+
+  let syncingRange = false;
+  panes.forEach((p, idx) => {
+    p.chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      if (!range || syncingRange) return;
+      syncingRange = true;
+      panes.forEach((other, j) => { if (j !== idx) other.chart.timeScale().setVisibleLogicalRange(range); });
+      syncingRange = false;
+    });
+  });
+  chartC.timeScale().fitContent();
+}
+function _renderOneMin(i, cd) {
+  const el = document.getElementById('c1m-' + i);
+  const titleEl = document.getElementById('t1m-' + i);
+  if (!el || !titleEl) return;
+  const baseTitle = cd.title;
+  titleEl.textContent = baseTitle;
+  const chart = LightweightCharts.createChart(el, _baseOpts(timeFmtH1));
+  const series = _addCandles(chart, cd.precision);
+  series.setData(cd.candles);
+  if (cd.markers && cd.markers.length) series.setMarkers(cd.markers);
+  (cd.priceLines || []).forEach(pl => series.createPriceLine(pl));
+  const prec = cd.precision || 2;
+  chart.subscribeCrosshairMove((param) => {
+    const d = param.seriesData && param.seriesData.get(series);
+    if (d && d.open != null) {
+      titleEl.textContent = baseTitle + '  |  O ' + d.open.toFixed(prec)
+        + '  H ' + d.high.toFixed(prec) + '  L ' + d.low.toFixed(prec)
+        + '  C ' + d.close.toFixed(prec);
+    } else { titleEl.textContent = baseTitle; }
+  });
+  chart.timeScale().fitContent();
+}
+function _renderStack(i) {
+  const cd = CHARTS[i];
+  if (!cd) return;
+  if (cd.h1) _renderH1(i, cd.h1);
+  if (cd.trio) _renderTrio(i, cd.trio);
+  if (cd.oneMin) _renderOneMin(i, cd.oneMin);
+}
 function toggleChart(i) {
   const row = document.getElementById('chart-row-' + i);
   const btn = document.querySelector('.expand-btn[data-idx="' + i + '"]');
@@ -300,7 +414,7 @@ function toggleChart(i) {
   const opening = row.classList.contains('hidden');
   row.classList.toggle('hidden', !opening);
   if (btn) { btn.classList.toggle('open', opening); btn.textContent = opening ? '\\u25bc' : '\\u25b6'; }
-  if (opening && !rendered[i]) { _renderH1(i, CHARTS[i].h1); rendered[i] = true; }
+  if (opening && !rendered[i]) { _renderStack(i); rendered[i] = true; }
 }
 </script>
 """
@@ -329,16 +443,40 @@ def render(stop, target, output_path):
     total_r = float(np.sum(r_values)) if r_values else 0.0
 
     charts, rows_html = [], []
+    n_trades = len(trades)
     for i, (trade, resolved) in enumerate(zip(trades, resolved_list)):
         row_d = strong.iloc[i]
         chart = build_trade_chart(h1_df, pos_by_ts, row_d, trade, resolved, stop, target)
-        charts.append({"h1": chart})
 
         level_type = row_d["type"]
         price = float(row_d["price"])
         is_long = level_type == "LHPB"
         target_price = price + target if is_long else price - target
         stop_price = price - stop if is_long else price + stop
+
+        # Real-tick 1s/1min/footprint charts, same real-tick machinery as
+        # lxpb_labels_report.html. build_1s_trio_chart reads "fta"/"stop_loss"
+        # as its target/stop price lines -- override those two fields (in
+        # entry_price's own adjusted scale, not the level's "price") with
+        # THIS combo's stop/target so the extra charts show the same
+        # stop=2/target=8-style bracket as the H1 chart, not lxpb.py's
+        # original fta/stop_loss.
+        entry_price_adj = float(row_d["entry_price"])
+        row_for_trio = row_d.copy()
+        row_for_trio["fta"] = entry_price_adj + target if is_long else entry_price_adj - target
+        row_for_trio["stop_loss"] = entry_price_adj - stop if is_long else entry_price_adj + stop
+        trio_chart = R.build_1s_trio_chart(row_for_trio, R.PAD_SECONDS_DEFAULT,
+                                            R.ONE_MIN_PAD_MINUTES_DEFAULT, True)
+        if trio_chart is not None:
+            chart_stack = {"h1": chart, "trio": trio_chart["trio"], "oneMin": trio_chart["oneMin"]}
+            fp = {"narrow": trio_chart.get("footprintNarrowHtml"), "wide": trio_chart.get("footprintWideHtml")}
+        else:
+            chart_stack = {"h1": chart, "trio": None, "oneMin": None}
+            fp = {"narrow": "<p class='note'>(no tick data in this window)</p>",
+                  "wide": "<p class='note'>(no tick data in this window)</p>"}
+        charts.append(chart_stack)
+        if (i + 1) % 10 == 0 or (i + 1) == n_trades:
+            print(f"  built charts for {i + 1}/{n_trades} rows")
         outcome = resolved["outcome"]
         r_val = resolved["r"]
         outcome_cls = "good" if outcome == "target" else ("bad" if outcome == "stop" else "")
@@ -346,6 +484,16 @@ def render(stop, target, output_path):
         r_str = f"{r_val:+.2f}" if r_val is not None else "-"
         exit_str = R._to_pt_str(resolved["exit_time"]) if resolved["exit_time"] is not None else "-"
         type_cls = "type-lhpb" if is_long else "type-llpb"
+
+        fp_narrow_html = fp.get("narrow")
+        fp_wide_html = fp.get("wide")
+        fp_section = (
+            f'<div class="chart-row-2col footprint-outer-row">'
+            f'<div class="footprint-pair">'
+            f'<div class="chart-cell footprint-cell">{fp_narrow_html}</div>'
+            f'<div class="chart-cell footprint-cell">{fp_wide_html}</div>'
+            f'</div></div>'
+        )
 
         rows_html.append(f"""
 <tr class="lvl-row {type_cls}" data-idx="{i}" onclick="toggleChart({i})">
@@ -359,9 +507,18 @@ def render(stop, target, output_path):
 </tr>
 <tr class="chart-row hidden" data-idx="{i}" id="chart-row-{i}">
   <td colspan="10"><div class="chart-stack">
-    <div class="chart-cell chart-h1" style="height:320px;">
-      <div class="chart-title" id="th1-{i}"></div><div class="chart-ph" id="ch1-{i}"></div>
+    <div class="chart-cell chart-h1"><div class="chart-title" id="th1-{i}"></div><div class="chart-ph" id="ch1-{i}"></div></div>
+    <div class="chart-row-2col">
+      <div class="chart-col-1s">
+        <div class="chart-cell"><div class="chart-title" id="tc-{i}"></div><div class="chart-ph" id="cc-{i}"></div></div>
+        <div class="chart-cell"><div class="chart-title" id="tb-{i}">Bid Volume</div><div class="chart-ph" id="cb-{i}"></div></div>
+        <div class="chart-cell"><div class="chart-title" id="ta-{i}">Ask Volume</div><div class="chart-ph" id="ca-{i}"></div></div>
+      </div>
+      <div class="chart-col-1m">
+        <div class="chart-cell"><div class="chart-title" id="t1m-{i}"></div><div class="chart-ph" id="c1m-{i}"></div></div>
+      </div>
     </div>
+    {fp_section}
   </div></td>
 </tr>
 """)
