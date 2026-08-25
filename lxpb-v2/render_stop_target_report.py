@@ -420,6 +420,18 @@ function toggleChart(i) {
 """
 
 
+def _relabel_fta_as_target(chart_dict):
+    """build_1s_trio_chart's price-line title for the target level always
+    reads "fta {price}" (lxpb.py's own field name for that level). Since
+    this report repurposes that field to hold OUR stop/target combo's
+    target price (see row_for_trio override above), relabel it to "target"
+    here so its on-chart legend matches the entry/stop lines' plain
+    wording instead of leaking the original field's internal name."""
+    for pl in chart_dict.get("priceLines", []):
+        if pl.get("title", "").startswith("fta "):
+            pl["title"] = "target " + pl["title"][len("fta "):]
+
+
 def render(stop, target, output_path):
     h1_df, pos_by_ts, retests_df = A.load_strong_breakout_rows()
     strong = retests_df[retests_df["range_ratio"].notna() &
@@ -468,6 +480,8 @@ def render(stop, target, output_path):
         trio_chart = R.build_1s_trio_chart(row_for_trio, R.PAD_SECONDS_DEFAULT,
                                             R.ONE_MIN_PAD_MINUTES_DEFAULT, True)
         if trio_chart is not None:
+            _relabel_fta_as_target(trio_chart["trio"])
+            _relabel_fta_as_target(trio_chart["oneMin"])
             chart_stack = {"h1": chart, "trio": trio_chart["trio"], "oneMin": trio_chart["oneMin"]}
             fp = {"narrow": trio_chart.get("footprintNarrowHtml"), "wide": trio_chart.get("footprintWideHtml")}
         else:
