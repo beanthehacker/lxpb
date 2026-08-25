@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 
-MIN_HOURS_BEFORE_RETEST = 4
+MIN_HOURS_BEFORE_RETEST = 1
 
 
 def load_ohlc_data(csv_path: str) -> pd.DataFrame:
@@ -110,9 +110,11 @@ def advance_one_bar(state: dict, bar) -> None:
     via `not (retest_low <= entry_price <= retest_high)`.
 
     Retest is direction-agnostic: any bar whose range overlaps the level
-    (or gaps past it) qualifies once MIN_HOURS_BEFORE_RETEST has
-    elapsed — no open/close directional condition is required (unlike
-    breakout, which requires a body cross).
+    (or gaps past it) qualifies once MORE THAN MIN_HOURS_BEFORE_RETEST has
+    elapsed (strict >, so the breakout bar's immediate next bar can never
+    itself be the retest — at least one full bar sits in between) — no
+    open/close directional condition is required (unlike breakout, which
+    requires a body cross).
 
     Spike/swing classification: `is_spike` (hammer for LHPB, shooting
     star for LLPB) is single-bar and finalized immediately at
@@ -146,7 +148,11 @@ def advance_one_bar(state: dict, bar) -> None:
             # level has gapped past it.
             gap_over = bar.low > price
         if touched or gap_over:
-            if (bar.Index - lv["breakout_time"]) >= pd.Timedelta(hours=MIN_HOURS_BEFORE_RETEST):
+            # Strict ">" (not ">="): the immediately-next H1 bar after the
+            # breakout bar (elapsed == 1 hour) can never itself be the
+            # retest -- at least MIN_HOURS_BEFORE_RETEST full bars must sit
+            # in between breakout and retest bar (elapsed must exceed it).
+            if (bar.Index - lv["breakout_time"]) > pd.Timedelta(hours=MIN_HOURS_BEFORE_RETEST):
                 fta       = lv["running_fta"]
                 stop_loss = lv["breakout_low"] if lv["type"] == "LHPB" else lv["breakout_high"]
                 public = {k: v for k, v in lv.items() if k != "running_fta"}

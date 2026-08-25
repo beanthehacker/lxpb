@@ -37,15 +37,18 @@
 //   trade every breakout/retest instead).
 //
 //   Phase 3 (retest / cooldown): once broken out, a level must go
-//   MinBarsBeforeRetest closed H1 bars (default 4, matching lxpb.py's
-//   MIN_HOURS_BEFORE_RETEST=4) WITHOUT being touched before it's eligible to
-//   trade -- if price touches/gaps over it during that cooldown, the level
-//   is silently discarded (no trade), exactly like lxpb.py. Bar-COUNT
-//   elapsed is used as a conservative proxy for lxpb.py's real elapsed-hours
-//   check: H1 bars can only ever span >= their count in real calendar hours
-//   (session/weekend gaps only ADD calendar time), so requiring
-//   MinBarsBeforeRetest closed bars never arms earlier than the real 4-hour
-//   mark lxpb.py enforces.
+//   MinBarsBeforeRetest closed H1 bars (default 1, matching lxpb.py's
+//   MIN_HOURS_BEFORE_RETEST=1) WITHOUT being touched before it's eligible to
+//   trade -- elapsed bars must strictly EXCEED MinBarsBeforeRetest (not >=),
+//   so the very next H1 bar after the breakout bar can never itself be the
+//   retest; at least one full bar always sits in between. If price
+//   touches/gaps over the level during that cooldown, the level is silently
+//   discarded (no trade), exactly like lxpb.py. Bar-COUNT elapsed is used as
+//   a conservative proxy for lxpb.py's real elapsed-hours check: H1 bars can
+//   only ever span >= their count in real calendar hours (session/weekend
+//   gaps only ADD calendar time), so requiring elapsed > MinBarsBeforeRetest
+//   closed bars never arms earlier than the real >1-hour mark lxpb.py
+//   enforces.
 //
 //   Execution once the cooldown bar closes untouched: a resting LIMIT entry
 //   order is placed EXACTLY at the level price (Buy Limit for LHPB -- price
@@ -182,8 +185,8 @@ SCSFExport scsf_LXPB_StopTarget_AutoTrader(SCStudyInterfaceRef sc)
         i_TargetPoints.Name = "Target Points";
         i_TargetPoints.SetFloat(8.0f);
 
-        i_MinBarsRetest.Name = "Min H1 Bars Before Retest (cooldown, ~hours since breakout)";
-        i_MinBarsRetest.SetInt(4);
+        i_MinBarsRetest.Name = "Min H1 Bars Before Retest (cooldown, elapsed must exceed this)";
+        i_MinBarsRetest.SetInt(1);
 
         i_StrongOnly.Name = "Strong Breakout Only (match exit_analysis_report.html sample)";
         i_StrongOnly.SetYesNo(1);
@@ -270,7 +273,7 @@ SCSFExport scsf_LXPB_StopTarget_AutoTrader(SCStudyInterfaceRef sc)
             bool interaction = touched || gap_over;
 
             if (interaction) {
-                if (elapsed >= min_bars) {
+                if (elapsed > min_bars) {
                     // Cooldown already satisfied AND this very closed bar
                     // touched/gapped the level -- we only just found out at
                     // bar-close, too late for a resting order to have caught
@@ -317,7 +320,7 @@ SCSFExport scsf_LXPB_StopTarget_AutoTrader(SCStudyInterfaceRef sc)
                 continue;
             }
 
-            if (elapsed >= min_bars) {
+            if (elapsed > min_bars) {
                 // Cooldown satisfied and never touched during it -- arm a
                 // resting limit entry order at the exact level price.
                 bool can_arm = !armed_one_this_bar &&

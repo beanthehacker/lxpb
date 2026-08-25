@@ -41,7 +41,7 @@ Three lists are maintained across the full bar history:
 |------|----------|
 | `touch_lv0` | Zero-touch levels: formed, not yet broken out |
 | `touch_lv1` | One-touch levels: broken out, awaiting retest |
-| `retests` | Completed retests: one-touch level returned to after ≥4 hours |
+| `retests` | Completed retests: one-touch level returned to after >1 hour |
 
 Per-bar processing order: **Phase 0** (finalize pending swing classification)
 → **Phase 3** (retest check) → **Phase 2** (breakout check) → **Phase 1**
@@ -63,8 +63,10 @@ does **not** break the level out — but the level *is* consumed either way
 ### Retest (Phase 3)
 
 A one-touch level is retested when a later bar's range overlaps the level
-(or gaps cleanly past it) **and** at least `MIN_HOURS_BEFORE_RETEST` (4h)
-have elapsed since breakout. **No directional open/close condition is
+(or gaps cleanly past it) **and more than** `MIN_HOURS_BEFORE_RETEST` (1h)
+have elapsed since breakout — i.e. the immediately-next H1 bar after the
+breakout bar can never itself be the retest; at least one full bar must
+sit in between. **No directional open/close condition is
 required** — any touch (or gap-over) after the wait qualifies. The level
 is consumed on any touch regardless of whether the wait was satisfied.
 
