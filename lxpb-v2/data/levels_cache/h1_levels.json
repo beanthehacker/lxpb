@@ -1,0 +1,18 @@
+{
+  "kind": "h1",
+  "contract": "",
+  "algo_version": 1,
+  "rules": "53472b6a7921-mh1",
+  "bars_fingerprint": "11259-f9ec65de46edab06",
+  "shape_fingerprint": "11259-28e38699b2804758",
+  "anchor": 6160.5,
+  "state_anchor": 6160.5,
+  "n_bars": 11259,
+  "first_bar": "2024-10-04 07:00:00+00:00",
+  "last_bar": "2026-09-02 17:00:00+00:00",
+  "n_levels": 22518,
+  "built_how": "rebuild",
+  "resolved": "rebuild",
+  "built_seconds": 3.26,
+  "built_at": "2026-09-02T20:55:42.845409+00:00"
+}

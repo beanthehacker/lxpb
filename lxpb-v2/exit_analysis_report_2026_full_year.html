@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>LXPB Strong-Breakout Exit Analysis</title>
+
+<style>
+:root { --bg:#111316; --surface:#1c1f24; --surface2:#22262d; --border:#2e333b;
+        --text:#d4d8df; --text-dim:#6b7280; --text-faint:#444c58;
+        --bull:#4ade80; --bear:#f87171; --accent:#60a5fa; }
+* { box-sizing:border-box; }
+body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+       padding:16px 24px; max-width:1500px; margin:0 auto;
+       background:var(--bg); color:var(--text); }
+h1 { font-size:1.5em; margin:0 0 4px; color:#e8eaed; }
+h2 { font-size:1.15em; margin:28px 0 8px; color:#e8eaed; border-bottom:1px solid var(--border); padding-bottom:4px; }
+p.lead { color:var(--text-dim); margin:0 0 12px; font-size:0.87em; }
+p.note { color:var(--text-dim); font-size:0.85em; margin:4px 0 12px; }
+.summary { display:flex; gap:10px; flex-wrap:wrap; margin:14px 0; }
+.summary .box { padding:8px 14px; background:var(--surface); border:1px solid var(--border);
+                border-radius:6px; font-size:0.82em; line-height:1.3; }
+.summary .box strong { display:block; font-size:1.3em; color:#e8eaed; }
+table { border-collapse:collapse; width:100%; font-size:0.83em; margin-bottom:6px; }
+th, td { padding:5px 9px; text-align:right; border-bottom:1px solid var(--border); white-space:nowrap; }
+th:first-child, td:first-child { text-align:left; }
+th { background:var(--surface2); color:var(--text-dim); position:sticky; top:0; cursor:pointer; user-select:none; }
+th:hover { color:var(--accent); }
+tr:hover td { background:#1a1d22; }
+tr.best-row td { background:#16321f !important; font-weight:600; }
+td.good { color:var(--bull); }
+td.bad { color:var(--bear); }
+.table-wrap { max-height:520px; overflow-y:auto; border:1px solid var(--border); border-radius:6px; }
+.findings { background:var(--surface); border:1px solid var(--border); border-radius:6px;
+            padding:14px 18px; margin:10px 0 24px; }
+.findings li { margin:6px 0; line-height:1.45; font-size:0.9em; }
+.findings b { color:#e8eaed; }
+code { background:#0a0c0e; padding:1px 5px; border-radius:3px; font-size:0.9em; }
+</style>
+
+</head><body>
+<h1>LXPB Strong-Breakout Exit-Parameter Analysis</h1>
+<p class="lead">Retest scope: 503 completed, gap-excluded LXPB retests,
+2026-01-01 &rarr; 2026-08-26 (data: <code>merged TradingView H1 exports (24aug + 1sep)</code>,
+H1 bars). Filtered to <b>503 "strong breakout"</b> retests (breakout-bar range &ge;
+2.0x its own trailing-20-bar average range -- the "P1 Wide Breakout"
+default in <code>lxpb_labels_report.html</code>). Every trade is simulated forward from the retest touch bar
+for up to 72 H1 bars (3d); entry is the level's own retest price, no
+commission/slippage modeled.</p>
+
+<h2>Stop / Target grid search &mdash; 1-MINUTE-RESOLVED (primary; 502 tick-covered trades, click a header to sort, shift+click to add a secondary sort key)</h2>
+<p class="note">Real 1-minute bars from local .scid ticks; the actual resolving minute (whichever of
+stop/target is touched first) is escalated to real 1-second ticks (234364
+escalations across the whole grid) to pin the exact crossing and enforce fill realism: a TARGET is a resting
+LIMIT order and only counts with a qualifying opposite-side print (a LONG's target needs an ask-side/buyer
+print, a SHORT's needs a bid-side/seller print), while a STOP is a market/stop order that fills on any side.
+When a candidate minute's naive OHLC touch has no qualifying fill, the scan advances to the next candidate
+minute instead of crediting an unreal fill (0 instances forced all the
+way to no-hit this way). "R" = target/stop ratio; rows with stop &lt; 6pt are noise-prone (ES spread/slippage)
+and shown for completeness only.</p>
+<div class="table-wrap"><table id="grid1min-table"><thead><tr><th>Stop</th><th>Target</th><th>R:R</th><th>N</th><th>Win %</th><th>Avg R</th><th>Total R</th><th>Wins</th><th>Losses</th><th>No-Hit</th><th>1s escalations</th><th>Forced no-fill</th></tr></thead>
+<tbody><tr class="best-row"><td class="">10</td><td class="">30</td><td class="">3.00</td><td class="">502</td><td class="bad">27.5%</td><td class="good">0.10</td><td class="good">50.0</td><td class="">138</td><td class="">364</td><td class="">0</td><td class="">796</td><td class="">0</td></tr>
+<tr class=""><td class="">10</td><td class="">16</td><td class="">1.60</td><td class="">502</td><td class="bad">41.2%</td><td class="good">0.07</td><td class="good">36.2</td><td class="">207</td><td class="">295</td><td class="">0</td><td class="">1337</td><td class="">0</td></tr>
+<tr class=""><td class="">10</td><td class="">24</td><td class="">2.40</td><td class="">502</td><td class="bad">31.5%</td><td class="good">0.07</td><td class="good">35.2</td><td class="">158</td><td class="">344</td><td class="">0</td><td class="">925</td><td class="">0</td></tr>
+<tr class=""><td class="">8</td><td class="">30</td><td class="">3.75</td><td class="">502</td><td class="bad">22.5%</td><td class="good">0.07</td><td class="good">34.8</td><td class="">113</td><td class="">389</td><td class="">0</td><td class="">795</td><td class="">0</td></tr>
+<tr class=""><td class="">10</td><td class="">12</td><td class="">1.20</td><td class="">502</td><td class="">48.4%</td><td class="good">0.06</td><td class="good">32.6</td><td class="">243</td><td class="">259</td><td class="">0</td><td class="">1807</td><td class="">0</td></tr>
+<tr class=""><td class="">12</td><td class="">12</td><td class="">1.00</td><td class="">502</td><td class="">53.2%</td><td class="good">0.06</td><td class="good">32.0</td><td class="">267</td><td class="">235</td><td class="">0</td><td class="">1812</td><td class="">0</td></tr>
+<tr class=""><td class="">8</td><td class="">12</td><td class="">1.50</td><td class="">502</td><td class="bad">42.4%</td><td class="good">0.06</td><td class="good">30.5</td><td class="">213</td><td class="">289</td><td class="">0</td><td class="">1805</td><td class="">0</td></tr>
+<tr class=""><td class="">12</td><td class="">30</td><td class="">2.50</td><td class="">502</td><td class="bad">30.3%</td><td class="good">0.06</td><td class="good">30.0</td><td class="">152</td><td class="">350</td><td class="">0</td><td class="">796</td><td class="">0</td></tr>
+<tr class=""><td class="">8</td><td class="">16</td><td class="">2.00</td><td class="">502</td><td class="bad">35.3%</td><td class="good">0.06</td><td class="good">29.0</td><td class="">177</td><td class="">325</td><td class="">0</td><td class="">1335</td><td class="">0</td></tr>
+<tr class=""><td class="">12</td><td class="">24</td><td class="">2.00</td><td class="">502</td><td class="bad">35.1%</td><td class="good">0.05</td><td class="good">26.0</td><td class="">176</td><td class="">326</td><td class="">0</td><td class="">926</td><td class="">0</td></tr>
+<tr class=""><td class="">16</td><td class="">16</td><td class="">1.00</td><td class="">502</td><td class="">52.6%</td><td class="good">0.05</td><td class="good">26.0</td><td class="">264</td><td class="">238</td><td class="">0</td><td class="">1342</td><td class="">0</td></tr>
+<tr class=""><td class="">6</td><td class="">12</td><td class="">2.00</td><td class="">502</td><td class="bad">35.1%</td><td class="good">0.05</td><td class="good">26.0</td><td class="">176</td><td class="">326</td><td class="">0</td><td class="">1796</td><td class="">0</td></tr>
+<tr class=""><td class="">4</td><td class="">12</td><td class="">3.00</td><td class="">502</td><td class="bad">26.3%</td><td class="good">0.05</td><td class="good">26.0</td><td class="">132</td><td class="">370</td><td class="">0</td><td class="">1790</td><td class="">0</td></tr>
+<tr class=""><td class="">6</td><td class="">16</td><td class="">2.67</td><td class="">502</td><td class="bad">28.7%</td><td class="good">0.05</td><td class="good">26.0</td><td class="">144</td><td class="">358</td><td class="">0</td><td class="">1330</td><td class="">0</td></tr>
+<tr class=""><td class="">12</td><td class="">16</td><td class="">1.33</td><td class="">502</td><td class="">45.0%</td><td class="good">0.05</td><td class="good">25.3</td><td class="">226</td><td class="">276</td><td class="">0</td><td class="">1338</td><td class="">0</td></tr>
+<tr class=""><td class="">16</td><td class="">12</td><td class="">0.75</td><td class="">502</td><td class="">60.0%</td><td class="good">0.05</td><td class="good">24.8</td><td class="">301</td><td class="">201</td><td class="">0</td><td class="">1818</td><td class="">0</td></tr>
+<tr class=""><td class="">12</td><td class="">8</td><td class="">0.67</td><td class="">502</td><td class="good">62.9%</td><td class="good">0.05</td><td class="good">24.7</td><td class="">316</td><td class="">186</td><td class="">0</td><td class="">2512</td><td class="">0</td></tr>
+<tr class=""><td class="">10</td><td class="">20</td><td class="">2.00</td><td class="">502</td><td class="bad">34.9%</td><td class="good">0.05</td><td class="good">23.0</td><td class="">175</td><td class="">327</td><td class="">0</td><td class="">1116</td><td class="">0</td></tr>
+<tr class=""><td class="">10</td><td class="">8</td><td class="">0.80</td><td class="">502</td><td class="">58.0%</td><td class="good">0.04</td><td class="good">21.8</td><td class="">291</td><td class="">211</td><td class="">0</td><td class="">2507</td><td class="">0</td></tr>
+<tr class=""><td class="">12</td><td class="">20</td><td class="">1.67</td><td class="">502</td><td class="bad">39.0%</td><td class="good">0.04</td><td class="good">20.7</td><td class="">196</td><td class="">306</td><td class="">0</td><td class="">1118</td><td class="">0</td></tr>
+<tr class=""><td class="">10</td><td class="">10</td><td class="">1.00</td><td class="">502</td><td class="">52.0%</td><td class="good">0.04</td><td class="good">20.0</td><td class="">261</td><td class="">241</td><td class="">0</td><td class="">2131</td><td class="">0</td></tr>
+<tr class=""><td class="">12</td><td class="">6</td><td class="">0.50</td><td class="">502</td><td class="good">69.3%</td><td class="good">0.04</td><td class="good">20.0</td><td class="">348</td><td class="">154</td><td class="">0</td><td class="">3104</td><td class="">0</td></tr>
+<tr class=""><td class="">12</td><td class="">10</td><td class="">0.83</td><td class="">502</td><td class="">56.6%</td><td class="good">0.04</td><td class="good">18.7</td><td class="">284</td><td class="">218</td><td class="">0</td><td class="">2133</td><td class="">0</td></tr>
+<tr class=""><td class="">10</td><td class="">6</td><td class="">0.60</td><td class="">502</td><td class="good">64.7%</td><td class="good">0.04</td><td class="good">18.0</td><td class="">325</td><td class="">177</td><td class="">0</td><td class="">3100</td><td class="">0</td></tr>
+<tr class=""><td class="">20</td><td class="">12</td><td class="">0.60</td><td class="">502</td><td class="good">64.7%</td><td class="good">0.04</td><td class="good">18.0</td><td class="">325</td><td class="">177</td><td class="">0</td><td class="">1827</td><td class="">0</td></tr>
+<tr class=""><td class="">4</td><td class="">16</td><td class="">4.00</td><td class="">502</td><td class="bad">20.7%</td><td class="good">0.04</td><td class="good">18.0</td><td class="">104</td><td class="">398</td><td class="">0</td><td class="">1324</td><td class="">0</td></tr>
+<tr class=""><td class="">8</td><td class="">24</td><td class="">3.00</td><td class="">502</td><td class="bad">25.9%</td><td class="good">0.04</td><td class="good">18.0</td><td class="">130</td><td class="">372</td><td class="">0</td><td class="">924</td><td class="">0</td></tr>
+<tr class=""><td class="">8</td><td class="">20</td><td class="">2.50</td><td class="">502</td><td class="bad">29.5%</td><td class="good">0.03</td><td class="good">16.0</td><td class="">148</td><td class="">354</td><td class="">0</td><td class="">1114</td><td class="">0</td></tr>
+<tr class=""><td class="">16</td><td class="">10</td><td class="">0.62</td><td class="">502</td><td class="good">63.3%</td><td class="good">0.03</td><td class="good">14.8</td><td class="">318</td><td class="">184</td><td class="">0</td><td class="">2134</td><td class="">0</td></tr>
+<tr class=""><td class="">20</td><td class="">16</td><td class="">0.80</td><td class="">502</td><td class="">57.2%</td><td class="good">0.03</td><td class="good">14.6</td><td class="">287</td><td class="">215</td><td class="">0</td><td class="">1351</td><td class="">0</td></tr>
+<tr class=""><td class="">16</td><td class="">20</td><td class="">1.25</td><td class="">502</td><td class="">45.6%</td><td class="good">0.03</td><td class="good">13.2</td><td class="">229</td><td class="">273</td><td class="">0</td><td class="">1119</td><td class="">0</td></tr>
+<tr class=""><td class="">16</td><td class="">8</td><td class="">0.50</td><td class="">502</td><td class="good">68.3%</td><td class="good">0.02</td><td class="good">12.5</td><td class="">343</td><td class="">159</td><td class="">0</td><td class="">2515</td><td class="">0</td></tr>
+<tr class=""><td class="">16</td><td class="">24</td><td class="">1.50</td><td class="">502</td><td class="bad">40.8%</td><td class="good">0.02</td><td class="good">12.5</td><td class="">205</td><td class="">296</td><td class="">1</td><td class="">925</td><td class="">0</td></tr>
+<tr class=""><td class="">16</td><td class="">6</td><td class="">0.38</td><td class="">502</td><td class="good">74.5%</td><td class="good">0.02</td><td class="good">12.2</td><td class="">374</td><td class="">128</td><td class="">0</td><td class="">3105</td><td class="">0</td></tr>
+<tr class=""><td class="">20</td><td class="">20</td><td class="">1.00</td><td class="">502</td><td class="">51.2%</td><td class="good">0.02</td><td class="good">12.0</td><td class="">257</td><td class="">245</td><td class="">0</td><td class="">1122</td><td class="">0</td></tr>
+<tr class=""><td class="">20</td><td class="">30</td><td class="">1.50</td><td class="">502</td><td class="bad">40.6%</td><td class="good">0.02</td><td class="good">11.3</td><td class="">204</td><td class="">296</td><td class="">2</td><td class="">799</td><td class="">0</td></tr>
+<tr class=""><td class="">8</td><td class="">10</td><td class="">1.25</td><td class="">502</td><td class="">45.4%</td><td class="good">0.02</td><td class="good">11.0</td><td class="">228</td><td class="">274</td><td class="">0</td><td class="">2124</td><td class="">0</td></tr>
+<tr class=""><td class="">12</td><td class="">4</td><td class="">0.33</td><td class="">502</td><td class="good">76.5%</td><td class="good">0.02</td><td class="good">10.0</td><td class="">384</td><td class="">118</td><td class="">0</td><td class="">3806</td><td class="">0</td></tr>
+<tr class=""><td class="">6</td><td class="">20</td><td class="">3.33</td><td class="">502</td><td class="bad">23.5%</td><td class="good">0.02</td><td class="good">9.3</td><td class="">118</td><td class="">384</td><td class="">0</td><td class="">1110</td><td class="">0</td></tr>
+<tr class=""><td class="">3</td><td class="">12</td><td class="">4.00</td><td class="">502</td><td class="bad">20.3%</td><td class="good">0.02</td><td class="good">8.0</td><td class="">102</td><td class="">400</td><td class="">0</td><td class="">1789</td><td class="">0</td></tr>
+<tr class=""><td class="">20</td><td class="">10</td><td class="">0.50</td><td class="">502</td><td class="good">67.7%</td><td class="good">0.02</td><td class="good">8.0</td><td class="">340</td><td class="">162</td><td class="">0</td><td class="">2136</td><td class="">0</td></tr>
+<tr class=""><td class="">6</td><td class="">6</td><td class="">1.00</td><td class="">502</td><td class="">50.8%</td><td class="good">0.02</td><td class="good">8.0</td><td class="">255</td><td class="">247</td><td class="">0</td><td class="">3096</td><td class="">0</td></tr>
+<tr class=""><td class="">6</td><td class="">30</td><td class="">5.00</td><td class="">502</td><td class="bad">16.9%</td><td class="good">0.02</td><td class="good">8.0</td><td class="">85</td><td class="">417</td><td class="">0</td><td class="">793</td><td class="">0</td></tr>
+<tr class=""><td class="">6</td><td class="">24</td><td class="">4.00</td><td class="">502</td><td class="bad">20.3%</td><td class="good">0.02</td><td class="good">8.0</td><td class="">102</td><td class="">400</td><td class="">0</td><td class="">920</td><td class="">0</td></tr>
+<tr class=""><td class="">4</td><td class="">20</td><td class="">5.00</td><td class="">502</td><td class="bad">16.9%</td><td class="good">0.02</td><td class="good">8.0</td><td class="">85</td><td class="">417</td><td class="">0</td><td class="">1108</td><td class="">0</td></tr>
+<tr class=""><td class="">16</td><td class="">30</td><td class="">1.88</td><td class="">502</td><td class="bad">35.1%</td><td class="good">0.02</td><td class="good">7.7</td><td class="">176</td><td class="">324</td><td class="">2</td><td class="">796</td><td class="">0</td></tr>
+<tr class=""><td class="">10</td><td class="">4</td><td class="">0.40</td><td class="">502</td><td class="good">72.5%</td><td class="good">0.02</td><td class="good">7.6</td><td class="">364</td><td class="">138</td><td class="">0</td><td class="">3805</td><td class="">0</td></tr>
+<tr class=""><td class="">20</td><td class="">24</td><td class="">1.20</td><td class="">502</td><td class="">45.8%</td><td class="good">0.01</td><td class="good">5.8</td><td class="">230</td><td class="">271</td><td class="">1</td><td class="">926</td><td class="">0</td></tr>
+<tr class=""><td class="">20</td><td class="">6</td><td class="">0.30</td><td class="">502</td><td class="good">77.7%</td><td class="good">0.01</td><td class="good">5.0</td><td class="">390</td><td class="">112</td><td class="">0</td><td class="">3109</td><td class="">0</td></tr>
+<tr class=""><td class="">16</td><td class="">4</td><td class="">0.25</td><td class="">502</td><td class="good">80.7%</td><td class="good">0.01</td><td class="good">4.2</td><td class="">405</td><td class="">97</td><td class="">0</td><td class="">3807</td><td class="">0</td></tr>
+<tr class=""><td class="">20</td><td class="">8</td><td class="">0.40</td><td class="">502</td><td class="good">71.9%</td><td class="good">0.01</td><td class="good">3.4</td><td class="">361</td><td class="">141</td><td class="">0</td><td class="">2521</td><td class="">0</td></tr>
+<tr class=""><td class="">4</td><td class="">6</td><td class="">1.50</td><td class="">502</td><td class="bad">40.2%</td><td class="good">0.01</td><td class="good">3.0</td><td class="">202</td><td class="">300</td><td class="">0</td><td class="">3084</td><td class="">0</td></tr>
+<tr class=""><td class="">6</td><td class="">4</td><td class="">0.67</td><td class="">502</td><td class="good">60.4%</td><td class="good">0.01</td><td class="good">3.0</td><td class="">303</td><td class="">199</td><td class="">0</td><td class="">3797</td><td class="">0</td></tr>
+<tr class=""><td class="">16</td><td class="">3</td><td class="">0.19</td><td class="">502</td><td class="good">84.7%</td><td class="good">0.01</td><td class="good">2.7</td><td class="">425</td><td class="">77</td><td class="">0</td><td class="">4144</td><td class="">0</td></tr>
+<tr class=""><td class="">10</td><td class="">3</td><td class="">0.30</td><td class="">502</td><td class="good">77.3%</td><td class="good">0.00</td><td class="good">2.4</td><td class="">388</td><td class="">114</td><td class="">0</td><td class="">4138</td><td class="">0</td></tr>
+<tr class=""><td class="">8</td><td class="">8</td><td class="">1.00</td><td class="">502</td><td class="">50.2%</td><td class="good">0.00</td><td class="good">2.0</td><td class="">252</td><td class="">250</td><td class="">0</td><td class="">2507</td><td class="">0</td></tr>
+<tr class=""><td class="">4</td><td class="">3</td><td class="">0.75</td><td class="">502</td><td class="">57.4%</td><td class="good">0.00</td><td class="good">2.0</td><td class="">288</td><td class="">214</td><td class="">0</td><td class="">4118</td><td class="">0</td></tr>
+<tr class=""><td class="">8</td><td class="">6</td><td class="">0.75</td><td class="">502</td><td class="">57.4%</td><td class="good">0.00</td><td class="good">2.0</td><td class="">288</td><td class="">214</td><td class="">0</td><td class="">3097</td><td class="">0</td></tr>
+<tr class=""><td class="">10</td><td class="">2</td><td class="">0.20</td><td class="">502</td><td class="good">83.5%</td><td class="good">0.00</td><td class="good">0.8</td><td class="">419</td><td class="">83</td><td class="">0</td><td class="">4448</td><td class="">0</td></tr>
+<tr class=""><td class="">12</td><td class="">3</td><td class="">0.25</td><td class="">502</td><td class="good">80.1%</td><td class="good">0.00</td><td class="good">0.5</td><td class="">402</td><td class="">100</td><td class="">0</td><td class="">4141</td><td class="">0</td></tr>
+<tr class=""><td class="">4</td><td class="">4</td><td class="">1.00</td><td class="">502</td><td class="">50.0%</td><td class="">0.00</td><td class="">0.0</td><td class="">251</td><td class="">251</td><td class="">0</td><td class="">3789</td><td class="">0</td></tr>
+<tr class=""><td class="">20</td><td class="">4</td><td class="">0.20</td><td class="">502</td><td class="good">83.3%</td><td class="bad">-0.00</td><td class="bad">-0.4</td><td class="">418</td><td class="">84</td><td class="">0</td><td class="">3812</td><td class="">0</td></tr>
+<tr class=""><td class="">6</td><td class="">10</td><td class="">1.67</td><td class="">502</td><td class="bad">37.5%</td><td class="bad">-0.00</td><td class="bad">-0.7</td><td class="">188</td><td class="">314</td><td class="">0</td><td class="">2120</td><td class="">0</td></tr>
+<tr class=""><td class="">3</td><td class="">16</td><td class="">5.33</td><td class="">502</td><td class="bad">15.7%</td><td class="bad">-0.00</td><td class="bad">-1.7</td><td class="">79</td><td class="">423</td><td class="">0</td><td class="">1317</td><td class="">0</td></tr>
+<tr class=""><td class="">20</td><td class="">3</td><td class="">0.15</td><td class="">502</td><td class="good">86.7%</td><td class="bad">-0.00</td><td class="bad">-1.8</td><td class="">435</td><td class="">67</td><td class="">0</td><td class="">4144</td><td class="">0</td></tr>
+<tr class=""><td class="">6</td><td class="">3</td><td class="">0.50</td><td class="">502</td><td class="good">66.3%</td><td class="bad">-0.00</td><td class="bad">-2.5</td><td class="">333</td><td class="">169</td><td class="">0</td><td class="">4126</td><td class="">0</td></tr>
+<tr class=""><td class="">16</td><td class="">2</td><td class="">0.12</td><td class="">502</td><td class="good">88.2%</td><td class="bad">-0.01</td><td class="bad">-3.6</td><td class="">443</td><td class="">59</td><td class="">0</td><td class="">4450</td><td class="">0</td></tr>
+<tr class=""><td class="">12</td><td class="">2</td><td class="">0.17</td><td class="">502</td><td class="good">85.1%</td><td class="bad">-0.01</td><td class="bad">-3.8</td><td class="">427</td><td class="">75</td><td class="">0</td><td class="">4448</td><td class="">0</td></tr>
+<tr class=""><td class="">4</td><td class="">10</td><td class="">2.50</td><td class="">502</td><td class="bad">28.3%</td><td class="bad">-0.01</td><td class="bad">-5.0</td><td class="">142</td><td class="">360</td><td class="">0</td><td class="">2113</td><td class="">0</td></tr>
+<tr class=""><td class="">20</td><td class="">2</td><td class="">0.10</td><td class="">502</td><td class="good">89.8%</td><td class="bad">-0.01</td><td class="bad">-5.9</td><td class="">451</td><td class="">51</td><td class="">0</td><td class="">4451</td><td class="">0</td></tr>
+<tr class=""><td class="">2</td><td class="">16</td><td class="">8.00</td><td class="">502</td><td class="bad">11.0%</td><td class="bad">-0.01</td><td class="bad">-7.0</td><td class="">55</td><td class="">447</td><td class="">0</td><td class="">1315</td><td class="">0</td></tr>
+<tr class=""><td class="">8</td><td class="">4</td><td class="">0.50</td><td class="">502</td><td class="good">65.7%</td><td class="bad">-0.01</td><td class="bad">-7.0</td><td class="">330</td><td class="">172</td><td class="">0</td><td class="">3800</td><td class="">0</td></tr>
+<tr class=""><td class="">6</td><td class="">2</td><td class="">0.33</td><td class="">502</td><td class="good">73.9%</td><td class="bad">-0.01</td><td class="bad">-7.3</td><td class="">371</td><td class="">131</td><td class="">0</td><td class="">4440</td><td class="">0</td></tr>
+<tr class=""><td class="">8</td><td class="">2</td><td class="">0.25</td><td class="">502</td><td class="good">78.7%</td><td class="bad">-0.02</td><td class="bad">-8.2</td><td class="">395</td><td class="">107</td><td class="">0</td><td class="">4444</td><td class="">0</td></tr>
+<tr class=""><td class="">3</td><td class="">6</td><td class="">2.00</td><td class="">502</td><td class="bad">32.7%</td><td class="bad">-0.02</td><td class="bad">-10.0</td><td class="">164</td><td class="">338</td><td class="">0</td><td class="">3073</td><td class="">0</td></tr>
+<tr class=""><td class="">6</td><td class="">8</td><td class="">1.33</td><td class="">502</td><td class="bad">41.8%</td><td class="bad">-0.02</td><td class="bad">-12.0</td><td class="">210</td><td class="">292</td><td class="">0</td><td class="">2504</td><td class="">0</td></tr>
+<tr class=""><td class="">8</td><td class="">3</td><td class="">0.38</td><td class="">502</td><td class="good">70.9%</td><td class="bad">-0.02</td><td class="bad">-12.5</td><td class="">356</td><td class="">146</td><td class="">0</td><td class="">4129</td><td class="">0</td></tr>
+<tr class=""><td class="">4</td><td class="">2</td><td class="">0.50</td><td class="">502</td><td class="good">64.9%</td><td class="bad">-0.03</td><td class="bad">-13.0</td><td class="">326</td><td class="">176</td><td class="">0</td><td class="">4432</td><td class="">0</td></tr>
+<tr class=""><td class="">4</td><td class="">8</td><td class="">2.00</td><td class="">502</td><td class="bad">32.3%</td><td class="bad">-0.03</td><td class="bad">-16.0</td><td class="">162</td><td class="">340</td><td class="">0</td><td class="">2495</td><td class="">0</td></tr>
+<tr class=""><td class="">2</td><td class="">20</td><td class="">10.00</td><td class="">502</td><td class="bad">8.8%</td><td class="bad">-0.04</td><td class="bad">-18.0</td><td class="">44</td><td class="">458</td><td class="">0</td><td class="">1105</td><td class="">0</td></tr>
+<tr class=""><td class="">4</td><td class="">24</td><td class="">6.00</td><td class="">502</td><td class="bad">13.7%</td><td class="bad">-0.04</td><td class="bad">-19.0</td><td class="">69</td><td class="">433</td><td class="">0</td><td class="">916</td><td class="">0</td></tr>
+<tr class=""><td class="">3</td><td class="">3</td><td class="">1.00</td><td class="">502</td><td class="">48.0%</td><td class="bad">-0.04</td><td class="bad">-20.0</td><td class="">241</td><td class="">261</td><td class="">0</td><td class="">4108</td><td class="">0</td></tr>
+<tr class=""><td class="">3</td><td class="">10</td><td class="">3.33</td><td class="">502</td><td class="bad">22.1%</td><td class="bad">-0.04</td><td class="bad">-21.0</td><td class="">111</td><td class="">391</td><td class="">0</td><td class="">2109</td><td class="">0</td></tr>
+<tr class=""><td class="">3</td><td class="">4</td><td class="">1.33</td><td class="">502</td><td class="bad">41.0%</td><td class="bad">-0.04</td><td class="bad">-21.3</td><td class="">206</td><td class="">296</td><td class="">0</td><td class="">3779</td><td class="">0</td></tr>
+<tr class=""><td class="">3</td><td class="">2</td><td class="">0.67</td><td class="">502</td><td class="">57.0%</td><td class="bad">-0.05</td><td class="bad">-25.3</td><td class="">286</td><td class="">216</td><td class="">0</td><td class="">4421</td><td class="">0</td></tr>
+<tr class=""><td class="">3</td><td class="">20</td><td class="">6.67</td><td class="">502</td><td class="bad">12.4%</td><td class="bad">-0.05</td><td class="bad">-26.7</td><td class="">62</td><td class="">440</td><td class="">0</td><td class="">1107</td><td class="">0</td></tr>
+<tr class=""><td class="">4</td><td class="">30</td><td class="">7.50</td><td class="">502</td><td class="bad">11.0%</td><td class="bad">-0.07</td><td class="bad">-34.5</td><td class="">55</td><td class="">447</td><td class="">0</td><td class="">791</td><td class="">0</td></tr>
+<tr class=""><td class="">2</td><td class="">12</td><td class="">6.00</td><td class="">502</td><td class="bad">13.1%</td><td class="bad">-0.08</td><td class="bad">-40.0</td><td class="">66</td><td class="">436</td><td class="">0</td><td class="">1787</td><td class="">0</td></tr>
+<tr class=""><td class="">3</td><td class="">8</td><td class="">2.67</td><td class="">502</td><td class="bad">25.1%</td><td class="bad">-0.08</td><td class="bad">-40.0</td><td class="">126</td><td class="">376</td><td class="">0</td><td class="">2490</td><td class="">0</td></tr>
+<tr class=""><td class="">2</td><td class="">2</td><td class="">1.00</td><td class="">502</td><td class="bad">44.8%</td><td class="bad">-0.10</td><td class="bad">-52.0</td><td class="">225</td><td class="">277</td><td class="">0</td><td class="">4401</td><td class="">0</td></tr>
+<tr class=""><td class="">2</td><td class="">24</td><td class="">12.00</td><td class="">502</td><td class="bad">6.8%</td><td class="bad">-0.12</td><td class="bad">-60.0</td><td class="">34</td><td class="">468</td><td class="">0</td><td class="">911</td><td class="">0</td></tr>
+<tr class=""><td class="">3</td><td class="">24</td><td class="">8.00</td><td class="">502</td><td class="bad">9.8%</td><td class="bad">-0.12</td><td class="bad">-61.0</td><td class="">49</td><td class="">453</td><td class="">0</td><td class="">913</td><td class="">0</td></tr>
+<tr class=""><td class="">2</td><td class="">10</td><td class="">5.00</td><td class="">502</td><td class="bad">14.5%</td><td class="bad">-0.13</td><td class="bad">-64.0</td><td class="">73</td><td class="">429</td><td class="">0</td><td class="">2103</td><td class="">0</td></tr>
+<tr class=""><td class="">2</td><td class="">30</td><td class="">15.00</td><td class="">502</td><td class="bad">5.4%</td><td class="bad">-0.14</td><td class="bad">-70.0</td><td class="">27</td><td class="">475</td><td class="">0</td><td class="">789</td><td class="">0</td></tr>
+<tr class=""><td class="">2</td><td class="">3</td><td class="">1.50</td><td class="">502</td><td class="bad">34.3%</td><td class="bad">-0.14</td><td class="bad">-72.0</td><td class="">172</td><td class="">330</td><td class="">0</td><td class="">4092</td><td class="">0</td></tr>
+<tr class=""><td class="">3</td><td class="">30</td><td class="">10.00</td><td class="">502</td><td class="bad">7.8%</td><td class="bad">-0.15</td><td class="bad">-73.0</td><td class="">39</td><td class="">463</td><td class="">0</td><td class="">788</td><td class="">0</td></tr>
+<tr class=""><td class="">2</td><td class="">4</td><td class="">2.00</td><td class="">502</td><td class="bad">27.7%</td><td class="bad">-0.17</td><td class="bad">-85.0</td><td class="">139</td><td class="">363</td><td class="">0</td><td class="">3761</td><td class="">0</td></tr>
+<tr class=""><td class="">2</td><td class="">6</td><td class="">3.00</td><td class="">502</td><td class="bad">20.7%</td><td class="bad">-0.17</td><td class="bad">-86.0</td><td class="">104</td><td class="">398</td><td class="">0</td><td class="">3059</td><td class="">0</td></tr>
+<tr class=""><td class="">2</td><td class="">8</td><td class="">4.00</td><td class="">502</td><td class="bad">16.5%</td><td class="bad">-0.17</td><td class="bad">-87.0</td><td class="">83</td><td class="">419</td><td class="">0</td><td class="">2484</td><td class="">0</td></tr></tbody></table></div>
+
+
+<script>
+// Multi-column sort: plain click sorts by that column alone (toggles asc/
+// desc on repeat clicks of the same sole column); shift+click ADDS that
+// column as the next secondary/tertiary/... sort key without resetting
+// the ones already chosen (shift+click again on an already-added column
+// just toggles its own direction in place, keeping its priority order).
+const _sortState = {};
+const _SORT_SUPERSCRIPTS = {1:'¹',2:'²',3:'³',4:'⁴',5:'⁵',6:'⁶',7:'⁷'};
+function _renderSortHeaders(tableId) {
+  const table = document.getElementById(tableId);
+  const spec = _sortState[tableId] || [];
+  Array.from(table.tHead.rows[0].cells).forEach((th, i) => {
+    if (th.dataset.label === undefined) th.dataset.label = th.textContent;
+    const priority = spec.findIndex(s => s.col === i);
+    if (priority === -1) {
+      th.textContent = th.dataset.label;
+    } else {
+      const arrow = spec[priority].dir === 'asc' ? '▲' : '▼';
+      const sup = spec.length > 1 ? (_SORT_SUPERSCRIPTS[priority + 1] || ('^' + (priority + 1))) : '';
+      th.textContent = th.dataset.label + ' ' + arrow + sup;
+    }
+  });
+}
+function sortTable(tableId, colIdx, numeric, additive) {
+  const table = document.getElementById(tableId);
+  const tbody = table.tBodies[0];
+  const rows = Array.from(tbody.rows);
+  let spec = _sortState[tableId] || [];
+  if (additive) {
+    const existing = spec.find(s => s.col === colIdx);
+    if (existing) {
+      existing.dir = existing.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      spec = spec.concat([{col: colIdx, dir: 'desc', numeric}]);
+    }
+  } else {
+    const onlyThis = spec.length === 1 && spec[0].col === colIdx;
+    spec = [{col: colIdx, dir: (onlyThis && spec[0].dir === 'desc') ? 'asc' : 'desc', numeric}];
+  }
+  _sortState[tableId] = spec;
+  function val(row, s) {
+    const v = row.cells[s.col].innerText.replace('%','').replace(/,/g,'');
+    return s.numeric ? (parseFloat(v) || -Infinity) : v;
+  }
+  rows.sort((a, b) => {
+    for (const s of spec) {
+      const x = val(a, s), y = val(b, s);
+      let cmp = 0;
+      if (x < y) cmp = -1;
+      else if (x > y) cmp = 1;
+      if (cmp !== 0) return s.dir === 'asc' ? cmp : -cmp;
+    }
+    return 0;
+  });
+  rows.forEach(r => tbody.appendChild(r));
+  _renderSortHeaders(tableId);
+}
+function attachSort(tableId, numericCols) {
+  const table = document.getElementById(tableId);
+  Array.from(table.tHead.rows[0].cells).forEach((th, i) => {
+    th.dataset.label = th.textContent;
+    th.onclick = (ev) => sortTable(tableId, i, numericCols.includes(i), ev.shiftKey);
+  });
+}
+</script>
+
+<script>
+attachSort('grid1min-table', [0,1,2,3,4,5,6,7,8,9,10,11]);
+</script>
+</body></html>

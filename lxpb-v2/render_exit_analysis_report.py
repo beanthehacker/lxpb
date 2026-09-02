@@ -13,6 +13,7 @@ change; not wired into render_labels_report.py or its own report.
 """
 import os
 import argparse
+import hashlib
 import numpy as np
 import pandas as pd
 
@@ -144,41 +145,85 @@ code { background:#0a0c0e; padding:1px 5px; border-radius:3px; font-size:0.9em; 
 
 SORT_JS = """
 <script>
-function sortTable(tableId, colIdx, numeric) {
+// Multi-column sort: plain click sorts by that column alone (toggles asc/
+// desc on repeat clicks of the same sole column); shift+click ADDS that
+// column as the next secondary/tertiary/... sort key without resetting
+// the ones already chosen (shift+click again on an already-added column
+// just toggles its own direction in place, keeping its priority order).
+const _sortState = {};
+const _SORT_SUPERSCRIPTS = {1:'\u00b9',2:'\u00b2',3:'\u00b3',4:'\u2074',5:'\u2075',6:'\u2076',7:'\u2077'};
+function _renderSortHeaders(tableId) {
+  const table = document.getElementById(tableId);
+  const spec = _sortState[tableId] || [];
+  Array.from(table.tHead.rows[0].cells).forEach((th, i) => {
+    if (th.dataset.label === undefined) th.dataset.label = th.textContent;
+    const priority = spec.findIndex(s => s.col === i);
+    if (priority === -1) {
+      th.textContent = th.dataset.label;
+    } else {
+      const arrow = spec[priority].dir === 'asc' ? '\u25b2' : '\u25bc';
+      const sup = spec.length > 1 ? (_SORT_SUPERSCRIPTS[priority + 1] || ('^' + (priority + 1))) : '';
+      th.textContent = th.dataset.label + ' ' + arrow + sup;
+    }
+  });
+}
+function sortTable(tableId, colIdx, numeric, additive) {
   const table = document.getElementById(tableId);
   const tbody = table.tBodies[0];
   const rows = Array.from(tbody.rows);
-  const asc = table.dataset.sortCol == colIdx && table.dataset.sortDir !== 'asc';
+  let spec = _sortState[tableId] || [];
+  if (additive) {
+    const existing = spec.find(s => s.col === colIdx);
+    if (existing) {
+      existing.dir = existing.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      spec = spec.concat([{col: colIdx, dir: 'desc', numeric}]);
+    }
+  } else {
+    const onlyThis = spec.length === 1 && spec[0].col === colIdx;
+    spec = [{col: colIdx, dir: (onlyThis && spec[0].dir === 'desc') ? 'asc' : 'desc', numeric}];
+  }
+  _sortState[tableId] = spec;
+  function val(row, s) {
+    const v = row.cells[s.col].innerText.replace('%','').replace(/,/g,'');
+    return s.numeric ? (parseFloat(v) || -Infinity) : v;
+  }
   rows.sort((a, b) => {
-    let x = a.cells[colIdx].innerText.replace('%','').replace(/,/g,'');
-    let y = b.cells[colIdx].innerText.replace('%','').replace(/,/g,'');
-    if (numeric) { x = parseFloat(x) || -Infinity; y = parseFloat(y) || -Infinity; }
-    if (x < y) return asc ? -1 : 1;
-    if (x > y) return asc ? 1 : -1;
+    for (const s of spec) {
+      const x = val(a, s), y = val(b, s);
+      let cmp = 0;
+      if (x < y) cmp = -1;
+      else if (x > y) cmp = 1;
+      if (cmp !== 0) return s.dir === 'asc' ? cmp : -cmp;
+    }
     return 0;
   });
   rows.forEach(r => tbody.appendChild(r));
-  table.dataset.sortCol = colIdx;
-  table.dataset.sortDir = asc ? 'asc' : 'desc';
+  _renderSortHeaders(tableId);
 }
 function attachSort(tableId, numericCols) {
   const table = document.getElementById(tableId);
   Array.from(table.tHead.rows[0].cells).forEach((th, i) => {
-    th.onclick = () => sortTable(tableId, i, numericCols.includes(i));
+    th.dataset.label = th.textContent;
+    th.onclick = (ev) => sortTable(tableId, i, numericCols.includes(i), ev.shiftKey);
   });
 }
 </script>
 """
 
 
-def render(output_path):
+def render(output_path, start=None, end=None, limit=A._DEFAULT, merged=False,
+           workers=1, grid_end=None):
     """Renders only the 1-minute-resolved stop/target grid section (all other
     sections -- H1-walk grid, bias comparison, MAE/MFE, time-exit, threshold
     sweep, data-quality caveats/findings -- were dropped per request)."""
-    h1_df, pos_by_ts, retests_df = A.load_strong_breakout_rows()
+    h1_df = A.load_merged_h1() if merged else None
+    h1_df, pos_by_ts, retests_df = A.load_strong_breakout_rows(
+        start=start, end=end, limit=limit, h1_df=h1_df)
     strong = retests_df[retests_df["range_ratio"].notna() &
                          (retests_df["range_ratio"] >= A.R.WIDE_BREAKOUT_RATIO_THRESHOLD)]
     trades = A.simulate(h1_df, pos_by_ts, strong)
+    print(f"Selected {len(trades)} strong-breakout trades", flush=True)
 
     # --- 1-minute-resolved grid (real ticks; escalates to 1s only when a
     # single 1-min bar's own H/L range covers BOTH stop and target) -- see
@@ -186,23 +231,78 @@ def render(output_path):
     # window is covered by the local .scid capture get a result; that
     # capture currently ends well before "today", so recent retests are
     # excluded from this grid, NOT because they're literally in the future.
-    series_by_idx = M.build_or_load_1min_series(trades)
-    covered_idx = [i for i in range(len(trades)) if series_by_idx.get(i) is not None]
-    covered_trades = [trades[i] for i in covered_idx]
-    grid_1min = M.stop_target_grid_1min(trades, series_by_idx, STOPS, TARGETS)
+    #
+    # The default single-file 1-min cache is keyed by each trade's position
+    # within the trade list, so it is only valid for this script's ORIGINAL
+    # canonical selection. Any widened span therefore gets its own
+    # selection-tagged chunk cache files instead of poisoning that one.
+    sel_tag = f"{start or A.DEFAULT_START}_{end or A.DEFAULT_END}_{'m' if merged else 's'}"
+    sel_tag = sel_tag.replace("-", "").replace(":", "").replace(" ", "")
+    work_dir = os.path.join(_HERE, "data", "1min_chunks")
+    is_default_sel = (start is None and end is None and limit is A._DEFAULT and not merged)
 
-    date_lo = retests_df["retest_time"].min()
-    date_hi = retests_df["retest_time"].max()
+    if workers > 1 and len(trades) > 1:
+        chunks = M.chunk_indices_by_contract(trades, workers)
+        cache_paths = [os.path.join(
+            work_dir,
+            f"1min_{sel_tag}_"
+            f"{hashlib.sha1(','.join(map(str, idxs)).encode()).hexdigest()[:10]}.csv")
+            for idxs in chunks]
+        print(f"[parallel] {len(chunks)} contract-pure chunks, {workers} concurrent: "
+              + ", ".join(f"c{k:02d}={len(c)}" for k, c in enumerate(chunks)), flush=True)
+        series_by_idx = M.build_1min_series_parallel(trades, chunks, cache_paths,
+                                                     work_dir, n_workers=workers)
+    else:
+        cache_path = None if is_default_sel else os.path.join(work_dir, f"1min_{sel_tag}_all.csv")
+        if cache_path:
+            os.makedirs(work_dir, exist_ok=True)
+        series_by_idx = M.build_or_load_1min_series(trades, cache_path=cache_path)
+
+    # The grid may be restricted to a shorter span than the selection above
+    # (e.g. build the 1-min series once for the whole year, but report only
+    # through Aug 31). Dropping whole trades is exact -- each trade's series
+    # and resolution are independent of every other's.
+    grid_idx = list(range(len(trades)))
+    if grid_end is not None:
+        cutoff = pd.Timestamp(grid_end)
+        grid_idx = [i for i in grid_idx
+                    if pd.Timestamp(trades[i]["retest_time"]) <= cutoff]
+        print(f"Grid restricted to retests <= {cutoff:%Y-%m-%d}: "
+              f"{len(grid_idx)}/{len(trades)} trades", flush=True)
+
+    grid_trades = [trades[i] for i in grid_idx]
+    grid_series = {j: series_by_idx.get(gi) for j, gi in enumerate(grid_idx)}
+    covered_trades = [t for j, t in enumerate(grid_trades) if grid_series.get(j) is not None]
+
+    if workers > 1 and len(grid_trades) > 1:
+        # Split by TRADES (contract-pure), not by stop value: see
+        # stop_target_grid_1min_trade_parallel -- a stop-split worker would
+        # have to load every contract the span touches.
+        grid_chunks = M.chunk_indices_by_contract(grid_trades, workers)
+        grid_1min = M.stop_target_grid_1min_trade_parallel(
+            grid_trades, grid_series, STOPS, TARGETS, grid_chunks, work_dir,
+            n_workers=workers)
+    else:
+        grid_1min = M.stop_target_grid_1min_parallel(grid_trades, grid_series,
+                                                     STOPS, TARGETS, n_workers=4)
+
+    grid_times = {t["retest_time"] for t in grid_trades}
+    grid_rows = strong[strong["retest_time"].isin(grid_times)]
+    date_lo = grid_rows["retest_time"].min()
+    date_hi = grid_rows["retest_time"].max()
+    data_desc = ("merged TradingView H1 exports (24aug + 1sep)" if merged
+                 else "data\\24aug-CME_MINI_ES1!, 60.csv")
+    n_retests = len(retests_df) if grid_end is None else len(grid_rows)
 
     grid_1min_thead = "".join(f"<th>{c}</th>" for c in
                                ["Stop", "Target", "R:R", "N", "Win %", "Avg R", "Total R",
-                                "Wins", "Losses", "No-Hit", "Ambig. min.", "Unresolved"])
+                                "Wins", "Losses", "No-Hit", "1s escalations", "Forced no-fill"])
     grid_1min_sorted = grid_1min.sort_values("total_R", ascending=False).reset_index(drop=True)
     grid_1min_fmt = {
         "stop": "{:.0f}", "target": "{:.0f}", "rr": "{:.2f}", "n": "{:.0f}",
         "win_rate": lambda v: f"{v*100:.1f}%" if pd.notna(v) else "-", "avg_R": "{:.2f}", "total_R": "{:.1f}",
         "wins": "{:.0f}", "losses": "{:.0f}", "no_hit": "{:.0f}",
-        "ambiguous_minutes": "{:.0f}", "unresolved_ties": "{:.0f}",
+        "escalations_1s": "{:.0f}", "forced_no_hit": "{:.0f}",
     }
     grid_1min_body = df_to_html_rows(grid_1min_sorted, grid_1min_fmt, "total_R")
 
@@ -212,20 +312,24 @@ def render(output_path):
 {CSS}
 </head><body>
 <h1>LXPB Strong-Breakout Exit-Parameter Analysis</h1>
-<p class="lead">Retest scope: {len(retests_df)} completed, gap-excluded LXPB retests,
-{date_lo:%Y-%m-%d} &rarr; {date_hi:%Y-%m-%d} (data: <code>data\\24aug-CME_MINI_ES1!, 60.csv</code>,
-H1 bars). Filtered to <b>{len(strong)} "strong breakout"</b> retests (breakout-bar range &ge;
+<p class="lead">Retest scope: {n_retests} completed, gap-excluded LXPB retests,
+{date_lo:%Y-%m-%d} &rarr; {date_hi:%Y-%m-%d} (data: <code>{data_desc}</code>,
+H1 bars). Filtered to <b>{len(grid_rows)} "strong breakout"</b> retests (breakout-bar range &ge;
 {A.R.WIDE_BREAKOUT_RATIO_THRESHOLD:.1f}x its own trailing-20-bar average range -- the "P1 Wide Breakout"
 default in <code>lxpb_labels_report.html</code>). Every trade is simulated forward from the retest touch bar
 for up to {A.HORIZON_BARS} H1 bars ({A.HORIZON_BARS // 24}d); entry is the level's own retest price, no
 commission/slippage modeled.</p>
 
-<h2>Stop / Target grid search &mdash; 1-MINUTE-RESOLVED (primary; {len(covered_trades)} tick-covered trades, click a header to sort)</h2>
-<p class="note">Real 1-minute bars from local .scid ticks, escalating to real 1-second ticks only for the
-{int(grid_1min['ambiguous_minutes'].sum())} instances where a single minute's own H/L range covered BOTH
-the stop and target simultaneously (of those, {int(grid_1min['unresolved_ties'].sum())} still couldn't be
-resolved even at 1s and fell back to the old optimistic "target wins" tie-break). "R" = target/stop ratio;
-rows with stop &lt; 6pt are noise-prone (ES spread/slippage) and shown for completeness only.</p>
+<h2>Stop / Target grid search &mdash; 1-MINUTE-RESOLVED (primary; {len(covered_trades)} tick-covered trades, click a header to sort, shift+click to add a secondary sort key)</h2>
+<p class="note">Real 1-minute bars from local .scid ticks; the actual resolving minute (whichever of
+stop/target is touched first) is escalated to real 1-second ticks ({int(grid_1min['escalations_1s'].sum())}
+escalations across the whole grid) to pin the exact crossing and enforce fill realism: a TARGET is a resting
+LIMIT order and only counts with a qualifying opposite-side print (a LONG's target needs an ask-side/buyer
+print, a SHORT's needs a bid-side/seller print), while a STOP is a market/stop order that fills on any side.
+When a candidate minute's naive OHLC touch has no qualifying fill, the scan advances to the next candidate
+minute instead of crediting an unreal fill ({int(grid_1min['forced_no_hit'].sum())} instances forced all the
+way to no-hit this way). "R" = target/stop ratio; rows with stop &lt; 6pt are noise-prone (ES spread/slippage)
+and shown for completeness only.</p>
 <div class="table-wrap"><table id="grid1min-table"><thead><tr>{grid_1min_thead}</tr></thead>
 <tbody>{grid_1min_body}</tbody></table></div>
 
@@ -243,5 +347,39 @@ attachSort('grid1min-table', [0,1,2,3,4,5,6,7,8,9,10,11]);
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Render LXPB strong-breakout exit analysis HTML report")
     parser.add_argument("--output", default=DEFAULT_OUTPUT, help="Output HTML path")
+    parser.add_argument("--start", default=None,
+                        help="first retest date (default: the original 2026-07-01)")
+    parser.add_argument("--end", default=None,
+                        help="last retest date (default: the original 2026-08-31)")
+    parser.add_argument("--limit", default=None,
+                        help="max rows, newest-first (int, or 'none' for no cap)")
+    parser.add_argument("--merged", action="store_true",
+                        help="merge every TradingView H1 export (newest wins)")
+    parser.add_argument("--full-year", action="store_true",
+                        help="shorthand for --start 2026-01-01 --end 2026-12-31 --limit none "
+                             "--merged --grid-end 2026-08-31 (the 1-min series is built for the "
+                             "whole selection so its cache matches the full-year trades report's, "
+                             "while the grid itself is reported through Aug 31)")
+    parser.add_argument("--grid-end", default=None,
+                        help="restrict the GRID to retests on/before this date, without "
+                             "changing the selection the 1-min cache is keyed to")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="concurrent contract-pure chunk processes for both the 1-min "
+                             "series build and the stop/target grid")
     args = parser.parse_args()
-    render(args.output)
+
+    start, end, merged, grid_end = args.start, args.end, args.merged, args.grid_end
+    limit = A._DEFAULT
+    if args.limit is not None:
+        limit = None if str(args.limit).lower() in ("none", "0", "all") else int(args.limit)
+    out = args.output
+    if args.full_year:
+        start = start or "2026-01-01"
+        end = end or "2026-12-31"
+        limit, merged = None, True
+        grid_end = grid_end or "2026-08-31"
+        if out == DEFAULT_OUTPUT:
+            out = os.path.join(_HERE, "exit_analysis_report_2026_full_year.html")
+    render(out, start=start, end=end, limit=limit, merged=merged,
+           workers=args.workers, grid_end=grid_end)
+

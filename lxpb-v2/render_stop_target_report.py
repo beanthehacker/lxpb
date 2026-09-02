@@ -4,12 +4,16 @@ lxpb_labels_report.html (same dark theme, expandable-row table, H1
 candlestick chart with lightweight-charts) but showing trade OUTCOME
 instead of hand-labeling checkboxes.
 
-Uses the exact same 99-trade "strong breakout" sample and 1-minute-resolved
-exit logic as analyze_breakout_exits_1min.py / exit_analysis_report.html
-(escalating to real 1s ticks only for the rare ambiguous minute where a
-single 1-min bar's own H/L range covers BOTH stop and target) -- so a
-trade's outcome here always matches its row in the "1-MINUTE-RESOLVED" grid
-in exit_analysis_report.html for the same stop/target.
+Uses the exact same 99-trade "strong breakout" sample and tick-accurate
+exit logic as analyze_breakout_exits_1min.py / exit_analysis_report.html:
+entries are anchored to the real 1s-tick touch instant within the retest H1
+bar (not the bar's own start-of-hour timestamp -- an earlier version had a
+look-ahead bug where price action before the level was ever actually
+retested could get counted as a stop/target hit), and every exit is pinned
+to the exact second (and exact crossing price) by escalating to real 1s
+ticks for the resolving minute -- so a trade's outcome/exit time here always
+matches its row in the "1-MINUTE-RESOLVED" grid in exit_analysis_report.html
+for the same stop/target, down to the second.
 
 Each row's H1 chart spans the same formation/breakout/retest context
 windows as render_labels_report.py's build_row_chart, extended forward to
@@ -28,7 +32,11 @@ Usage:
 import os
 import sys
 import json
+import time
+import pickle
+import hashlib
 import argparse
+import multiprocessing as mp
 import numpy as np
 import pandas as pd
 
@@ -37,6 +45,7 @@ sys.path.insert(0, _HERE)
 import render_labels_report as R  # noqa: E402
 import analyze_breakout_exits as A  # noqa: E402
 import analyze_breakout_exits_1min as M  # noqa: E402
+import lxpb_levels_cache as LC  # noqa: E402
 
 DEFAULT_STOP = 2.0
 DEFAULT_TARGET = 8.0
@@ -54,63 +63,165 @@ EXIT_WIN_COLOR = "#4ade80"
 EXIT_LOSS_COLOR = "#f87171"
 
 
-def resolve_trades(trades, series_by_idx, stop, target):
-    """Per-trade version of analyze_breakout_exits_1min.stop_target_grid_1min
-    -- same exact walk-forward/ambiguous-minute-escalation logic, but
-    returns full per-trade detail (outcome, R, exit bar time) instead of
-    only aggregate grid stats."""
+def resolve_trades(trades, series_by_idx, stop=None, target=None):
+    """Per-trade version of analyze_breakout_exits_1min.stop_target_grid_1min,
+    with the same tick-accurate anchoring fix (see that module's docstring):
+    series_by_idx's bars are already anchored to each trade's real touch_time
+    (not the retest H1 bar's own start-of-hour timestamp, AND -- since
+    M.build_or_load_1min_series/M._find_trade_touch_time -- the touch_time
+    itself only counts a fill-eligible aggressor-side print: a LONG entry
+    is a resting BUY, filled only by a bid-side/seller-initiated print).
+
+    The resolving minute (whichever minute first satisfies either the stop
+    or target condition, tie or not) is escalated to real 1s ticks via
+    M._pin_exact_exit so every returned exit_time is accurate to the exact
+    second (and exact crossing price), not just to the minute. TARGET is
+    also a resting LIMIT order, so M._pin_exact_exit only counts a
+    qualifying opposite-side print there too (STOP, a stop/market order
+    once triggered, fills on any side). If a candidate minute's naive
+    OHLC touch turns out not to contain any qualifying fill (e.g. only the
+    "wrong" side traded at the target price that minute), this keeps
+    scanning forward to the next candidate minute rather than crediting a
+    fill that couldn't really have happened. Returns full per-trade detail
+    (outcome, R, exit time/price, touch_time) instead of only aggregate
+    grid stats.
+
+    `stop` / `target` are point distances from entry. Pass scalars for a
+    fixed bracket (the grid-search use case); leave either as None to take
+    that leg per-trade from `t["stop_dist"]` / `t["target_dist"]` -- what a
+    structural, level-derived bracket needs (e.g.
+    analyze_spike_atr_strategy.py: stop = beyond the breakout candle,
+    target = the level's own FTA), where every trade has its own size."""
     out = []
     for i, t in enumerate(trades):
+        stop_pts = float(t["stop_dist"]) if stop is None else float(stop)
+        target_pts = float(t["target_dist"]) if target is None else float(target)
         bars = series_by_idx.get(i)
         entry_adj = t["entry"]
         is_long = t["is_long"]
         if bars is None or bars.empty:
-            out.append({"outcome": "no_data", "r": None, "exit_time": None})
+            out.append({"outcome": "no_data", "r": None, "exit_time": None, "touch_time": None})
             continue
+        touch_time = bars.attrs.get("touch_time")
         offset, sym = R._offset_for_ts(pd.Timestamp(t["retest_time"], tz="UTC"))
         raw_entry = entry_adj - offset
         highs, lows = bars["high"].to_numpy(float), bars["low"].to_numpy(float)
         if is_long:
-            stop_price, target_price = raw_entry - stop, raw_entry + target
+            stop_price, target_price = raw_entry - stop_pts, raw_entry + target_pts
             stop_hit = lows <= stop_price
             target_hit = highs >= target_price
         else:
-            stop_price, target_price = raw_entry + stop, raw_entry - target
+            stop_price, target_price = raw_entry + stop_pts, raw_entry - target_pts
             stop_hit = highs >= stop_price
             target_hit = lows <= target_price
         s_idx = np.flatnonzero(stop_hit)
         tg_idx = np.flatnonzero(target_hit)
-        hs = s_idx[0] if s_idx.size else None
-        ht = tg_idx[0] if tg_idx.size else None
 
-        if hs is None and ht is None:
+        # TARGET is a resting LIMIT order (opposite-side fill required --
+        # see M._pin_exact_exit's docstring), so a minute whose naive
+        # OHLC range merely brushes the target price may not actually
+        # contain a qualifying fill (e.g. only the "wrong"-side aggressor
+        # traded there). STOP is a stop/market order once triggered and
+        # fills on any side, so it never needs this re-scan. Keep advancing
+        # to the next candidate minute (whichever of stop/target comes
+        # first from there) until M._pin_exact_exit actually finds a
+        # qualifying fill, or we run out of bars (-> no_hit).
+        n_bars_series = len(bars)
+        idx = 0
+        outcome = exact_time = exact_price = None
+        while True:
+            s_rem = s_idx[s_idx >= idx]
+            tg_rem = tg_idx[tg_idx >= idx]
+            hs = s_rem[0] if s_rem.size else None
+            ht = tg_rem[0] if tg_rem.size else None
+            if hs is None and ht is None:
+                break
+            resolving_idx = min(x for x in (hs, ht) if x is not None)
+            minute_start = bars.index[resolving_idx]
+            o, et, ep = M._pin_exact_exit(
+                sym, minute_start, offset, entry_adj, stop_pts, target_pts, is_long,
+                not_before=touch_time)
+            if o is not None:
+                outcome, exact_time, exact_price = o, et, ep
+                break
+            idx = resolving_idx + 1
+            if idx >= n_bars_series:
+                break
+
+        if outcome is None:
             last_time = bars.index[-1]
             out.append({
                 "outcome": "no_hit", "r": None, "exit_time": last_time,
-                "exit_price": entry_adj,
+                "exit_price": entry_adj, "touch_time": touch_time,
             })
             continue
 
-        if hs is not None and ht is not None and hs == ht:
-            minute_start = bars.index[hs]
-            resolved = M._resolve_ambiguous_minute(sym, minute_start, offset, entry_adj,
-                                                    stop, target, is_long)
-            outcome = resolved if resolved is not None else "target"  # old optimistic tie-break
-            exit_idx = hs
-        elif hs is not None and (ht is None or hs < ht):
-            outcome, exit_idx = "stop", hs
-        else:
-            outcome, exit_idx = "target", ht
-
-        exit_time = bars.index[exit_idx]
-        if outcome == "target":
-            r = target / stop
-            exit_price_adj = entry_adj + target if is_long else entry_adj - target
-        else:
-            r = -1.0
-            exit_price_adj = entry_adj - stop if is_long else entry_adj + stop
-        out.append({"outcome": outcome, "r": r, "exit_time": exit_time, "exit_price": exit_price_adj})
+        r = target_pts / stop_pts if outcome == "target" else -1.0
+        favorable_pts, adverse_pts = _compute_excursion(
+            bars, touch_time, exact_time, raw_entry, is_long, sym, offset)
+        out.append({"outcome": outcome, "r": r, "exit_time": exact_time,
+                    "exit_price": exact_price, "touch_time": touch_time,
+                    "favorable_pts": favorable_pts, "adverse_pts": adverse_pts})
     return out
+
+
+def _compute_excursion(bars, touch_time, exit_time, raw_entry, is_long, sym, offset):
+    """Max favorable / max adverse move (in points, raw/uncontinuous
+    scale) between touch_time and exit_time inclusive, at real-1s-tick
+    precision throughout -- not just 1-minute OHLC precision.
+
+    `bars`'s own high/low columns are built by resampling REAL 1s ticks
+    (see build_or_load_1min_series), so every FULL minute strictly before
+    the resolving minute already has exact 1s-tick-accurate high/low and
+    needs no re-fetch. Only the final (resolving) minute is refetched at
+    1s resolution and bounded to `exit_time` -- otherwise its own bar's
+    high/low would include ticks AFTER the trade's actual exit instant,
+    the same look-ahead bug class fixed by `_pin_exact_exit`'s
+    `not_before` (see that function's docstring): a stop/target-adjacent
+    excursion that only happened after the position was already closed
+    must not be credited to this trade's MAE/MFE.
+
+    Reuses analyze_breakout_exits_1min._1S_AMBIGUOUS_CACHE (module-level,
+    keyed by (sym, minute_start)) so this doesn't refetch ticks
+    resolve_trades's own _pin_exact_exit call already fetched for that
+    same resolving minute."""
+    window = bars.loc[(bars.index >= touch_time) & (bars.index <= exit_time)]
+    if window.empty:
+        return None, None
+    last_minute = window.index[-1]
+    prior = window.iloc[:-1]
+    hi = float(prior["high"].max()) if not prior.empty else -np.inf
+    lo = float(prior["low"].min()) if not prior.empty else np.inf
+
+    cache_key = (sym, last_minute)
+    ticks = M._1S_AMBIGUOUS_CACHE.get(cache_key)
+    if cache_key not in M._1S_AMBIGUOUS_CACHE:
+        ticks = R._ticks_for_window(last_minute, last_minute + pd.Timedelta(minutes=1))
+        ticks = None if ticks is None or ticks.empty else ticks
+        M._1S_AMBIGUOUS_CACHE[cache_key] = ticks
+    if ticks is not None:
+        seg = ticks.loc[(ticks.index >= max(touch_time, last_minute)) & (ticks.index <= exit_time)]
+        if not seg.empty:
+            hi = max(hi, float(seg["High"].max()))
+            lo = min(lo, float(seg["Low"].min()))
+        elif np.isneginf(hi) and np.isinf(lo):
+            # no qualifying ticks at all (shouldn't normally happen since
+            # exact_time itself came from one of these ticks) -- fall back
+            # to the 1-min bar's own H/L for that minute.
+            last_row = window.iloc[-1]
+            hi, lo = float(last_row["high"]), float(last_row["low"])
+    else:
+        last_row = window.iloc[-1]
+        hi = max(hi, float(last_row["high"]))
+        lo = min(lo, float(last_row["low"]))
+
+    if np.isneginf(hi) or np.isinf(lo):
+        return None, None
+    if is_long:
+        favorable, adverse = hi - raw_entry, raw_entry - lo
+    else:
+        favorable, adverse = raw_entry - lo, hi - raw_entry
+    return float(favorable), float(adverse)
 
 
 def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target):
@@ -179,14 +290,14 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target):
     markers = [
         {"time": R._to_epoch_utc(row["formation_time"]),
          "position": "aboveBar" if is_long else "belowBar",
-         "color": R.P0_COLOR, "shape": "circle", "text": "P0 form"},
+         "color": R.P0_COLOR, "shape": "circle", "text": "P0"},
         {"time": R._to_epoch_utc(row["breakout_time"]),
          "position": "belowBar" if is_long else "aboveBar",
          "color": R.P1_COLOR_UP if is_long else R.P1_COLOR_DOWN,
-         "shape": "arrowUp" if is_long else "arrowDown", "text": "P1 breakout"},
+         "shape": "arrowUp" if is_long else "arrowDown", "text": "P1"},
         {"time": R._to_epoch_utc(row["retest_time"]),
          "position": "aboveBar" if is_long else "belowBar",
-         "color": R.P2_COLOR, "shape": "circle", "text": "P2 retest (entry)"},
+         "color": R.P2_COLOR, "shape": "circle", "text": "P2"},
         {"time": R._to_epoch_utc(exit_marker_time),
          "position": exit_pos_label, "color": exit_color, "shape": exit_shape, "text": exit_text},
     ] + skip_markers
@@ -213,12 +324,299 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target):
             "priceLines": price_lines, "precision": 2}
 
 
+M5_LOOKBACK_DAYS = 3         # minimum M5 history shown before the retest
+M5_BREAKOUT_WARMUP_DAYS = 1  # extra history before the H1 breakout bar, so a level that
+                             # formed on that bar still has context to its left
+M5_NEAR_PTS = 20.0           # "nearby" band around the H1 retest level
+M5_BARS_BEFORE_RETEST = 60
+M5_BARS_AFTER_EXIT = 12
+M5_CTX_BEFORE_FORMATION = 4  # context bars kept around an M5 level's formation bar, so a
+M5_CTX_AFTER_FORMATION = 4   # ray's START is visible even when it formed long before entry
+M5_CTX_AROUND_RAY_END = 2    # ditto for the ray's END (the level's own M5 retest bar)
+M5_MAX_MERGE_GAP = 12        # gaps <= this many M5 bars are kept rather than compressed
+M5_COLOR = "#38bdf8"         # qualifying M5 level
+
+# Whole-contract M5 bars and the M5 level ledger both live in lxpb_levels_cache
+# so that every consumer (this report, backtests, ad-hoc analysis) shares one
+# implementation and one on-disk cache. See that module's docstring.
+_m5_bars = LC.m5_bars_for_contract
+
+
+
+def build_m5_chart(row, resolved, stop, target):
+    """5-minute companion pane for build_trade_chart's H1 chart.
+
+    Runs the SAME LXPB state machine (lxpb.detect_lxpb_h1 is timeframe
+    agnostic -- it just walks whatever bars it is handed) over real 1s ticks
+    resampled to 5 minutes, so the M5 chart shows the M5 timeframe's own
+    LXPB levels alongside the H1 level being traded. Both the bars and the
+    levels come from lxpb_levels_cache, which persists the whole lifecycle of
+    every level so this pane never has to replay the machine per trade.
+
+    A qualifying M5 level must be all four of:
+      * the SAME type as the H1 level (an H1 LLPB retest only cares about M5
+        LLPB levels -- an opposite-type level is not confluence),
+      * formed during the H1 breakout bar or earlier, so it was already on
+        the chart when the H1 setup triggered rather than being discovered
+        afterwards,
+      * STILL LIVE at entry -- a level that had already been retested (or
+        silently consumed) before this trade's entry is no longer an M5 level
+        at all and is never drawn, and
+      * within M5_NEAR_PTS of the H1 retest level.
+    If nothing qualifies, no M5 levels are drawn at all.
+
+    Each qualifying level is drawn as a horizontal RAY starting at its
+    formation bar and running to the right edge (it is by construction still
+    unretested at entry), rather than a full-width price line, so its origin
+    is visible. A level can form long before the H1 setup triggers, so
+    the window is assembled from merged context segments (the same treatment
+    build_trade_chart gives the H1 pane): bars between a ray's start and the
+    entry region are compressed out with a "[N bars skipped]" marker instead
+    of squeezing the whole span into the pane. Rays carry no drawn label --
+    their price/type/formation time show in a hover tooltip.
+
+    The H1 level being retested is drawn in the background here (same gold
+    line as the H1 pane) and the only structural marker is P2 -- the M5
+    candle on which price actually touched that H1 level.
+
+    Ticks are raw per-contract prices; the offset _m5_bars applies puts them
+    in the same back-adjusted/continuous scale as row["price"] and the H1
+    pane, so the two charts never mix raw and adjusted numbers for the same
+    instant. Bars come from _m5_bars' cached whole-contract series, so the
+    state machine can be walked from the H1 breakout bar forward no matter how
+    long ago that was -- the window is bounded only by the contract segment."""
+    retest_time = pd.Timestamp(row["retest_time"], tz="UTC")
+    breakout_time = pd.Timestamp(row["breakout_time"], tz="UTC")
+    exit_time = resolved.get("exit_time")
+    touch_time = resolved.get("touch_time")
+    hi = (exit_time if exit_time is not None else retest_time) + pd.Timedelta(hours=2)
+    # Reach back far enough that the M5 machine can actually see the H1
+    # breakout bar -- levels are only eligible if they formed by then, so a
+    # window starting after it would report "none qualify" as an artefact.
+    # There is deliberately NO fixed span cap here: an H1 level can be
+    # retested long after it broke (median 0.75 days, but 15% of 2026 trades
+    # exceed a week and the longest gap is 235 days), and the old 8-day cap
+    # silently truncated the window to start AFTER the breakout bar, which
+    # made the formation filter unsatisfiable and reported "no live M5 level"
+    # for ~15% of trades no matter what the data said. The only clamp is the
+    # contract segment below, which is a real data boundary rather than an
+    # arbitrary cost cap -- affordable because the bars come from a cached
+    # whole-contract M5 series (_m5_bars) instead of a per-trade tick load.
+    lo = min(retest_time - pd.Timedelta(days=M5_LOOKBACK_DAYS),
+             breakout_time - pd.Timedelta(days=M5_BREAKOUT_WARMUP_DAYS))
+    # Clamp to the retest's OWN contract segment. Raw .scid prices differ by a
+    # constant per contract, so a window straddling a roll would splice two
+    # price scales together and a single `offset` could not correct both.
+    seg_idx = R._contract_index_for(retest_time)
+    seg_start, seg_end = R._segment_for(seg_idx)
+    if seg_start is not None:
+        lo = max(lo, seg_start)
+    if seg_end is not None:
+        hi = min(hi, seg_end)
+    if lo >= hi:
+        return None
+    all_bars = _m5_bars(seg_idx)
+    if all_bars is None or all_bars.empty:
+        return None
+    # Only chart a window that actually contains the trade. Near the end of
+    # the tick data the series can cover an earlier span only, in which case
+    # searchsorted would clamp the "retest" to the last bar and the pane would
+    # show an unrelated window with a bogus entry marker.
+    if all_bars.index[0] > retest_time or all_bars.index[-1] < retest_time:
+        return None
+    a = int(all_bars.index.searchsorted(lo, side="left"))
+    b = int(all_bars.index.searchsorted(hi, side="left"))
+    bars = all_bars.iloc[a:b]
+    if bars.empty:
+        return None
+    # True when the H1 breakout happened in an EARLIER contract, so no bar in
+    # this segment can satisfy the formation filter -- reported honestly in
+    # the title rather than as a bare "no level qualified".
+    breakout_out_of_reach = bars.index[0] > breakout_time + pd.Timedelta(hours=1)
+
+    level_type = row["type"]
+    price = float(row["price"])
+    is_long = level_type == "LHPB"
+    target_price = price + target if is_long else price - target
+    stop_price = price - stop if is_long else price + stop
+
+    # M5's own LXPB levels, taken from the cached level ledger.
+    #
+    # The ledger records every level's full lifecycle (formation -> breakout ->
+    # retest/death), so "which M5 levels were live at entry" is an interval
+    # lookup rather than a replay of the state machine. That matters for
+    # correctness as much as speed: detect_lxpb_h1 only reports its buckets as
+    # of the LAST bar it is handed, so running it over a window that extends
+    # past the trade -- as this function used to -- reports levels with
+    # hindsight, and in particular surfaces levels from the `retests` bucket
+    # that were already consumed hours before the H1 setup triggered.
+    #
+    # `as_of` is the bar BEFORE the entry bar, so a level whose own M5 retest
+    # coincides with the H1 retest still counts as live (that confluence is the
+    # point) and no post-entry price action can retroactively kill a level.
+    # `formed_by` enforces "formed during the H1 breakout bar or earlier" --
+    # H1 bars are hourly, so that bar covers [breakout_time, +1h).
+    as_of = pd.Timestamp(touch_time) if touch_time is not None else retest_time
+    entry_bar_pos = int(bars.index.searchsorted(as_of, side="right")) - 1
+    form_cutoff = breakout_time + pd.Timedelta(hours=1)
+    near_levels = []
+    if entry_bar_pos > 0:
+        ledger = LC.m5_levels(seg_idx)
+        if ledger is not None and not ledger.empty:
+            live = LC.levels_live_as_of(
+                ledger, bars.index[entry_bar_pos - 1], level_type=level_type,
+                near_price=price, near_pts=M5_NEAR_PTS, formed_by=form_cutoff)
+            seen = set()
+            for _, lv in live.iterrows():
+                # levels_live_as_of returns nearest-first, so on a price tie the
+                # survivor is the closest one to the H1 level.
+                key = round(float(lv["price"]), 2)
+                if key in seen:
+                    continue
+                seen.add(key)
+                near_levels.append({"price": float(lv["price"]), "type": lv["type"],
+                                    "stage": lv["stage"], "end_time": None,
+                                    "formation_time": pd.Timestamp(lv["formation_time"]),
+                                    "dist": float(lv["dist"])})
+
+    idx = bars.index
+    n_bars = len(idx)
+    retest_pos = max(0, int(idx.searchsorted(retest_time, side="right")) - 1)
+    if exit_time is not None:
+        exit_pos = min(int(idx.searchsorted(exit_time, side="right")) - 1, n_bars - 1)
+        exit_pos = max(exit_pos, retest_pos)
+    else:
+        exit_pos = retest_pos
+
+    def _pos(ts):
+        return min(max(int(idx.searchsorted(pd.Timestamp(ts), side="right")) - 1, 0), n_bars - 1)
+
+    # The entry region is always shown; each ray additionally contributes a
+    # small segment at its start (and at its end, when it was retested) so a
+    # level that formed hours earlier still shows both endpoints. Everything
+    # between is compressed out by _merge_segments.
+    segments = [(retest_pos - M5_BARS_BEFORE_RETEST, exit_pos + M5_BARS_AFTER_EXIT)]
+    for lv in near_levels:
+        fpos = _pos(lv["formation_time"])
+        lv["form_pos"] = fpos
+        segments.append((fpos - M5_CTX_BEFORE_FORMATION, fpos + M5_CTX_AFTER_FORMATION))
+        if lv["end_time"] is not None:
+            epos = _pos(lv["end_time"])
+            lv["end_pos"] = epos
+            segments.append((epos - M5_CTX_AROUND_RAY_END, epos + M5_CTX_AROUND_RAY_END))
+    merged = R._merge_segments(segments, n_bars, M5_MAX_MERGE_GAP)
+
+    parts, skip_markers = [], []
+    for s, e, gap in merged:
+        if gap:
+            skip_markers.append({
+                "time": R._to_epoch_utc(idx[s]),
+                "position": "inBar", "color": "#9ca3af", "shape": "square",
+                "text": f"[{gap} bars skipped]",
+            })
+        parts.append(bars.iloc[s:e + 1])
+    window = pd.concat(parts) if len(parts) > 1 else parts[0]
+    total_skipped = sum(g for _, _, g in merged)
+    if window.empty:
+        return None
+
+    candles = [{"time": R._to_epoch_utc(t), "open": float(r.open), "high": float(r.high),
+                "low": float(r.low), "close": float(r.close)} for t, r in window.iterrows()]
+
+    entry_marker_time = touch_time if touch_time is not None else retest_time
+    entry_bar = idx[max(0, int(idx.searchsorted(entry_marker_time, side="right")) - 1)]
+    markers = [{"time": R._to_epoch_utc(entry_bar),
+                "position": "aboveBar" if is_long else "belowBar",
+                "color": R.P2_COLOR, "shape": "circle", "text": "P2"}]
+    outcome = resolved["outcome"]
+    if outcome == "target":
+        markers.append({"time": R._to_epoch_utc(idx[exit_pos]),
+                        "position": "aboveBar" if is_long else "belowBar",
+                        "color": EXIT_WIN_COLOR,
+                        "shape": "arrowUp" if is_long else "arrowDown",
+                        "text": f"WIN +{target/stop:.2f}R"})
+    elif outcome == "stop":
+        markers.append({"time": R._to_epoch_utc(idx[exit_pos]),
+                        "position": "belowBar" if is_long else "aboveBar",
+                        "color": EXIT_LOSS_COLOR,
+                        "shape": "arrowDown" if is_long else "arrowUp",
+                        "text": "LOSS -1.00R"})
+    markers.extend(skip_markers)
+    markers.sort(key=lambda m: m["time"])
+
+    # One ray per qualifying level: a flat line at the level price, plotted
+    # only on window bars between formation and the level's own retest (or
+    # the right edge when it was never retested). Points land exclusively on
+    # bars that survived compression, so a ray follows the compressed axis.
+    wt = window.index
+    rays = []
+    for lv in near_levels:
+        end_t = lv["end_time"] if lv["end_time"] is not None else wt[-1]
+        mask = (wt >= lv["formation_time"]) & (wt <= end_t)
+        pts = [{"time": R._to_epoch_utc(t), "value": lv["price"]} for t in wt[mask]]
+        if not pts:
+            continue
+        rays.append({
+            "points": pts, "color": M5_COLOR, "lineWidth": 1,
+            "lineStyle": 0 if lv["stage"] == "broken" else 2,
+            "label": (f"M5 {lv['type']} {lv['price']:.2f}  &middot;  formed "
+                      f"{R._to_pt_str(lv['formation_time'])}  &middot;  {lv['stage']}"
+                      f"  &middot;  {lv['dist']:.2f}pt from H1 level"),
+        })
+
+    price_lines = [
+        {"price": price, "color": R.LEVEL_COLOR, "lineWidth": 2, "lineStyle": 0,
+         "title": f"H1 {level_type} {price:.2f} (entry)"},
+        {"price": target_price, "color": EXIT_WIN_COLOR, "lineWidth": 1, "lineStyle": 2,
+         "title": f"target {target_price:.2f} (+{target:.0f}pt)"},
+        {"price": stop_price, "color": EXIT_LOSS_COLOR, "lineWidth": 1, "lineStyle": 2,
+         "title": f"stop {stop_price:.2f} (-{stop:.0f}pt)"},
+    ]
+
+    if near_levels:
+        lvl_txt = (f"{len(rays)} live M5 {level_type} ray(s) within "
+                   f"{M5_NEAR_PTS:.0f}pt formed by H1 breakout "
+                   f"(solid = broken, dashed = unbroken; hover for details)")
+    elif breakout_out_of_reach:
+        lvl_txt = (f"H1 breakout bar predates this contract's tick data -- "
+                   f"cannot tell which M5 {level_type} levels existed by then")
+    else:
+        lvl_txt = (f"no live M5 {level_type} level within {M5_NEAR_PTS:.0f}pt "
+                   f"formed by H1 breakout")
+    title = (f"M5  |  {lvl_txt}  |  {R._to_pt_str(window.index[0])} \u2192 "
+             f"{R._to_pt_str(window.index[-1])}")
+    if total_skipped:
+        title += f"  [{total_skipped} bars compressed out of view]"
+    return {"title": title, "candles": candles, "markers": markers,
+            "priceLines": price_lines, "rays": rays, "precision": 2}
+
+
 CSS = R.CSS + """
 <style>
 td.good { color:#4ade80; }
 td.bad { color:#f87171; }
 .table-wrap { max-height:none; }
 .expand-th { width:28px; }
+tr.lvl-row.is-replayed td.replayed-cell { color:#7bb4f5; font-weight:600; }
+tr.lvl-row.is-valid td.valid-cell { color:#4ade80; font-weight:600; }
+textarea.trade-note { width:160px; height:34px; resize:vertical; background:var(--surface2);
+                       color:var(--text); border:1px solid var(--border); border-radius:4px;
+                       font-size:0.9em; padding:3px 5px; }
+/* Half-width H1/M5 panes: keep the hover OHLC readout pinned right and
+   fully visible, letting the descriptive part ellipsis instead. */
+.chart-title.chart-title-split { display:flex; align-items:baseline; gap:10px; }
+.chart-title-split .ct-base { flex:1 1 auto; min-width:0; overflow:hidden;
+                              text-overflow:ellipsis; white-space:nowrap; }
+.chart-title-split .ct-ohlc { flex:0 0 auto; white-space:nowrap; color:#e5e7eb; }
+/* Hover tooltip for the M5 level rays. Positioned inside the chart body (not
+   the title bar) so it can wrap onto several lines and list several
+   overlapping rays without ever being clipped or ellipsised. */
+.chart-ph { position:relative; }
+.pane-tip { position:absolute; display:none; z-index:5; pointer-events:none;
+            background:rgba(10,14,20,0.94); border:1px solid #38bdf8; border-radius:4px;
+            color:#e5e7eb; font-family:'Courier New', monospace; font-size:11px;
+            line-height:1.45; padding:5px 8px; max-width:none; white-space:nowrap;
+            box-shadow:0 2px 10px rgba(0,0,0,0.6); }
 </style>
 """
 
@@ -228,6 +626,7 @@ JS = """
 const CHARTS = __CHARTS_JSON__;
 const rendered = {};
 const FIXED_BAR_SPACING = 6;
+const RAY_HOVER_PTS = 1.5;   // vertical tolerance (points) for hovering a level ray
 const PT_TZ = 'America/Los_Angeles';
 const timeFmt = new Intl.DateTimeFormat('en-US', { timeZone: PT_TZ,
   hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
@@ -262,11 +661,29 @@ function _centerLogicalRange(chart, el, nBars) {
   chart.timeScale().setVisibleLogicalRange({ from: -halfPad, to: (nBars - 1) + halfPad });
 }
 function _renderH1(i, cd) {
-  const el = document.getElementById('ch1-' + i);
-  const titleEl = document.getElementById('th1-' + i);
+  _renderPane('ch1-' + i, 'th1-' + i, cd);
+}
+function _renderM5(i, cd) {
+  _renderPane('cm5-' + i, 'tm5-' + i, cd);
+}
+function _renderPane(elId, titleId, cd) {
+  const el = document.getElementById(elId);
+  const titleEl = document.getElementById(titleId);
   if (!el || !titleEl) return;
   const baseTitle = cd.title;
-  titleEl.textContent = baseTitle;
+  // Split the legend: the descriptive part truncates, the OHLC readout is
+  // pinned right and never clipped. These panes are half-width now, so a
+  // single nowrap+ellipsis line would cut the OHLC off on hover.
+  titleEl.classList.add('chart-title-split');
+  titleEl.textContent = '';
+  const baseEl = document.createElement('span');
+  baseEl.className = 'ct-base';
+  baseEl.textContent = baseTitle;
+  baseEl.title = baseTitle;
+  const ohlcEl = document.createElement('span');
+  ohlcEl.className = 'ct-ohlc';
+  titleEl.appendChild(baseEl);
+  titleEl.appendChild(ohlcEl);
   const chart = LightweightCharts.createChart(el, Object.assign(_baseOpts(timeFmtH1), {
     autoSize: false, width: el.clientWidth || 800, height: el.clientHeight || 320,
   }));
@@ -274,14 +691,54 @@ function _renderH1(i, cd) {
   series.setData(cd.candles);
   if (cd.markers && cd.markers.length) series.setMarkers(cd.markers);
   (cd.priceLines || []).forEach(pl => series.createPriceLine(pl));
+  // Level rays: flat line segments spanning formation -> retest. They carry
+  // no drawn label (a chart with several of them turns into unreadable
+  // overlapping text) -- the details go in the hover tooltip below.
+  const rayInfo = [];
+  (cd.rays || []).forEach(r => {
+    const rs = chart.addLineSeries({
+      color: r.color, lineWidth: r.lineWidth || 1,
+      lineStyle: (r.lineStyle == null ? 0 : r.lineStyle),
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false, pointMarkersVisible: false,
+    });
+    rs.setData(r.points);
+    rayInfo.push({ series: rs, label: r.label });
+  });
+  let tip = null;
+  if (rayInfo.length) {
+    tip = document.createElement('div');
+    tip.className = 'pane-tip';
+    el.appendChild(tip);
+  }
   const prec = cd.precision || 2;
   chart.subscribeCrosshairMove((param) => {
     const d = param.seriesData && param.seriesData.get(series);
     if (d && d.open != null) {
-      titleEl.textContent = baseTitle + '  |  O ' + d.open.toFixed(prec)
+      ohlcEl.textContent = 'O ' + d.open.toFixed(prec)
         + '  H ' + d.high.toFixed(prec) + '  L ' + d.low.toFixed(prec)
         + '  C ' + d.close.toFixed(prec);
-    } else { titleEl.textContent = baseTitle; }
+    } else { ohlcEl.textContent = ''; }
+    if (!tip) return;
+    // Only the ray(s) actually under the cursor -- a ray has a point on every
+    // bar it spans, so "has a value at this time" means the cursor is inside
+    // its formation..retest span; the price test picks the one being pointed at.
+    if (!param.point || !param.time) { tip.style.display = 'none'; return; }
+    const cursorPrice = series.coordinateToPrice(param.point.y);
+    const hits = [];
+    rayInfo.forEach(ri => {
+      const v = param.seriesData.get(ri.series);
+      if (v && v.value != null && cursorPrice != null
+          && Math.abs(v.value - cursorPrice) <= RAY_HOVER_PTS) hits.push(ri.label);
+    });
+    if (!hits.length) { tip.style.display = 'none'; return; }
+    tip.innerHTML = hits.map(h => '<div>' + h + '</div>').join('');
+    tip.style.display = 'block';
+    let x = param.point.x + 14, y = param.point.y + 14;
+    if (x + tip.offsetWidth > el.clientWidth) x = param.point.x - tip.offsetWidth - 14;
+    if (y + tip.offsetHeight > el.clientHeight) y = param.point.y - tip.offsetHeight - 14;
+    tip.style.left = Math.max(0, x) + 'px';
+    tip.style.top = Math.max(0, y) + 'px';
   });
   chart.timeScale().applyOptions({ barSpacing: FIXED_BAR_SPACING });
   _centerLogicalRange(chart, el, cd.candles.length);
@@ -404,6 +861,11 @@ function _renderStack(i) {
   const cd = CHARTS[i];
   if (!cd) return;
   if (cd.h1) _renderH1(i, cd.h1);
+  if (cd.m5) { _renderM5(i, cd.m5); }
+  else {
+    const t = document.getElementById('tm5-' + i);
+    if (t) t.textContent = 'M5  |  (no tick data covering this trade)';
+  }
   if (cd.trio) _renderTrio(i, cd.trio);
   if (cd.oneMin) _renderOneMin(i, cd.oneMin);
 }
@@ -416,6 +878,164 @@ function toggleChart(i) {
   if (btn) { btn.classList.toggle('open', opening); btn.textContent = opening ? '\\u25bc' : '\\u25b6'; }
   if (opening && !rendered[i]) { _renderStack(i); rendered[i] = true; }
 }
+</script>
+<script>
+// Reviewed / Replayed / Notes tracking -- persisted to this browser's
+// localStorage under a key unique to THIS report (stop/target combo), with
+// each row further keyed by its own trade identity (data-key), so notes
+// don't collide across different stop/target reports.
+const REVIEW_STORAGE_KEY = '__STORAGE_KEY__';
+
+function loadReviewStore() {
+  try { return JSON.parse(localStorage.getItem(REVIEW_STORAGE_KEY) || '{}'); }
+  catch (e) { return {}; }
+}
+function saveReviewStore(store) { localStorage.setItem(REVIEW_STORAGE_KEY, JSON.stringify(store)); }
+
+function reviewRowState(tr) {
+  return {
+    reviewed: tr.querySelector('.reviewed-cb').checked,
+    valid: tr.querySelector('.valid-cb').checked,
+    replayed: tr.querySelector('.replayed-cb').checked,
+    notes: tr.querySelector('.trade-note').value,
+  };
+}
+function applyReviewRowState(tr, state) {
+  if (!state) state = {};
+  tr.querySelector('.reviewed-cb').checked = !!state.reviewed;
+  tr.querySelector('.valid-cb').checked = !!state.valid;
+  tr.querySelector('.replayed-cb').checked = !!state.replayed;
+  tr.querySelector('.trade-note').value = state.notes || '';
+  tr.classList.toggle('is-reviewed', !!state.reviewed);
+  tr.classList.toggle('is-valid', !!state.valid);
+  tr.classList.toggle('is-replayed', !!state.replayed);
+}
+function persistReviewRow(tr) {
+  const store = loadReviewStore();
+  store[tr.dataset.key] = reviewRowState(tr);
+  saveReviewStore(store);
+  tr.classList.toggle('is-reviewed', !!store[tr.dataset.key].reviewed);
+  tr.classList.toggle('is-valid', !!store[tr.dataset.key].valid);
+  tr.classList.toggle('is-replayed', !!store[tr.dataset.key].replayed);
+  updateReviewSummary();
+  applyReviewFilters();
+}
+function updateReviewSummary() {
+  const reviewed = document.querySelectorAll('.lvl-row.is-reviewed').length;
+  const valid = document.querySelectorAll('.lvl-row.is-valid').length;
+  const replayed = document.querySelectorAll('.lvl-row.is-replayed').length;
+  const elR = document.getElementById('sum-reviewed'); if (elR) elR.textContent = reviewed;
+  const elV = document.getElementById('sum-valid'); if (elV) elV.textContent = valid;
+  const elP = document.getElementById('sum-replayed'); if (elP) elP.textContent = replayed;
+}
+function initReview() {
+  const store = loadReviewStore();
+  document.querySelectorAll('.lvl-row').forEach(tr => {
+    applyReviewRowState(tr, store[tr.dataset.key]);
+    tr.querySelectorAll('.reviewed-cb, .valid-cb, .replayed-cb, .trade-note').forEach(el => {
+      el.addEventListener('change', () => persistReviewRow(tr));
+    });
+    tr.querySelector('.trade-note').addEventListener('input', () => persistReviewRow(tr));
+  });
+  updateReviewSummary();
+}
+function csvEscapeReview(v) {
+  v = (v === null || v === undefined) ? '' : String(v);
+  return /[",\\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+}
+function exportReviewCsv() {
+  const store = loadReviewStore();
+  const header = ['key', 'reviewed', 'valid', 'replayed', 'notes'];
+  const lines = [header.join(',')];
+  Object.keys(store).forEach(key => {
+    const st = store[key] || {};
+    lines.push([key, st.reviewed ? 1 : 0, st.valid ? 1 : 0, st.replayed ? 1 : 0, st.notes || '']
+      .map(csvEscapeReview).join(','));
+  });
+  const blob = new Blob([lines.join('\\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = REVIEW_STORAGE_KEY + '.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+function parseReviewCsvLine(line) {
+  const out = []; let cur = ''; let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQ) {
+      if (c === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+      else if (c === '"') { inQ = false; }
+      else { cur += c; }
+    } else {
+      if (c === '"') inQ = true;
+      else if (c === ',') { out.push(cur); cur = ''; }
+      else cur += c;
+    }
+  }
+  out.push(cur);
+  return out;
+}
+function importReviewCsv(evt) {
+  const file = evt.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const lines = reader.result.split(/\\r?\\n/).filter(l => l.length);
+    const header = parseReviewCsvLine(lines[0]);
+    const store = loadReviewStore();
+    for (let i = 1; i < lines.length; i++) {
+      const cols = parseReviewCsvLine(lines[i]);
+      const rec = {};
+      header.forEach((h, j) => rec[h] = cols[j]);
+      if (!rec.key) continue;
+      store[rec.key] = { reviewed: rec.reviewed === '1', valid: rec.valid === '1',
+                         replayed: rec.replayed === '1', notes: rec.notes || '' };
+    }
+    saveReviewStore(store);
+    document.querySelectorAll('.lvl-row').forEach(tr => applyReviewRowState(tr, store[tr.dataset.key]));
+    updateReviewSummary();
+    applyReviewFilters();
+    evt.target.value = '';
+    alert('Imported review notes from ' + file.name);
+  };
+  reader.readAsText(file);
+}
+function clearAllReview() {
+  localStorage.removeItem(REVIEW_STORAGE_KEY);
+  document.querySelectorAll('.lvl-row').forEach(tr => applyReviewRowState(tr, {}));
+  updateReviewSummary();
+  applyReviewFilters();
+}
+function applyReviewFilters() {
+  const statusOn = Array.from(document.querySelectorAll('.f-review-status:checked')).map(c => c.value);
+  const validOn = Array.from(document.querySelectorAll('.f-review-valid:checked')).map(c => c.value);
+  const replayOn = Array.from(document.querySelectorAll('.f-review-replay:checked')).map(c => c.value);
+  const notesOn = Array.from(document.querySelectorAll('.f-review-notes:checked')).map(c => c.value);
+  let shown = 0;
+  document.querySelectorAll('.lvl-row').forEach(function(tr) {
+    const isReviewed = tr.classList.contains('is-reviewed');
+    const isValid = tr.classList.contains('is-valid');
+    const isReplayed = tr.classList.contains('is-replayed');
+    const hasNotes = tr.querySelector('.trade-note').value.trim().length > 0;
+    const statusOk = statusOn.includes(isReviewed ? 'reviewed' : 'unreviewed');
+    const validOk = validOn.includes(isValid ? 'valid' : 'not_valid');
+    const replayOk = replayOn.includes(isReplayed ? 'replayed' : 'not_replayed');
+    const notesOk = notesOn.includes(hasNotes ? 'has_notes' : 'no_notes');
+    const show = statusOk && validOk && replayOk && notesOk;
+    tr.classList.toggle('hidden', !show);
+    if (show) shown++;
+    if (!show) {
+      const cr = document.getElementById('chart-row-' + tr.dataset.idx);
+      if (cr) cr.classList.add('hidden');
+    }
+  });
+  const elS = document.getElementById('sum-shown'); if (elS) elS.textContent = shown;
+}
+document.querySelectorAll('.f-review-status, .f-review-valid, .f-review-replay, .f-review-notes')
+  .forEach(cb => cb.addEventListener('change', applyReviewFilters));
+initReview();
+applyReviewFilters();
 </script>
 """
 
@@ -432,8 +1052,15 @@ def _relabel_fta_as_target(chart_dict):
             pl["title"] = "target " + pl["title"][len("fta "):]
 
 
-def render(stop, target, output_path):
-    h1_df, pos_by_ts, retests_df = A.load_strong_breakout_rows()
+def _select_rows(start=None, end=None, limit=A._DEFAULT, merged=False):
+    """Row selection + forward-window simulation shared by the parent
+    process and every parallel chunk worker. Deterministic: given the same
+    arguments it always yields the same `trades` ordering, which is what
+    makes a worker's local chunk indices line up with the parent's global
+    ones."""
+    h1_df = A.load_merged_h1() if merged else None
+    h1_df, pos_by_ts, retests_df = A.load_strong_breakout_rows(
+        start=start, end=end, limit=limit, h1_df=h1_df)
     strong = retests_df[retests_df["range_ratio"].notna() &
                          (retests_df["range_ratio"] >= A.R.WIDE_BREAKOUT_RATIO_THRESHOLD)]
     trades = A.simulate(h1_df, pos_by_ts, strong)
@@ -442,9 +1069,166 @@ def render(stop, target, output_path):
         f"strong ({len(strong)}) / trades ({len(trades)}) count mismatch -- "
         "simulate() must have dropped a row (near end of data); positional "
         "alignment with `strong` below would be wrong.")
+    return h1_df, pos_by_ts, strong, trades
 
-    series_by_idx = M.build_or_load_1min_series(trades)
-    resolved_list = resolve_trades(trades, series_by_idx, stop, target)
+
+def _build_records(h1_df, pos_by_ts, strong, trades, indices, stop, target,
+                   cache_path, label=""):
+    """All the .scid-backed heavy lifting for the trades at `indices`
+    (positions into the global `trades` list): 1-minute series, stop/target
+    resolution, and the H1 / 1s-trio / 1min / footprint charts.
+
+    Returns {global_index: record}. Split out of render() so a chunk of
+    indices can run in its own process -- that is the unit of parallelism,
+    and it is deliberately contract-pure (see _chunk_indices) so each worker
+    only ever memory-maps one ~2-3GB .scid contract.
+
+    `cache_path` MUST be unique per chunk: build_or_load_1min_series keys
+    its cache by the trade's position within the list it was handed, so two
+    chunks (each re-indexed from 0) would otherwise read each other's bars
+    out of a shared file and permanently corrupt it."""
+    sub_trades = [trades[i] for i in indices]
+    series_by_idx = M.build_or_load_1min_series(sub_trades, cache_path=cache_path)
+    resolved_list = resolve_trades(sub_trades, series_by_idx, stop, target)
+
+    out = {}
+    n = len(indices)
+    for j, i in enumerate(indices):
+        trade, resolved = sub_trades[j], resolved_list[j]
+        row_d = strong.iloc[i]
+        chart = build_trade_chart(h1_df, pos_by_ts, row_d, trade, resolved, stop, target)
+
+        is_long = row_d["type"] == "LHPB"
+        # Real-tick 1s/1min/footprint charts, same real-tick machinery as
+        # lxpb_labels_report.html. build_1s_trio_chart reads "fta"/"stop_loss"
+        # as its target/stop price lines -- override those two fields (in
+        # entry_price's own adjusted scale, not the level's "price") with
+        # THIS combo's stop/target so the extra charts show the same
+        # stop/target bracket as the H1 chart, not lxpb.py's original
+        # fta/stop_loss.
+        entry_price_adj = float(row_d["entry_price"])
+        row_for_trio = row_d.copy()
+        row_for_trio["fta"] = entry_price_adj + target if is_long else entry_price_adj - target
+        row_for_trio["stop_loss"] = entry_price_adj - stop if is_long else entry_price_adj + stop
+        trio_chart = R.build_1s_trio_chart(row_for_trio, R.PAD_SECONDS_DEFAULT,
+                                            R.ONE_MIN_PAD_MINUTES_DEFAULT, True,
+                                            touch_time_override=resolved.get("touch_time"))
+        if trio_chart is not None:
+            _relabel_fta_as_target(trio_chart["trio"])
+            _relabel_fta_as_target(trio_chart["oneMin"])
+            chart_stack = {"h1": chart, "trio": trio_chart["trio"], "oneMin": trio_chart["oneMin"]}
+            fp = {"narrow": trio_chart.get("footprintNarrowHtml"),
+                  "wide": trio_chart.get("footprintWideHtml")}
+        else:
+            chart_stack = {"h1": chart, "trio": None, "oneMin": None}
+            fp = {"narrow": "<p class='note'>(no tick data in this window)</p>",
+                  "wide": "<p class='note'>(no tick data in this window)</p>"}
+        chart_stack["m5"] = build_m5_chart(row_d, resolved, stop, target)
+        out[i] = {"chart_stack": chart_stack, "fp": fp, "resolved": resolved}
+        if (j + 1) % 10 == 0 or (j + 1) == n:
+            print(f"  {label}built charts for {j + 1}/{n} rows", flush=True)
+    return out
+
+
+def _chunk_indices(trades, n_chunks):
+    """Contract-pure chunking -- see M.chunk_indices_by_contract, which owns
+    the implementation (shared with the exit-analysis report's grid)."""
+    return M.chunk_indices_by_contract(trades, n_chunks)
+
+
+def _run_chunk_subprocess(spec):
+    """Child-process entry point: rebuild the identical selection, do this
+    chunk's heavy work, pickle the records out."""
+    h1_df, pos_by_ts, strong, trades = _select_rows(
+        spec["start"], spec["end"], spec["limit"], spec["merged"])
+    recs = _build_records(h1_df, pos_by_ts, strong, trades, spec["indices"],
+                          spec["stop"], spec["target"], spec["cache_path"],
+                          label=spec["label"])
+    with open(spec["out_path"], "wb") as f:
+        pickle.dump(recs, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _build_records_parallel(specs, workers):
+    """Run chunk specs as concurrent child processes and merge their records.
+
+    Uses real processes (not threads) because the work is CPU/IO bound
+    inside pandas and, more importantly, because each child must be able to
+    drop its multi-GB contract cache by exiting."""
+    ctx = mp.get_context("spawn")
+    running, pending, records = [], list(specs), {}
+    failed = []
+    while pending or running:
+        while pending and len(running) < workers:
+            spec = pending.pop(0)
+            p = ctx.Process(target=_run_chunk_subprocess, args=(spec,), daemon=False)
+            p.start()
+            print(f"[parallel] started {spec['label'].strip()} pid={p.pid} "
+                  f"({len(spec['indices'])} trades)", flush=True)
+            running.append((p, spec))
+        time.sleep(2.0)
+        for p, spec in list(running):
+            if p.is_alive():
+                continue
+            running.remove((p, spec))
+            if p.exitcode != 0 or not os.path.exists(spec["out_path"]):
+                failed.append((spec["label"].strip(), p.exitcode))
+                continue
+            with open(spec["out_path"], "rb") as f:
+                records.update(pickle.load(f))
+            os.remove(spec["out_path"])
+            print(f"[parallel] finished {spec['label'].strip()} "
+                  f"({len(records)} records so far)", flush=True)
+    if failed:
+        raise RuntimeError(f"parallel chunk(s) failed: {failed}")
+    return records
+
+
+def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
+           merged=False, workers=1, storage_key=None, title_suffix=None):
+    h1_df, pos_by_ts, strong, trades = _select_rows(start, end, limit, merged)
+    print(f"Selected {len(trades)} strong-breakout trades "
+          f"({strong['retest_time'].min()} -> {strong['retest_time'].max()})", flush=True)
+
+    # Chunk cache files are keyed to the SELECTION (span + limit + merge) AND
+    # to a digest of the exact global trade indices the chunk covers, not just
+    # its ordinal: build_or_load_1min_series' cache key is the trade's
+    # position within the list it was handed, so re-running with a different
+    # --workers (which moves the chunk boundaries) would otherwise map
+    # different trades onto the same "chunk 0" keys in the same file. That is
+    # precisely the silent cross-selection corruption its docstring warns
+    # about, so the digest makes any change of membership a different file.
+    sel_tag = f"{start or A.DEFAULT_START}_{end or A.DEFAULT_END}_{'m' if merged else 's'}"
+    sel_tag = sel_tag.replace("-", "").replace(":", "").replace(" ", "")
+    cache_dir = os.path.join(_HERE, "data", "1min_chunks")
+    os.makedirs(cache_dir, exist_ok=True)
+
+    def _chunk_cache(idxs):
+        digest = hashlib.sha1(",".join(map(str, idxs)).encode()).hexdigest()[:10]
+        return os.path.join(cache_dir, f"1min_{sel_tag}_{digest}.csv")
+
+    if workers > 1 and len(trades) > 1:
+        chunks = _chunk_indices(trades, workers)
+        specs = []
+        for c, idxs in enumerate(chunks):
+            specs.append({
+                "indices": idxs, "start": start, "end": end, "limit": limit,
+                "merged": merged, "stop": stop, "target": target,
+                "cache_path": _chunk_cache(idxs),
+                "out_path": os.path.join(cache_dir, f"recs_{sel_tag}_c{c:02d}.pkl"),
+                "label": f"chunk{c:02d} ",
+            })
+        print(f"[parallel] {len(specs)} contract-pure chunks, {workers} concurrent: "
+              + ", ".join(f"c{c:02d}={len(s['indices'])}" for c, s in enumerate(specs)), flush=True)
+        records = _build_records_parallel(specs, workers)
+    else:
+        all_idx = list(range(len(trades)))
+        records = _build_records(h1_df, pos_by_ts, strong, trades, all_idx, stop, target,
+                                 _chunk_cache(all_idx))
+
+    missing = [i for i in range(len(trades)) if i not in records]
+    if missing:
+        raise RuntimeError(f"{len(missing)} trades missing from chunk results: {missing[:10]}")
+    resolved_list = [records[i]["resolved"] for i in range(len(trades))]
 
     wins = sum(1 for r in resolved_list if r["outcome"] == "target")
     losses = sum(1 for r in resolved_list if r["outcome"] == "stop")
@@ -453,12 +1237,23 @@ def render(stop, target, output_path):
     win_rate = wins / len(r_values) if r_values else 0.0
     avg_r = float(np.mean(r_values)) if r_values else 0.0
     total_r = float(np.sum(r_values)) if r_values else 0.0
+    # a) worst (largest) adverse excursion any WINNING trade went through
+    #    before ultimately hitting target; b) largest favorable excursion
+    #    any LOSING trade went through before ultimately hitting stop --
+    #    see _compute_excursion.
+    win_mae_values = [r["adverse_pts"] for r in resolved_list
+                       if r["outcome"] == "target" and r.get("adverse_pts") is not None]
+    loss_mfe_values = [r["favorable_pts"] for r in resolved_list
+                        if r["outcome"] == "stop" and r.get("favorable_pts") is not None]
+    max_win_mae = max(win_mae_values) if win_mae_values else 0.0
+    max_loss_mfe = max(loss_mfe_values) if loss_mfe_values else 0.0
 
     charts, rows_html = [], []
-    n_trades = len(trades)
-    for i, (trade, resolved) in enumerate(zip(trades, resolved_list)):
+    for i, resolved in enumerate(resolved_list):
         row_d = strong.iloc[i]
-        chart = build_trade_chart(h1_df, pos_by_ts, row_d, trade, resolved, stop, target)
+        rec = records[i]
+        charts.append(rec["chart_stack"])
+        fp = rec["fp"]
 
         level_type = row_d["type"]
         price = float(row_d["price"])
@@ -466,38 +1261,31 @@ def render(stop, target, output_path):
         target_price = price + target if is_long else price - target
         stop_price = price - stop if is_long else price + stop
 
-        # Real-tick 1s/1min/footprint charts, same real-tick machinery as
-        # lxpb_labels_report.html. build_1s_trio_chart reads "fta"/"stop_loss"
-        # as its target/stop price lines -- override those two fields (in
-        # entry_price's own adjusted scale, not the level's "price") with
-        # THIS combo's stop/target so the extra charts show the same
-        # stop=2/target=8-style bracket as the H1 chart, not lxpb.py's
-        # original fta/stop_loss.
-        entry_price_adj = float(row_d["entry_price"])
-        row_for_trio = row_d.copy()
-        row_for_trio["fta"] = entry_price_adj + target if is_long else entry_price_adj - target
-        row_for_trio["stop_loss"] = entry_price_adj - stop if is_long else entry_price_adj + stop
-        trio_chart = R.build_1s_trio_chart(row_for_trio, R.PAD_SECONDS_DEFAULT,
-                                            R.ONE_MIN_PAD_MINUTES_DEFAULT, True)
-        if trio_chart is not None:
-            _relabel_fta_as_target(trio_chart["trio"])
-            _relabel_fta_as_target(trio_chart["oneMin"])
-            chart_stack = {"h1": chart, "trio": trio_chart["trio"], "oneMin": trio_chart["oneMin"]}
-            fp = {"narrow": trio_chart.get("footprintNarrowHtml"), "wide": trio_chart.get("footprintWideHtml")}
-        else:
-            chart_stack = {"h1": chart, "trio": None, "oneMin": None}
-            fp = {"narrow": "<p class='note'>(no tick data in this window)</p>",
-                  "wide": "<p class='note'>(no tick data in this window)</p>"}
-        charts.append(chart_stack)
-        if (i + 1) % 10 == 0 or (i + 1) == n_trades:
-            print(f"  built charts for {i + 1}/{n_trades} rows")
         outcome = resolved["outcome"]
         r_val = resolved["r"]
         outcome_cls = "good" if outcome == "target" else ("bad" if outcome == "stop" else "")
         outcome_label = {"target": "WIN", "stop": "LOSS", "no_hit": "NO-HIT", "no_data": "NO DATA"}[outcome]
         r_str = f"{r_val:+.2f}" if r_val is not None else "-"
         exit_str = R._to_pt_str(resolved["exit_time"]) if resolved["exit_time"] is not None else "-"
+        entry_str = R._to_pt_str(resolved["touch_time"]) if resolved.get("touch_time") is not None \
+            else R._to_pt_str(row_d["retest_time"])
         type_cls = "type-lhpb" if is_long else "type-llpb"
+
+        # a) for a WINNING trade, how far price moved AGAINST the position
+        #    (adverse_pts) before it ultimately hit target; b) for a LOSING
+        #    trade, how far price moved IN FAVOR of the position
+        #    (favorable_pts) before it ultimately hit stop. Real-1s-tick
+        #    precision throughout, bounded to touch_time..exit_time (see
+        #    _compute_excursion). "-" for no_hit/no_data rows (no pinned
+        #    exit_time to bound the window at).
+        if outcome == "target":
+            mae_str = f"{resolved['adverse_pts']:.2f}" if resolved.get("adverse_pts") is not None else "-"
+            mfe_str = "-"
+        elif outcome == "stop":
+            mae_str = "-"
+            mfe_str = f"{resolved['favorable_pts']:.2f}" if resolved.get("favorable_pts") is not None else "-"
+        else:
+            mae_str = mfe_str = "-"
 
         fp_narrow_html = fp.get("narrow")
         fp_wide_html = fp.get("wide")
@@ -509,19 +1297,33 @@ def render(stop, target, output_path):
             f'</div></div>'
         )
 
+        # Stable per-row key for the Reviewed/Replayed/Notes localStorage
+        # store -- identifies this trade (not just its position `i`, which
+        # would silently reshuffle saved notes if the underlying row set
+        # ever changes) within THIS stop/target report.
+        row_key = f"{level_type}_{price:.2f}_{entry_str}".replace(" ", "_")
+
         rows_html.append(f"""
-<tr class="lvl-row {type_cls}" data-idx="{i}" onclick="toggleChart({i})">
+<tr class="lvl-row {type_cls}" data-idx="{i}" data-key="{row_key}" onclick="toggleChart({i})">
   <td class="left">{i}</td><td class="left type-cell">{level_type}</td>
-  <td class="left">{R._to_pt_str(row_d['retest_time'])}</td>
+  <td class="left">{entry_str}</td>
   <td>{price:.2f}</td><td>{stop_price:.2f}</td><td>{target_price:.2f}</td>
   <td class="{outcome_cls}">{outcome_label}</td><td class="{outcome_cls}">{r_str}</td>
   <td class="left">{exit_str}</td>
+  <td class="bad">{mae_str}</td><td class="good">{mfe_str}</td>
+  <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
+  <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb"></td>
+  <td class="replayed-cell" onclick="event.stopPropagation();"><input type="checkbox" class="replayed-cb"></td>
+  <td class="left" onclick="event.stopPropagation();"><textarea class="trade-note" placeholder="notes..."></textarea></td>
   <td class="expand-cell"><button class="expand-btn" data-idx="{i}"
       onclick="event.stopPropagation();toggleChart({i})">\u25b6</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="{i}" id="chart-row-{i}">
-  <td colspan="10"><div class="chart-stack">
-    <div class="chart-cell chart-h1"><div class="chart-title" id="th1-{i}"></div><div class="chart-ph" id="ch1-{i}"></div></div>
+  <td colspan="16"><div class="chart-stack">
+    <div class="chart-row-2col">
+      <div class="chart-cell chart-h1"><div class="chart-title" id="th1-{i}"></div><div class="chart-ph" id="ch1-{i}"></div></div>
+      <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-{i}"></div><div class="chart-ph" id="cm5-{i}"></div></div>
+    </div>
     <div class="chart-row-2col">
       <div class="chart-col-1s">
         <div class="chart-cell"><div class="chart-title" id="tc-{i}"></div><div class="chart-ph" id="cc-{i}"></div></div>
@@ -540,12 +1342,22 @@ def render(stop, target, output_path):
     header = f"""
 <h1>LXPB Strong-Breakout Trades &mdash; Stop {stop:.0f} / Target {target:.0f}</h1>
 <p class="lead">Same {len(trades)} "strong breakout" LXPB retests as exit_analysis_report.html's
-1-minute-resolved grid, walked forward with a fixed stop={stop:.0f}pt / target={target:.0f}pt bracket
-(real 1-minute bars from local .scid ticks, escalating to real 1-second ticks only when a single
-minute's own H/L range covers BOTH levels at once). Entry = the level's own retest price (P2, no
-slippage modeled). Click a row to expand its H1 chart: gold line = entry level, green dashed =
-target, red dashed = stop; P0/P1/P2 markers mark formation/breakout/retest, and a 4th green/red
-arrow marks the resolved exit bar.</p>
+1-minute-resolved grid, walked forward with a fixed stop={stop:.0f}pt / target={target:.0f}pt bracket.
+Entry is anchored to the real 1-second-tick instant the level was actually FILLABLE within the
+retest H1 bar: a long entry is a resting buy, so only a bid-side (seller-initiated) print at/through
+the level counts (an earlier version used the naive first touch by EITHER side, which could be
+several seconds too early); a short entry symmetrically requires an ask-side print. Exits are
+pinned to the exact second and price via real 1s ticks for the resolving minute; a target exit is
+likewise a resting limit order and only counts an opposite-side print (ask-side for a long's
+target, bid-side for a short's), while a stop exit -- a stop/market order once triggered -- fills
+on any side. Entry price itself is still the level's own retest price (P2, no slippage modeled).
+Click a row to expand its H1 chart: gold line = entry level, green dashed = target, red dashed =
+stop; P0/P1/P2 markers mark formation/breakout/retest, and a 4th green/red arrow marks the resolved
+exit bar. "MAE (win)" = max points a WINNING trade moved against the position before hitting
+target; "MFE (loss)" = max points a LOSING trade moved in the position's favor before hitting
+stop -- both computed from real 1s ticks (see _compute_excursion), not just 1-minute bars.
+Reviewed/Valid/Replayed/Notes persist in this browser's localStorage (keyed to this
+stop/target report) and can be exported/imported as CSV (top-right buttons).</p>
 <div class="summary">
   <div class="box"><strong>{len(trades)}</strong>trades</div>
   <div class="box"><strong>{wins}</strong>wins</div>
@@ -554,27 +1366,68 @@ arrow marks the resolved exit bar.</p>
   <div class="box"><strong>{win_rate*100:.1f}%</strong>win rate</div>
   <div class="box"><strong>{avg_r:.2f}</strong>avg R</div>
   <div class="box"><strong>{total_r:.1f}</strong>total R</div>
+  <div class="box"><strong>{max_win_mae:.2f}</strong>max MAE (win)</div>
+  <div class="box"><strong>{max_loss_mfe:.2f}</strong>max MFE (loss)</div>
+  <div class="box"><strong id="sum-shown">{len(trades)}</strong>shown</div>
+  <div class="box"><strong id="sum-reviewed">0</strong>reviewed</div>
+  <div class="box"><strong id="sum-valid">0</strong>valid</div>
+  <div class="box"><strong id="sum-replayed">0</strong>replayed</div>
+  <div class="toolbar">
+    <button class="btn" onclick="exportReviewCsv()">\u2b07 Export notes CSV</button>
+    <label class="btn" for="import-review-file">\u2b06 Import notes CSV</label>
+    <input type="file" id="import-review-file" accept=".csv" class="hidden" onchange="importReviewCsv(event)">
+    <button class="btn" onclick="if(confirm('Clear ALL saved Reviewed/Valid/Replayed/Notes in this browser for this report?')) clearAllReview();">\U0001f5d1 Clear all</button>
+  </div>
+</div>
+"""
+    filter_panel = """
+<div class="filter-panel">
+  <div class="filter-row">
+    <span class="filter-label">Status</span>
+    <label class="chip"><input type="checkbox" class="f-cb f-review-status" value="unreviewed" checked> Unreviewed</label>
+    <label class="chip"><input type="checkbox" class="f-cb f-review-status" value="reviewed" checked> Reviewed</label>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label">Valid</span>
+    <label class="chip"><input type="checkbox" class="f-cb f-review-valid" value="not_valid" checked> Not valid</label>
+    <label class="chip"><input type="checkbox" class="f-cb f-review-valid" value="valid" checked> Valid</label>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label">Replayed</span>
+    <label class="chip"><input type="checkbox" class="f-cb f-review-replay" value="not_replayed" checked> Not replayed</label>
+    <label class="chip"><input type="checkbox" class="f-cb f-review-replay" value="replayed" checked> Replayed</label>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label">Notes</span>
+    <label class="chip"><input type="checkbox" class="f-cb f-review-notes" value="no_notes" checked> No notes</label>
+    <label class="chip"><input type="checkbox" class="f-cb f-review-notes" value="has_notes" checked> Has notes</label>
+  </div>
 </div>
 """
     thead = """
 <table id="lvl-table">
 <thead><tr>
-  <th class="left">#</th><th class="left">Type</th><th class="left">Retest (entry) time</th>
+  <th class="left">#</th><th class="left">Type</th><th class="left">Entry (touch) time</th>
   <th>Entry</th><th>Stop</th><th>Target</th><th>Outcome</th><th>R</th>
-  <th class="left">Exit time</th><th class="expand-th">\u25b6</th>
+  <th class="left">Exit time</th><th>MAE (win)</th><th>MFE (loss)</th>
+  <th>Reviewed</th><th>Valid</th><th>Replayed</th>
+  <th class="left">Notes</th><th class="expand-th">\u25b6</th>
 </tr></thead>
 <tbody>
 """
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<title>LXPB Stop {stop:.0f} / Target {target:.0f} Trades</title>
+<title>LXPB Stop {stop:.0f} / Target {target:.0f} Trades{title_suffix or ''}</title>
 {CSS}
 </head><body>
 {header}
+{filter_panel}
 <div class="table-wrap">{thead}
 {''.join(rows_html)}
 </tbody></table></div>
-{JS.replace("__CHARTS_JSON__", json.dumps(charts))}
+{JS.replace("__CHARTS_JSON__", json.dumps(charts))
+   .replace("__STORAGE_KEY__", storage_key
+            or f"lxpb_trade_review_v1_stop{stop:.0f}_target{target:.0f}")}
 </body></html>
 """
     with open(output_path, "w", encoding="utf-8") as f:
@@ -588,6 +1441,38 @@ if __name__ == "__main__":
     parser.add_argument("--stop", type=float, default=DEFAULT_STOP)
     parser.add_argument("--target", type=float, default=DEFAULT_TARGET)
     parser.add_argument("--output", default=None)
+    parser.add_argument("--start", default=None,
+                        help="first retest date (default: this script's original 2026-07-01)")
+    parser.add_argument("--end", default=None,
+                        help="last retest date (default: this script's original 2026-08-31)")
+    parser.add_argument("--limit", default=None,
+                        help="max rows, newest-first (int, or 'none' for no cap)")
+    parser.add_argument("--merged", action="store_true",
+                        help="merge every TradingView H1 export (newest wins) instead of "
+                             "using only the single default one -- needed for spans that "
+                             "run past the default export's last bar")
+    parser.add_argument("--full-year", action="store_true",
+                        help="shorthand for --start 2026-01-01 --end 2026-12-31 --limit none --merged")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="concurrent chunk processes; chunks are contract-pure so each "
+                             "holds only ~1 contract (~2-3GB) of .scid ticks in memory")
+    parser.add_argument("--storage-key", default=None)
     args = parser.parse_args()
-    out = args.output or os.path.join(_HERE, f"stop{args.stop:.0f}_target{args.target:.0f}_trades_report.html")
-    render(args.stop, args.target, out)
+
+    start, end, merged = args.start, args.end, args.merged
+    limit = A._DEFAULT
+    if args.limit is not None:
+        limit = None if str(args.limit).lower() in ("none", "0", "all") else int(args.limit)
+    suffix, skey = None, args.storage_key
+    if args.full_year:
+        start, end, limit, merged = start or "2026-01-01", end or "2026-12-31", None, True
+        suffix = " (2026 full year)"
+        skey = skey or f"lxpb_trade_review_v1_stop{args.stop:.0f}_target{args.target:.0f}_fy2026"
+
+    default_name = f"stop{args.stop:.0f}_target{args.target:.0f}_trades_report.html"
+    if args.full_year:
+        default_name = f"stop{args.stop:.0f}_target{args.target:.0f}_trades_report_2026_full_year.html"
+    out = args.output or os.path.join(_HERE, default_name)
+    render(args.stop, args.target, out, start=start, end=end, limit=limit,
+           merged=merged, workers=args.workers, storage_key=skey, title_suffix=suffix)
+

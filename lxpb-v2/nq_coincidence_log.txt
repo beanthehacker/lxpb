@@ -1,0 +1,46 @@
+Strong-breakout ES trades: 72 (unique bars: 42)
+NQ H1 retests (full series): 1440 rows / 808 unique bars
+Building coincidence flags (h1 -> m1 -> 1s escalation, real ticks)...
+  loading D:\SC\Data\F.US.EPU26.scid (first use of EPU26) ...
+h1_coincide    27
+m1_coincide     9
+1s_coincide     1
+dtype: int64
+
+Mean m1 diff (minutes) when h1-coincident: 8.77
+Mean 1s diff (seconds) when m1-coincident: 53.04
+
+=== Split by `h1_coincide`: YES n=27  NO n=45 ===
+  Mean MAE: YES=-90.43  NO=-61.29
+  stop= 2 target= 12  YES: n=27.0 win_rate=0.70 avg_R=  3.93   |   NO: n=45.0 win_rate=0.78 avg_R=  4.44
+  stop= 2 target=  6  YES: n=27.0 win_rate=1.00 avg_R=  3.00   |   NO: n=45.0 win_rate=0.96 avg_R=  2.82
+  stop= 3 target= 12  YES: n=27.0 win_rate=0.78 avg_R=  2.89   |   NO: n=45.0 win_rate=0.78 avg_R=  2.89
+  stop= 4 target= 12  YES: n=27.0 win_rate=0.78 avg_R=  2.11   |   NO: n=45.0 win_rate=0.80 avg_R=  2.20
+  stop= 6 target= 12  YES: n=27.0 win_rate=0.81 avg_R=  1.44   |   NO: n=45.0 win_rate=0.82 avg_R=  1.47
+  stop= 2 target=  8  YES: n=27.0 win_rate=0.93 avg_R=  3.63   |   NO: n=45.0 win_rate=0.93 avg_R=  3.67
+  stop= 4 target= 16  YES: n=27.0 win_rate=0.63 avg_R=  2.15   |   NO: n=45.0 win_rate=0.53 avg_R=  1.67
+  stop= 6 target= 20  YES: n=27.0 win_rate=0.56 avg_R=  1.41   |   NO: n=45.0 win_rate=0.44 avg_R=  0.93
+
+=== Split by `m1_coincide`: YES n=9  NO n=63 ===
+  Mean MAE: YES=-84.22  NO=-70.50
+  stop= 2 target= 12  YES: n=9.0 win_rate=0.44 avg_R=  2.11   |   NO: n=63.0 win_rate=0.79 avg_R=  4.56
+  stop= 2 target=  6  YES: n=9.0 win_rate=1.00 avg_R=  3.00   |   NO: n=63.0 win_rate=0.97 avg_R=  2.87
+  stop= 3 target= 12  YES: n=9.0 win_rate=0.67 avg_R=  2.33   |   NO: n=63.0 win_rate=0.79 avg_R=  2.97
+  stop= 4 target= 12  YES: n=9.0 win_rate=0.67 avg_R=  1.67   |   NO: n=63.0 win_rate=0.81 avg_R=  2.24
+  stop= 6 target= 12  YES: n=9.0 win_rate=0.78 avg_R=  1.33   |   NO: n=63.0 win_rate=0.83 avg_R=  1.48
+  stop= 2 target=  8  YES: n=9.0 win_rate=0.78 avg_R=  2.89   |   NO: n=63.0 win_rate=0.95 avg_R=  3.76
+  stop= 4 target= 16  YES: n=9.0 win_rate=0.44 avg_R=  1.22   |   NO: n=63.0 win_rate=0.59 avg_R=  1.94
+  stop= 6 target= 20  YES: n=9.0 win_rate=0.44 avg_R=  0.93   |   NO: n=63.0 win_rate=0.49 avg_R=  1.13
+
+=== Split by `1s_coincide`: YES n=1  NO n=71 ===
+  Mean MAE: YES=-60.50  NO=-72.38
+  stop= 2 target= 12  YES: n=1.0 win_rate=1.00 avg_R=  6.00   |   NO: n=71.0 win_rate=0.75 avg_R=  4.23
+  stop= 2 target=  6  YES: n=1.0 win_rate=1.00 avg_R=  3.00   |   NO: n=71.0 win_rate=0.97 avg_R=  2.89
+  stop= 3 target= 12  YES: n=1.0 win_rate=1.00 avg_R=  4.00   |   NO: n=71.0 win_rate=0.77 avg_R=  2.87
+  stop= 4 target= 12  YES: n=1.0 win_rate=1.00 avg_R=  3.00   |   NO: n=71.0 win_rate=0.79 avg_R=  2.15
+  stop= 6 target= 12  YES: n=1.0 win_rate=1.00 avg_R=  2.00   |   NO: n=71.0 win_rate=0.82 avg_R=  1.45
+  stop= 2 target=  8  YES: n=1.0 win_rate=1.00 avg_R=  4.00   |   NO: n=71.0 win_rate=0.93 avg_R=  3.65
+  stop= 4 target= 16  YES: n=1.0 win_rate=1.00 avg_R=  4.00   |   NO: n=71.0 win_rate=0.56 avg_R=  1.82
+  stop= 6 target= 20  YES: n=1.0 win_rate=0.00 avg_R= -1.00   |   NO: n=71.0 win_rate=0.49 avg_R=  1.14
+
+Flags saved -> D:\lxpb\lxpb-v2\data\nq_coincidence_flags.csv
