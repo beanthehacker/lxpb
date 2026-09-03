@@ -29,6 +29,27 @@ HOLD_BARS = [1, 2, 3, 4, 6, 8, 12, 16, 24, 36, 48, 72]
 THRESHOLDS = [1.5, 1.75, 2.0, 2.25, 2.5, 3.0, 3.5, 4.0]
 
 
+def parse_levels(spec):
+    """`--stops` / `--targets` value -> list of floats.
+
+    Accepts an inclusive range "lo:hi:step" (e.g. "2:10:0.5") or an explicit
+    comma list ("2,3,4.5"). Values are rounded to 4dp so a float-accumulated
+    2.9999999 can never split into its own grid row."""
+    spec = str(spec).strip()
+    if ":" in spec:
+        parts = [float(p) for p in spec.split(":")]
+        if len(parts) != 3:
+            raise ValueError(f"range must be lo:hi:step, got {spec!r}")
+        lo, hi, step = parts
+        if step <= 0:
+            raise ValueError(f"step must be > 0, got {step}")
+        n = int(round((hi - lo) / step))
+        if abs(lo + n * step - hi) > 1e-9:
+            raise ValueError(f"{spec!r}: hi is not lo + k*step")
+        return [round(lo + k * step, 4) for k in range(n + 1)]
+    return [round(float(p), 4) for p in spec.split(",") if p.strip()]
+
+
 def stop_target_grid_detailed(trades, stops, targets):
     """Like analyze_breakout_exits.stop_target_grid, but also tracks the
     MAE/MFE/max-drawdown-from-peak actually realized UP TO each trade's own
@@ -213,10 +234,14 @@ function attachSort(tableId, numericCols) {
 
 
 def render(output_path, start=None, end=None, limit=A._DEFAULT, merged=False,
-           workers=1, grid_end=None):
+           workers=1, grid_end=None, stops=None, targets=None):
     """Renders only the 1-minute-resolved stop/target grid section (all other
     sections -- H1-walk grid, bias comparison, MAE/MFE, time-exit, threshold
     sweep, data-quality caveats/findings -- were dropped per request)."""
+    stops = list(STOPS if stops is None else stops)
+    targets = list(TARGETS if targets is None else targets)
+    print(f"Grid: {len(stops)} stops x {len(targets)} targets = "
+          f"{len(stops) * len(targets)} combos", flush=True)
     h1_df = A.load_merged_h1() if merged else None
     h1_df, pos_by_ts, retests_df = A.load_strong_breakout_rows(
         start=start, end=end, limit=limit, h1_df=h1_df)
@@ -280,11 +305,11 @@ def render(output_path, start=None, end=None, limit=A._DEFAULT, merged=False,
         # have to load every contract the span touches.
         grid_chunks = M.chunk_indices_by_contract(grid_trades, workers)
         grid_1min = M.stop_target_grid_1min_trade_parallel(
-            grid_trades, grid_series, STOPS, TARGETS, grid_chunks, work_dir,
+            grid_trades, grid_series, stops, targets, grid_chunks, work_dir,
             n_workers=workers)
     else:
         grid_1min = M.stop_target_grid_1min_parallel(grid_trades, grid_series,
-                                                     STOPS, TARGETS, n_workers=4)
+                                                     stops, targets, n_workers=4)
 
     grid_times = {t["retest_time"] for t in grid_trades}
     grid_rows = strong[strong["retest_time"].isin(grid_times)]
@@ -298,8 +323,12 @@ def render(output_path, start=None, end=None, limit=A._DEFAULT, merged=False,
                                ["Stop", "Target", "R:R", "N", "Win %", "Avg R", "Total R",
                                 "Wins", "Losses", "No-Hit", "1s escalations", "Forced no-fill"])
     grid_1min_sorted = grid_1min.sort_values("total_R", ascending=False).reset_index(drop=True)
+    # A half-point grid must not be rendered with "{:.0f}" -- 2.5 would print
+    # as "2" and sit next to the real 2.0 row as an apparent duplicate.
+    _st_fmt = ("{:.0f}" if all(float(v).is_integer() for v in stops + targets)
+               else "{:.1f}")
     grid_1min_fmt = {
-        "stop": "{:.0f}", "target": "{:.0f}", "rr": "{:.2f}", "n": "{:.0f}",
+        "stop": _st_fmt, "target": _st_fmt, "rr": "{:.2f}", "n": "{:.0f}",
         "win_rate": lambda v: f"{v*100:.1f}%" if pd.notna(v) else "-", "avg_R": "{:.2f}", "total_R": "{:.1f}",
         "wins": "{:.0f}", "losses": "{:.0f}", "no_hit": "{:.0f}",
         "escalations_1s": "{:.0f}", "forced_no_hit": "{:.0f}",
@@ -320,7 +349,7 @@ default in <code>lxpb_labels_report.html</code>). Every trade is simulated forwa
 for up to {A.HORIZON_BARS} H1 bars ({A.HORIZON_BARS // 24}d); entry is the level's own retest price, no
 commission/slippage modeled.</p>
 
-<h2>Stop / Target grid search &mdash; 1-MINUTE-RESOLVED (primary; {len(covered_trades)} tick-covered trades, click a header to sort, shift+click to add a secondary sort key)</h2>
+<h2>Stop / Target grid search &mdash; 1-MINUTE-RESOLVED (primary; {len(covered_trades)} tick-covered trades, {len(stops)}&times;{len(targets)} = {len(stops) * len(targets)} combos, click a header to sort, shift+click to add a secondary sort key)</h2>
 <p class="note">Real 1-minute bars from local .scid ticks; the actual resolving minute (whichever of
 stop/target is touched first) is escalated to real 1-second ticks ({int(grid_1min['escalations_1s'].sum())}
 escalations across the whole grid) to pin the exact crossing and enforce fill realism: a TARGET is a resting
@@ -366,6 +395,12 @@ if __name__ == "__main__":
     parser.add_argument("--workers", type=int, default=1,
                         help="concurrent contract-pure chunk processes for both the 1-min "
                              "series build and the stop/target grid")
+    parser.add_argument("--stops", default=None,
+                        help="stop grid: inclusive range 'lo:hi:step' (e.g. '2:10:0.5') "
+                             "or a comma list; default is the built-in STOPS")
+    parser.add_argument("--targets", default=None,
+                        help="target grid: same syntax as --stops (e.g. '1:20:0.5'); "
+                             "default is the built-in TARGETS")
     args = parser.parse_args()
 
     start, end, merged, grid_end = args.start, args.end, args.merged, args.grid_end
@@ -381,5 +416,7 @@ if __name__ == "__main__":
         if out == DEFAULT_OUTPUT:
             out = os.path.join(_HERE, "exit_analysis_report_2026_full_year.html")
     render(out, start=start, end=end, limit=limit, merged=merged,
-           workers=args.workers, grid_end=grid_end)
+           workers=args.workers, grid_end=grid_end,
+           stops=parse_levels(args.stops) if args.stops else None,
+           targets=parse_levels(args.targets) if args.targets else None)
 
