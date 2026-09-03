@@ -157,11 +157,12 @@ def resolve_trades(trades, series_by_idx, stop=None, target=None):
             continue
 
         r = target_pts / stop_pts if outcome == "target" else -1.0
-        favorable_pts, adverse_pts = _compute_excursion(
+        favorable_pts, adverse_pts, entry_traded = _compute_excursion(
             bars, touch_time, exact_time, raw_entry, is_long, sym, offset)
         out.append({"outcome": outcome, "r": r, "exit_time": exact_time,
                     "exit_price": exact_price, "touch_time": touch_time,
-                    "favorable_pts": favorable_pts, "adverse_pts": adverse_pts})
+                    "favorable_pts": favorable_pts, "adverse_pts": adverse_pts,
+                    "entry_gapped": entry_traded is False})
     return out
 
 
@@ -173,55 +174,87 @@ def _compute_excursion(bars, touch_time, exit_time, raw_entry, is_long, sym, off
     `bars`'s own high/low columns are built by resampling REAL 1s ticks
     (see build_or_load_1min_series), so every FULL minute strictly before
     the resolving minute already has exact 1s-tick-accurate high/low and
-    needs no re-fetch. Only the final (resolving) minute is refetched at
-    1s resolution and bounded to `exit_time` -- otherwise its own bar's
-    high/low would include ticks AFTER the trade's actual exit instant,
-    the same look-ahead bug class fixed by `_pin_exact_exit`'s
-    `not_before` (see that function's docstring): a stop/target-adjacent
-    excursion that only happened after the position was already closed
-    must not be credited to this trade's MAE/MFE.
+    needs no re-fetch.
+
+    A trade starts and ends mid-minute, so the minute containing
+    `touch_time` and the minute containing `exit_time` are each only
+    PARTLY inside the trade. Both are rescanned at 1s resolution and
+    clipped to [touch_time, exit_time]; only the whole minutes strictly
+    between them are read from `bars`.
+
+    Clipping matters in both directions. Past `exit_time` it is the
+    look-ahead bug class fixed by `_pin_exact_exit`'s `not_before` (see
+    that function's docstring): an excursion that only happened after the
+    position was already closed must not be credited to this trade.
+    Before `touch_time` it is the mirror image: the entry minute's bar
+    opens before the level was even touched, so its high/low can contain
+    a move the trade never actually sat through.
+
+    Do NOT go back to selecting whole bars by `touch_time <= bar_start <=
+    exit_time`. That silently dropped the entry minute (its start is
+    always < touch_time), losing the excursion between touch_time and the
+    next minute boundary -- typically the most volatile part of the
+    trade. Worse, a trade that opened and closed inside ONE minute
+    selected no bars at all and reported no excursion ("-"), which is
+    exactly what a fast stop-out looks like.
 
     Reuses analyze_breakout_exits_1min._1S_AMBIGUOUS_CACHE (module-level,
     keyed by (sym, minute_start)) so this doesn't refetch ticks
     resolve_trades's own _pin_exact_exit call already fetched for that
     same resolving minute."""
-    window = bars.loc[(bars.index >= touch_time) & (bars.index <= exit_time)]
-    if window.empty:
-        return None, None
-    last_minute = window.index[-1]
-    prior = window.iloc[:-1]
-    hi = float(prior["high"].max()) if not prior.empty else -np.inf
-    lo = float(prior["low"].min()) if not prior.empty else np.inf
+    first_minute = touch_time.floor("min")
+    last_minute = exit_time.floor("min")
 
-    cache_key = (sym, last_minute)
-    ticks = M._1S_AMBIGUOUS_CACHE.get(cache_key)
-    if cache_key not in M._1S_AMBIGUOUS_CACHE:
-        ticks = R._ticks_for_window(last_minute, last_minute + pd.Timedelta(minutes=1))
-        ticks = None if ticks is None or ticks.empty else ticks
-        M._1S_AMBIGUOUS_CACHE[cache_key] = ticks
-    if ticks is not None:
-        seg = ticks.loc[(ticks.index >= max(touch_time, last_minute)) & (ticks.index <= exit_time)]
-        if not seg.empty:
+    mid = bars.loc[(bars.index > first_minute) & (bars.index < last_minute)]
+    hi = float(mid["high"].max()) if not mid.empty else -np.inf
+    lo = float(mid["low"].min()) if not mid.empty else np.inf
+
+    # sorted({...}): the two edge minutes collapse to one when the trade
+    # opens and closes inside a single minute.
+    for minute in sorted({first_minute, last_minute}):
+        cache_key = (sym, minute)
+        if cache_key not in M._1S_AMBIGUOUS_CACHE:
+            t = R._ticks_for_window(minute, minute + pd.Timedelta(minutes=1))
+            M._1S_AMBIGUOUS_CACHE[cache_key] = None if t is None or t.empty else t
+        ticks = M._1S_AMBIGUOUS_CACHE[cache_key]
+        seg = None
+        if ticks is not None:
+            seg = ticks.loc[(ticks.index >= touch_time) & (ticks.index <= exit_time)]
+        if seg is not None and not seg.empty:
             hi = max(hi, float(seg["High"].max()))
             lo = min(lo, float(seg["Low"].min()))
-        elif np.isneginf(hi) and np.isinf(lo):
-            # no qualifying ticks at all (shouldn't normally happen since
-            # exact_time itself came from one of these ticks) -- fall back
-            # to the 1-min bar's own H/L for that minute.
-            last_row = window.iloc[-1]
-            hi, lo = float(last_row["high"]), float(last_row["low"])
-    else:
-        last_row = window.iloc[-1]
-        hi = max(hi, float(last_row["high"]))
-        lo = min(lo, float(last_row["low"]))
+        elif minute in bars.index:
+            # No usable ticks for this edge minute -- fall back to its own
+            # 1-minute bar. Overstates the excursion slightly (the bar spans
+            # the whole minute, including the part outside the trade), but
+            # that beats dropping the minute entirely.
+            row = bars.loc[minute]
+            hi = max(hi, float(row["high"]))
+            lo = min(lo, float(row["low"]))
 
     if np.isneginf(hi) or np.isinf(lo):
-        return None, None
+        return None, None, None
+
+    # The position sits AT raw_entry the instant it opens, so raw_entry is
+    # part of the price path by construction and both excursions are >= 0.
+    # Seeding the range with it matters when the modeled fill was never
+    # actually available: entry is the level's own price with no slippage
+    # modeled, so a tick that gaps clean through the level (and sometimes
+    # the stop as well, resolving the trade on the very tick that touched)
+    # leaves a scanned window that never reaches raw_entry. Without this,
+    # such a trade reports a NEGATIVE "max favorable excursion", which is a
+    # statement about fill quality, not about how far the trade ran. For
+    # every normally-filled trade raw_entry already lies inside [lo, hi],
+    # so this is a no-op -- which is exactly what makes the pre-seed test
+    # below a reliable "was this fill ever actually available?" flag.
+    entry_traded = bool(lo <= raw_entry <= hi)
+    hi, lo = max(hi, raw_entry), min(lo, raw_entry)
+
     if is_long:
         favorable, adverse = hi - raw_entry, raw_entry - lo
     else:
         favorable, adverse = raw_entry - lo, hi - raw_entry
-    return float(favorable), float(adverse)
+    return float(favorable), float(adverse), entry_traded
 
 
 def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target):
@@ -595,6 +628,7 @@ CSS = R.CSS + """
 <style>
 td.good { color:#4ade80; }
 td.bad { color:#f87171; }
+.gap-flag { color:#fbbf24; margin-left:4px; cursor:help; }
 .table-wrap { max-height:none; }
 .expand-th { width:28px; }
 tr.lvl-row.is-replayed td.replayed-cell { color:#7bb4f5; font-weight:600; }
@@ -1247,6 +1281,7 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
                         if r["outcome"] == "stop" and r.get("favorable_pts") is not None]
     max_win_mae = max(win_mae_values) if win_mae_values else 0.0
     max_loss_mfe = max(loss_mfe_values) if loss_mfe_values else 0.0
+    gapped_entries = sum(1 for r in resolved_list if r.get("entry_gapped"))
 
     charts, rows_html = [], []
     for i, resolved in enumerate(resolved_list):
@@ -1287,6 +1322,17 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
         else:
             mae_str = mfe_str = "-"
 
+        # Entry is the level's own price with no slippage modeled. When a
+        # tick gaps clean THROUGH the level, that price never actually
+        # traded between touch and exit, so the fill is fictional and the
+        # trade's R is not something the strategy could have realised.
+        # Flag it rather than dropping it -- the row is still worth seeing.
+        gap_flag = ""
+        if resolved.get("entry_gapped"):
+            gap_flag = ('<span class="gap-flag" title="Entry price never traded between '
+                        'touch and exit -- price gapped through the level, so this fill '
+                        'was not actually available.">\u26a0</span>')
+
         fp_narrow_html = fp.get("narrow")
         fp_wide_html = fp.get("wide")
         fp_section = (
@@ -1307,7 +1353,7 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
 <tr class="lvl-row {type_cls}" data-idx="{i}" data-key="{row_key}" onclick="toggleChart({i})">
   <td class="left">{i}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{entry_str}</td>
-  <td>{price:.2f}</td><td>{stop_price:.2f}</td><td>{target_price:.2f}</td>
+  <td>{price:.2f}{gap_flag}</td><td>{stop_price:.2f}</td><td>{target_price:.2f}</td>
   <td class="{outcome_cls}">{outcome_label}</td><td class="{outcome_cls}">{r_str}</td>
   <td class="left">{exit_str}</td>
   <td class="bad">{mae_str}</td><td class="good">{mfe_str}</td>
@@ -1355,7 +1401,11 @@ Click a row to expand its H1 chart: gold line = entry level, green dashed = targ
 stop; P0/P1/P2 markers mark formation/breakout/retest, and a 4th green/red arrow marks the resolved
 exit bar. "MAE (win)" = max points a WINNING trade moved against the position before hitting
 target; "MFE (loss)" = max points a LOSING trade moved in the position's favor before hitting
-stop -- both computed from real 1s ticks (see _compute_excursion), not just 1-minute bars.
+stop -- both computed from real 1s ticks (see _compute_excursion), not just 1-minute bars, and
+both measured over the trade's own [touch, exit] span so neither pre-entry nor post-exit movement
+is credited. A \u26a0 beside the Entry price marks a GAPPED ENTRY: that price never traded between
+touch and exit, so the modeled no-slippage fill was never actually available and the row's R is
+not something the strategy could have realised.
 Reviewed/Valid/Replayed/Notes persist in this browser's localStorage (keyed to this
 stop/target report) and can be exported/imported as CSV (top-right buttons).</p>
 <div class="summary">
@@ -1368,6 +1418,7 @@ stop/target report) and can be exported/imported as CSV (top-right buttons).</p>
   <div class="box"><strong>{total_r:.1f}</strong>total R</div>
   <div class="box"><strong>{max_win_mae:.2f}</strong>max MAE (win)</div>
   <div class="box"><strong>{max_loss_mfe:.2f}</strong>max MFE (loss)</div>
+  <div class="box"><strong>{gapped_entries}</strong>gapped entry</div>
   <div class="box"><strong id="sum-shown">{len(trades)}</strong>shown</div>
   <div class="box"><strong id="sum-reviewed">0</strong>reviewed</div>
   <div class="box"><strong id="sum-valid">0</strong>valid</div>

@@ -529,3 +529,67 @@ set-comparing.
 M5 level rays it overlays on the H1 level being traded. New backtests should
 prefer it over calling `detect_lxpb_h1` directly for anything historical.
 
+
+## MAE / MFE excursion columns (`render_stop_target_report._compute_excursion`)
+
+The trades report carries two excursion columns, both measured in points and
+both only ever populated for one outcome:
+
+- **MAE (win)** -- how far a *winning* trade went against the position before it
+  reached target. Blank (`-`) on losses.
+- **MFE (loss)** -- how far a *losing* trade went in favour of the position
+  before it was stopped. Blank (`-`) on wins.
+
+### The window is `[touch_time, exit_time]`, strictly
+
+The excursion is measured over the exact life of the trade: from the touch
+(entry) timestamp through the pinned exit timestamp, both inclusive, at
+1-second resolution on real ticks. Interior whole minutes are read from the
+cached 1-minute bars; the **first and last minutes are re-fetched at 1s and
+clipped** to the trade's own bounds, because a minute bar that merely
+*contains* the entry also contains price action from before it.
+
+Do **not** relax the clip -- e.g. flooring `touch_time` to the second to pick up
+a few more ticks. That re-introduces pre-entry movement and is the same class
+of look-ahead bug as the `_pin_exact_exit` `not_before` fix. One real example:
+a trade whose strict window holds 39 ticks (MFE 1.00) grows to 146 ticks
+(MFE 5.25) if the entry bound is floored -- a 5x inflation that is entirely
+price the trade never actually saw.
+
+### Why the naive version was wrong
+
+The original implementation selected minute *bars* with
+`bars.index >= touch_time & bars.index <= exit_time`. Because a bar is indexed
+by its **start**, this had two independent failures:
+
+1. A trade that opened and closed inside a single clock-minute selected **no
+   bars at all** and reported `-`. This silently blanked 136 of 413 losing rows
+   in the 2026 full-year report.
+2. The entry's own partial minute was **always** dropped (its start precedes
+   `touch_time`), so every scan began at the next minute boundary and discarded
+   the most volatile part of the trade.
+
+Both are fixed; the function's docstring records the reasoning so the
+bar-selection shortcut does not come back.
+
+### Excursions are clamped at 0 by seeding with the entry price
+
+The position is *at* the entry price at t=0, so neither excursion can be
+negative by definition. The scanned high/low range is therefore seeded with
+`raw_entry` before the excursions are derived. For a normally-filled trade this
+is a strict no-op.
+
+### Gapped entries (the warning marker)
+
+Entries are modeled at the level's own price with **no slippage**. Occasionally
+a tick jumps clean through the level, so the entry price is never actually
+traded between touch and exit -- the fill was not available in reality. That is
+detected as `raw_entry` falling outside the scanned range *before* seeding, and
+is surfaced two ways:
+
+- a warning glyph next to the entry price in the trade row, with a tooltip, and
+- a **gapped entry** count in the summary boxes.
+
+In the 2026 full-year run this affects 5 of 502 trades. The most extreme has
+`touch_time == exit_time` to the microsecond: a single tick, ~12 points beyond
+the level, blowing through both the level and the stop in one print.

@@ -44,6 +44,60 @@ any of these reports again, suspect this same class of bug re-appearing
 elsewhere (e.g. `_resolve_ambiguous_minute`, still used by
 `analyze_fta_target.py`, was NOT patched and may have the same issue).
 
+## Fixed bug: MAE/MFE excursions measured over minute *bars* (lxpb-v2)
+
+`render_stop_target_report._compute_excursion` reports two display-only
+columns: **MAE (win)** — how far a winning trade went against the position
+before target — and **MFE (loss)** — how far a losing trade went in favour
+before the stop. It used to pick the minute bars satisfying
+`bars.index >= touch_time & bars.index <= exit_time`. Because a bar is indexed
+by its **start**, that had two independent failures:
+
+1. A trade that opened and closed inside one clock-minute selected **no bars at
+   all** and rendered `-`. This blanked **136 of 413** losing rows in the
+   full-year report. Caught by the user off the 1s chart: row 58, entry 6993,
+   low 6992.50 before the stop — a real +0.50 MFE on a 14-second trade.
+2. The entry's own partial minute was **always** dropped (its start precedes
+   `touch_time`), so every scan silently began at the next minute boundary and
+   threw away the most volatile part of the trade.
+
+Fixed by anchoring on `touch_time.floor("min")` / `exit_time.floor("min")`,
+reading interior whole minutes from the 1-minute cache, and **re-fetching both
+edge minutes at 1s resolution clipped to `[touch_time, exit_time]`** (one fetch
+when the trade lives in a single minute).
+
+**Do not relax that clip** — e.g. flooring `touch_time` to the second to pick up
+a few more ticks. Tick timestamps carry microseconds, and flooring re-admits
+pre-entry price: one real trade goes from 39 ticks / MFE 1.00 to 146 ticks /
+MFE 5.25. That is the same look-ahead family as the `_pin_exact_exit`
+`not_before` bug above.
+
+Two related semantics were settled at the same time:
+
+- **Excursions are clamped at 0** by seeding the scanned high/low range with
+  `raw_entry`. The position is *at* the entry price at t=0, so neither
+  excursion can be negative. For a normally-filled trade this is a strict
+  no-op, which is what makes the pre-seed containment test a reliable detector
+  for the next point.
+- **Gapped entries are flagged.** Entries are modeled at the level's own price
+  with no slippage. When a tick jumps clean through the level, that price never
+  trades during `[touch, exit]` — the fill was not actually available. Those
+  rows get a warning glyph (with tooltip) beside the entry price plus a
+  **gapped entry** count in the summary boxes. 5 of 502 full-year trades; the
+  worst has `touch_time == exit_time` to the microsecond — a single tick ~12
+  points past the level, through both level and stop in one print.
+
+Both reports were regenerated after the fix (2026-09). Win/loss stats are
+unchanged — excursions are display-only — but 136 previously blank MFE cells
+now carry values. The 5 negative cells were clamped in place afterwards rather
+than by a third regen, so the shipped reports carry correct values but the
+warning glyph and its summary box only appear from the next full regen onward.
+
+**If you post-process these reports, target MAE/MFE by cell position (the 10th
+and 11th `<td>`), never by CSS class** — the Outcome and R columns share the
+`good`/`bad` classes, so a class-based regex for a negative value matches
+`-1.00` in the R column of every losing trade (418 false hits vs 5 real ones).
+
 ## Fixed bug: TradingView re-export re-anchors ALL history (lxpb-v2)
 
 `ES1!` is not a real contract: TradingView splices the quarterly chain
