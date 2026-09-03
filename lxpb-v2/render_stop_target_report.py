@@ -410,11 +410,51 @@ def resolve_trades(trades, series_by_idx, stop=None, target=None, candle_exit=Fa
             r = target_pts / stop_pts if outcome == "target" else -1.0
         favorable_pts, adverse_pts, entry_traded = _compute_excursion(
             bars, touch_time, exact_time, raw_entry, is_long, sym, offset)
+        giveback_pts = _compute_giveback(touch_time, exact_time, is_long)
         out.append({"outcome": outcome, "r": r, "exit_time": exact_time,
                     "exit_price": exact_price, "touch_time": touch_time,
                     "favorable_pts": favorable_pts, "adverse_pts": adverse_pts,
+                    "giveback_pts": giveback_pts,
                     "entry_gapped": entry_traded is False})
     return out
+
+
+# A give-back smaller than this is spread/queue noise, not a real pullback,
+# so it is reported as 0.00 rather than a spurious one-tick wiggle.
+MIN_GIVEBACK_PTS = 0.75
+
+
+def _compute_giveback(touch_time, exit_time, is_long):
+    """Max points handed back from the best price the OPEN position reached,
+    over [touch_time, exit_time], on real 1s ticks.
+
+    Unlike MAE/MFE this is PATH-DEPENDENT -- it needs to know the peak came
+    before the trough -- so 1-minute OHLC cannot be used for the middle of
+    the trade the way _compute_excursion does; the whole window is scanned
+    tick by tick.
+
+    Marked at the price the position would be CLOSED at (a long sells into
+    the bid = Low, a short lifts the ask = High), which is the same side
+    _market_fill uses. The watermark starts at the first tick rather than at
+    the entry price: this measures give-back from the extreme, i.e. how far
+    behind the high-water mark a trailing stop would have to sit, so a trade
+    that only ever went against the position gives back nothing.
+
+    Returned in points, scale-free (a difference of two raw prices, so the
+    back-adjustment offset cancels). None when no ticks cover the window."""
+    ticks = R._ticks_for_window(touch_time, exit_time + pd.Timedelta(seconds=1))
+    if ticks is None or ticks.empty:
+        return None
+    ticks = ticks.loc[(ticks.index >= touch_time) & (ticks.index <= exit_time)]
+    if ticks.empty:
+        return None
+    mark = ticks["Low" if is_long else "High"].to_numpy(float)
+    if is_long:
+        dd = np.maximum.accumulate(mark) - mark
+    else:
+        dd = mark - np.minimum.accumulate(mark)
+    best = float(dd.max())
+    return best if best >= MIN_GIVEBACK_PTS - 1e-9 else 0.0
 
 
 def _compute_excursion(bars, touch_time, exit_time, raw_entry, is_long, sym, offset):
@@ -1582,6 +1622,11 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
          candle_mfe_values),
         ("MAE &mdash; candle exits", "heat taken before the candle rule fired",
          candle_mae_values),
+        ("Max DD &mdash; all trades", "handed back from the best price the open position reached",
+         [r["giveback_pts"] for r in resolved_list if r.get("giveback_pts") is not None]),
+        ("Max DD &mdash; winning trades", "how far behind the extreme a trailing stop would have to sit",
+         [r["giveback_pts"] for r in resolved_list
+          if r["outcome"] == "target" and r.get("giveback_pts") is not None]),
     ], stop)
     gapped_entries = sum(1 for r in resolved_list if r.get("entry_gapped"))
 
@@ -1643,6 +1688,13 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
         else:
             mae_str = mfe_str = "-"
 
+        # Max points handed back from the best price the OPEN position
+        # reached (see _compute_giveback). Always shown -- unlike MAE/MFE
+        # neither outcome implies it, and it is the number that says how far
+        # behind the extreme a trailing stop would have had to sit.
+        gb = resolved.get("giveback_pts")
+        gb_str = f"{gb:.2f}" if gb is not None else "-"
+
         # Entry is the level's own price with no slippage modeled. When a
         # tick gaps clean THROUGH the level, that price never actually
         # traded between touch and exit, so the fill is fictional and the
@@ -1677,7 +1729,7 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
   <td>{price:.2f}{gap_flag}</td><td>{stop_price:.2f}</td><td>{target_price:.2f}</td>
   <td class="{outcome_cls}">{outcome_label}</td><td class="{outcome_cls}">{r_str}</td>
   <td class="left">{exit_str}</td><td>{exit_px_str}</td>
-  <td class="bad">{mae_str}</td><td class="good">{mfe_str}</td>
+  <td class="bad">{mae_str}</td><td class="good">{mfe_str}</td><td>{gb_str}</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
   <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb"></td>
   <td class="replayed-cell" onclick="event.stopPropagation();"><input type="checkbox" class="replayed-cb"></td>
@@ -1686,7 +1738,7 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
       onclick="event.stopPropagation();toggleChart({i})">\u25b6</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="{i}" id="chart-row-{i}">
-  <td colspan="17"><div class="chart-stack">
+  <td colspan="18"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-{i}"></div><div class="chart-ph" id="ch1-{i}"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-{i}"></div><div class="chart-ph" id="cm5-{i}"></div></div>
@@ -1759,7 +1811,14 @@ exit bar. "MAE (win)" = max points a WINNING trade moved against the position be
 target; "MFE (loss)" = max points a LOSING trade moved in the position's favor before hitting
 stop -- both computed from real 1s ticks (see _compute_excursion), not just 1-minute bars, and
 both measured over the trade's own [touch, exit] span so neither pre-entry nor post-exit movement
-is credited. (A CANDLE row shows both, since for it neither number is implied by the outcome.) A \u26a0 beside the Entry price marks a GAPPED ENTRY: that price never traded between
+is credited. (A CANDLE row shows both, since for it neither number is implied by the outcome.)
+"Max DD" = the largest give-back in points from the best price the OPEN position ever reached,
+marked at the side the position would be closed on (a long sells into the bid, a short lifts the
+ask). Unlike MAE/MFE it is path-dependent -- the peak must precede the trough -- so it is scanned
+tick by tick across the whole [touch, exit] span rather than using 1-minute bars for the middle;
+give-backs under {MIN_GIVEBACK_PTS}pt are treated as spread noise and reported as 0.00. It is shown for every
+outcome and answers "how far behind the extreme would a trailing stop have had to sit to survive
+this trade". A \u26a0 beside the Entry price marks a GAPPED ENTRY: that price never traded between
 touch and exit, so the modeled no-slippage fill was never actually available and the row's R is
 not something the strategy could have realised.
 Reviewed/Valid/Replayed/Notes persist in this browser's localStorage (keyed to this
@@ -1817,7 +1876,7 @@ stop/target report) and can be exported/imported as CSV (top-right buttons).</p>
 <thead><tr>
   <th class="left">#</th><th class="left">Type</th><th class="left">Entry (touch) time</th>
   <th>Entry</th><th>Stop</th><th>Target</th><th>Outcome</th><th>R</th>
-  <th class="left">Exit time</th><th>Exit px</th><th>MAE (win)</th><th>MFE (loss)</th>
+  <th class="left">Exit time</th><th>Exit px</th><th>MAE (win)</th><th>MFE (loss)</th><th>Max DD</th>
   <th>Reviewed</th><th>Valid</th><th>Replayed</th>
   <th class="left">Notes</th><th class="expand-th">\u25b6</th>
 </tr></thead>
