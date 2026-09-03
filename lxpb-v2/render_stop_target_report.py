@@ -433,12 +433,16 @@ def _compute_giveback(touch_time, exit_time, is_long):
     the trade the way _compute_excursion does; the whole window is scanned
     tick by tick.
 
-    Marked at the price the position would be CLOSED at (a long sells into
-    the bid = Low, a short lifts the ask = High), which is the same side
-    _market_fill uses. The watermark starts at the first tick rather than at
-    the entry price: this measures give-back from the extreme, i.e. how far
-    behind the high-water mark a trailing stop would have to sit, so a trade
-    that only ever went against the position gives back nothing.
+    High/low watermark, on the same two sides the report's own MFE/MAE use
+    (a long's favourable side is the ask/High, its adverse side the
+    bid/Low): a long's watermark is the running max of High and it is
+    marked down to Low, mirrored for a short. That keeps this column
+    directly comparable to the MAE/MFE columns, at the cost of including
+    the bid/ask spread -- it runs ~1 tick wider than the give-back you
+    could actually have liquidated at, which is the number
+    analyze_trail_stop.py uses, since a trail has to fill on one side.
+    MIN_GIVEBACK_PTS then doubles as a floor that suppresses the pure-spread
+    wiggle a flat market would otherwise report.
 
     Returned in points, scale-free (a difference of two raw prices, so the
     back-adjustment offset cancels). None when no ticks cover the window."""
@@ -448,11 +452,12 @@ def _compute_giveback(touch_time, exit_time, is_long):
     ticks = ticks.loc[(ticks.index >= touch_time) & (ticks.index <= exit_time)]
     if ticks.empty:
         return None
-    mark = ticks["Low" if is_long else "High"].to_numpy(float)
+    hi = ticks["High"].to_numpy(float)
+    lo = ticks["Low"].to_numpy(float)
     if is_long:
-        dd = np.maximum.accumulate(mark) - mark
+        dd = np.maximum.accumulate(hi) - lo
     else:
-        dd = mark - np.minimum.accumulate(mark)
+        dd = hi - np.minimum.accumulate(lo)
     best = float(dd.max())
     return best if best >= MIN_GIVEBACK_PTS - 1e-9 else 0.0
 
@@ -1624,7 +1629,7 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
          candle_mae_values),
         ("Max DD &mdash; all trades", "handed back from the best price the open position reached",
          [r["giveback_pts"] for r in resolved_list if r.get("giveback_pts") is not None]),
-        ("Max DD &mdash; winning trades", "how far behind the extreme a trailing stop would have to sit",
+        ("Max DD &mdash; winning trades", "handed back before the winner reached target",
          [r["giveback_pts"] for r in resolved_list
           if r["outcome"] == "target" and r.get("giveback_pts") is not None]),
     ], stop)
@@ -1813,12 +1818,13 @@ stop -- both computed from real 1s ticks (see _compute_excursion), not just 1-mi
 both measured over the trade's own [touch, exit] span so neither pre-entry nor post-exit movement
 is credited. (A CANDLE row shows both, since for it neither number is implied by the outcome.)
 "Max DD" = the largest give-back in points from the best price the OPEN position ever reached,
-marked at the side the position would be closed on (a long sells into the bid, a short lifts the
-ask). Unlike MAE/MFE it is path-dependent -- the peak must precede the trough -- so it is scanned
-tick by tick across the whole [touch, exit] span rather than using 1-minute bars for the middle;
-give-backs under {MIN_GIVEBACK_PTS}pt are treated as spread noise and reported as 0.00. It is shown for every
-outcome and answers "how far behind the extreme would a trailing stop have had to sit to survive
-this trade". A \u26a0 beside the Entry price marks a GAPPED ENTRY: that price never traded between
+on the same two sides as MAE/MFE above (a long's watermark is the running max of the ask/High,
+marked down to the bid/Low; mirrored for a short). Unlike MAE/MFE it is path-dependent -- the
+peak must precede the trough -- so it is scanned tick by tick across the whole [touch, exit] span
+rather than using 1-minute bars for the middle; give-backs under {MIN_GIVEBACK_PTS}pt are treated as spread
+noise and reported as 0.00. It is shown for every outcome and answers "how far did this trade
+hand back before it resolved". Note it spans bid to ask, so it runs about one tick wider than the
+give-back you could actually have liquidated at. A \u26a0 beside the Entry price marks a GAPPED ENTRY: that price never traded between
 touch and exit, so the modeled no-slippage fill was never actually available and the row's R is
 not something the strategy could have realised.
 Reviewed/Valid/Replayed/Notes persist in this browser's localStorage (keyed to this

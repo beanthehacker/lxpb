@@ -16,8 +16,11 @@ on stop3.5/target15 -- the rest are 0.25pt edge-minute fallbacks inside
 _compute_excursion).
 
 The give-back metric itself now lives in render_stop_target_report as
-_compute_giveback and is a per-trade column ("Max DD"); this script is the
-what-if layer on top of it.
+_compute_giveback and is a per-trade column ("Max DD"). That column uses a
+high/low watermark so it lines up with the MAE/MFE columns, which makes it
+~1 tick wider than what you could actually liquidate at; this script marks
+both the watermark and the current price on the SAME side, because a trail
+has to fill on one side. Expect its numbers to run ~0.25 under the column.
 
 Usage:  python analyze_trail_stop.py [report.html] [stop] [target]
 """
