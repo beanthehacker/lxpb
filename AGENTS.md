@@ -15,7 +15,7 @@ background/async shell, or waiting on a background agent:
 - Every second counts — do not pad wait times "just in case."
 
 This applies to all scripts/reports in this repo (e.g.
-`lxpb-v2/render_labels_report.py`, `label-review/render_labels_report.py`,
+`lxpb-v2/render_labels_report.py`, `lxpb-v2/render_stop_target_report.py`,
 `retest-vol-scalp/*.py`) which can take several minutes to run due to
 real-tick `.scid` loading — always poll quickly rather than waiting long
 fixed intervals.
