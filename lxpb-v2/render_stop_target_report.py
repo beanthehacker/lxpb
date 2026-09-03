@@ -87,6 +87,19 @@ EXIT_CANDLE_COLOR = "#fbbf24"
 MARKET_FILL_SEARCH_MINUTES = (1, 15, 240, 4320)
 
 
+def _fmt_pts(v):
+    """A point distance for display and for identifiers (filenames,
+    localStorage keys). Whole values stay whole ("10"), fractional ones keep
+    their decimals ("3.5").
+
+    The old "{:.0f}" rendered BOTH 3.5 and 4.5 as "4" -- two different
+    brackets would have collided onto one filename and, worse, onto one
+    localStorage key, so the second report would silently inherit and
+    overwrite the first's saved review notes."""
+    v = float(v)
+    return f"{v:.0f}" if v.is_integer() else f"{v:g}"
+
+
 def _full_minute_ohlc(sym, minute_start):
     """Real, FULL clock-minute OHLC for one minute, built from 1s ticks with
     the same aggregation M.build_or_load_1min_series uses, so it is directly
@@ -517,9 +530,9 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target):
         {"price": price, "color": R.LEVEL_COLOR, "lineWidth": 2, "lineStyle": 0,
          "title": f"{level_type} {price:.2f} (entry)"},
         {"price": target_price, "color": EXIT_WIN_COLOR, "lineWidth": 1, "lineStyle": 2,
-         "title": f"target {target_price:.2f} (+{target:.0f}pt)"},
+         "title": f"target {target_price:.2f} (+{_fmt_pts(target)}pt)"},
         {"price": stop_price, "color": EXIT_LOSS_COLOR, "lineWidth": 1, "lineStyle": 2,
-         "title": f"stop {stop_price:.2f} (-{stop:.0f}pt)"},
+         "title": f"stop {stop_price:.2f} (-{_fmt_pts(stop)}pt)"},
     ]
 
     title = (f"{level_type} {price:.2f}  |  formed {R._to_pt_str(row['formation_time'])}  "
@@ -783,9 +796,9 @@ def build_m5_chart(row, resolved, stop, target):
         {"price": price, "color": R.LEVEL_COLOR, "lineWidth": 2, "lineStyle": 0,
          "title": f"H1 {level_type} {price:.2f} (entry)"},
         {"price": target_price, "color": EXIT_WIN_COLOR, "lineWidth": 1, "lineStyle": 2,
-         "title": f"target {target_price:.2f} (+{target:.0f}pt)"},
+         "title": f"target {target_price:.2f} (+{_fmt_pts(target)}pt)"},
         {"price": stop_price, "color": EXIT_LOSS_COLOR, "lineWidth": 1, "lineStyle": 2,
-         "title": f"stop {stop_price:.2f} (-{stop:.0f}pt)"},
+         "title": f"stop {stop_price:.2f} (-{_fmt_pts(stop)}pt)"},
     ]
 
     if near_levels:
@@ -1621,7 +1634,7 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
             "clock minutes rather than from the trade-anchored series, whose first bar is only "
             "the post-entry fragment of its minute.")
         candle_rule_html = f"""
-<b>Candle-close exit variant.</b> On top of the {stop:.0f}/{target:.0f} bracket, the trade is also
+<b>Candle-close exit variant.</b> On top of the {_fmt_pts(stop)}/{_fmt_pts(target)} bracket, the trade is also
 closed at market by the first 1-minute candle after the retest that {side_txt}. The signal is only
 known at that candle's CLOSE, so a stop or target actually filled anywhere inside the same minute
 still wins; the rule takes the minute only when the bracket's own tick escalation found no
@@ -1629,18 +1642,18 @@ qualifying fill there. {entry_bar_txt} The market order goes in at the candle's 
 is filled at the prevailing quote on the very next tick record -- the best BID for a long, the best
 ASK for a short (Sierra's raw tick records carry the quote: Low = bid, High = ask), so the spread
 is paid rather than the candle's close price being booked. These rows show outcome CANDLE with a
-real, variable R = (fill - entry) / {stop:.0f}pt, coloured by whether that R came out positive.
+real, variable R = (fill - entry) / {_fmt_pts(stop)}pt, coloured by whether that R came out positive.
 """
         candle_boxes = (f'\n  <div class="box"><strong>{candles}</strong>candle exits</div>'
                         f'\n  <div class="box"><strong>{profit_rate*100:.1f}%</strong>profitable</div>'
                         f'\n  <div class="box"><strong>{avg_candle_r:+.2f}</strong>avg R (candle)</div>')
 
     header = f"""
-<h1>LXPB Strong-Breakout Trades &mdash; Stop {stop:.0f} / Target {target:.0f}{
+<h1>LXPB Strong-Breakout Trades &mdash; Stop {_fmt_pts(stop)} / Target {_fmt_pts(target)}{
     ' &mdash; candle-close exit' if candle_exit else ''}{
     ' (from the candle after entry)' if candle_exit and candle_exit_skip_entry else ''}</h1>
 <p class="lead">Same {len(trades)} "strong breakout" LXPB retests as exit_analysis_report.html's
-1-minute-resolved grid, walked forward with a fixed stop={stop:.0f}pt / target={target:.0f}pt bracket.
+1-minute-resolved grid, walked forward with a fixed stop={_fmt_pts(stop)}pt / target={_fmt_pts(target)}pt bracket.
 {candle_rule_html}
 Entry is anchored to the real 1-second-tick instant the level was actually FILLABLE within the
 retest H1 bar: a long entry is a resting buy, so only a bid-side (seller-initiated) print at/through
@@ -1721,7 +1734,7 @@ stop/target report) and can be exported/imported as CSV (top-right buttons).</p>
 """
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<title>LXPB Stop {stop:.0f} / Target {target:.0f}{' candle-exit' if candle_exit else ''}{' (skip entry bar)' if candle_exit and candle_exit_skip_entry else ''} Trades{title_suffix or ''}</title>
+<title>LXPB Stop {_fmt_pts(stop)} / Target {_fmt_pts(target)}{' candle-exit' if candle_exit else ''}{' (skip entry bar)' if candle_exit and candle_exit_skip_entry else ''} Trades{title_suffix or ''}</title>
 {CSS}
 </head><body>
 {header}
@@ -1731,7 +1744,7 @@ stop/target report) and can be exported/imported as CSV (top-right buttons).</p>
 </tbody></table></div>
 {JS.replace("__CHARTS_JSON__", json.dumps(charts))
    .replace("__STORAGE_KEY__", storage_key
-            or f"lxpb_trade_review_v1_stop{stop:.0f}_target{target:.0f}")}
+            or f"lxpb_trade_review_v1_stop{_fmt_pts(stop)}_target{_fmt_pts(target)}")}
 </body></html>
 """
     with open(output_path, "w", encoding="utf-8") as f:
@@ -1786,15 +1799,15 @@ if __name__ == "__main__":
     if args.full_year:
         start, end, limit, merged = start or "2026-01-01", end or "2026-12-31", None, True
         suffix = " (2026 full year)"
-        skey = skey or (f"lxpb_trade_review_v1_stop{args.stop:.0f}_"
-                        f"target{args.target:.0f}{ce_tag}_fy2026")
+        skey = skey or (f"lxpb_trade_review_v1_stop{_fmt_pts(args.stop)}_"
+                        f"target{_fmt_pts(args.target)}{ce_tag}_fy2026")
     else:
-        skey = skey or (f"lxpb_trade_review_v1_stop{args.stop:.0f}_"
-                        f"target{args.target:.0f}{ce_tag}")
+        skey = skey or (f"lxpb_trade_review_v1_stop{_fmt_pts(args.stop)}_"
+                        f"target{_fmt_pts(args.target)}{ce_tag}")
 
-    default_name = f"stop{args.stop:.0f}_target{args.target:.0f}{ce_tag}_trades_report.html"
+    default_name = f"stop{_fmt_pts(args.stop)}_target{_fmt_pts(args.target)}{ce_tag}_trades_report.html"
     if args.full_year:
-        default_name = (f"stop{args.stop:.0f}_target{args.target:.0f}{ce_tag}"
+        default_name = (f"stop{_fmt_pts(args.stop)}_target{_fmt_pts(args.target)}{ce_tag}"
                         f"_trades_report_2026_full_year.html")
     out = args.output or os.path.join(_HERE, default_name)
     render(args.stop, args.target, out, start=start, end=end, limit=limit,
