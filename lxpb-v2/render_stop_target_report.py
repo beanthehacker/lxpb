@@ -25,9 +25,26 @@ also include the exit bar, with:
     the labels report, plus an EXIT marker (green up-arrow = target hit /
     win, red down-arrow = stop hit / loss) at the resolved exit bar.
 
+`--candle-exit` adds a third way out on top of that bracket: after the
+retest, the FIRST 1-minute candle that closes below the previous candle's
+LOW *and* below the entry level closes a long at market (mirrored for a
+short: closes above the previous candle's HIGH and above the entry level).
+Stop and target still win whenever they are actually hit earlier in the
+tick stream, since they resolve inside a minute and this rule can only fire
+at a minute's close. See resolve_trades / _candle_exit_signals.
+
+`--candle-exit-skip-entry` narrows that rule so the entry minute's own
+candle cannot fire it -- the earliest signal is the first full candle after
+entry. Worth having as a switch because the entry candle is the very candle
+that pushed into the level, so the mirrored condition is disproportionately
+already true on it (44% of all rule exits over full-year 2026).
+
 Usage:
     python render_stop_target_report.py --stop 2 --target 8
     python render_stop_target_report.py --stop 2 --target 8 --output my_report.html
+    python render_stop_target_report.py --stop 10 --target 10 --candle-exit --full-year
+    python render_stop_target_report.py --stop 10 --target 10 --candle-exit \
+        --candle-exit-skip-entry --full-year
 """
 import os
 import sys
@@ -61,9 +78,119 @@ MAX_MERGE_GAP = 15
 
 EXIT_WIN_COLOR = "#4ade80"
 EXIT_LOSS_COLOR = "#f87171"
+EXIT_CANDLE_COLOR = "#fbbf24"
+
+# How far past a candle-rule signal to look for the market order's fill.
+# The first window is the minute right after the signal (which is where the
+# fill essentially always lands); the rest only matter across a session
+# break or a weekend, when the order simply rests until the tape reopens.
+MARKET_FILL_SEARCH_MINUTES = (1, 15, 240, 4320)
 
 
-def resolve_trades(trades, series_by_idx, stop=None, target=None):
+def _full_minute_ohlc(sym, minute_start):
+    """Real, FULL clock-minute OHLC for one minute, built from 1s ticks with
+    the same aggregation M.build_or_load_1min_series uses, so it is directly
+    comparable to (and interchangeable with) that series' own bars.
+
+    Needed because the candle rule has to see the candles a trader would see
+    on a 1-minute chart, and the trade-anchored series starts at the trade's
+    tick-accurate touch_time: its FIRST bar is a PARTIAL minute whose low/high
+    only cover the part of the minute after entry. That truncation would
+    change the rule's answer (the rule tests the previous candle's low/high),
+    so the entry minute -- and the minute before it, which the entry candle is
+    compared against -- are rebuilt here from the whole clock minute.
+
+    Reuses M._1S_AMBIGUOUS_CACHE (keyed by (sym, minute_start)) so this shares
+    tick fetches with _pin_exact_exit / _compute_excursion. Returns None when
+    the minute has no tick coverage at all."""
+    cache_key = (sym, minute_start)
+    if cache_key not in M._1S_AMBIGUOUS_CACHE:
+        t = R._ticks_for_window(minute_start, minute_start + pd.Timedelta(minutes=1))
+        M._1S_AMBIGUOUS_CACHE[cache_key] = None if t is None or t.empty else t
+    ticks = M._1S_AMBIGUOUS_CACHE[cache_key]
+    if ticks is None:
+        return None
+    return {"high": float(ticks["High"].max()), "low": float(ticks["Low"].min()),
+            "close": float(ticks["Close"].iloc[-1])}
+
+
+def _candle_exit_signals(bars, sym, raw_entry, is_long, skip_entry_bar=False):
+    """Indices into `bars` of every 1-minute candle whose CLOSE fires the
+    candle exit rule: for a LONG, a candle that closes below the previous
+    candle's LOW *and* below the entry level; for a SHORT, one that closes
+    above the previous candle's HIGH *and* above the entry level.
+
+    Both conditions are on the candle's own close, so the signal is only
+    known at the END of that minute -- which is what makes stop/target take
+    precedence within the same minute (they resolve on ticks inside it).
+
+    `bars` index 0 is the trade's entry minute, and by default it IS
+    eligible: it closes after the retest, so a trader watching a 1-minute
+    chart would act on it. Its comparison candle is therefore the clock
+    minute BEFORE entry, and index 1's is the FULL entry minute rather than
+    bars[0]'s post-entry fragment -- both fetched via _full_minute_ohlc.
+    Only these first two references need that treatment; every later bar's
+    predecessor is already a whole clock minute. If either minute has no
+    tick coverage its bar is simply made unsignallable (+/-inf reference)
+    rather than silently compared against a truncated candle.
+
+    `skip_entry_bar` drops index 0 from the result, i.e. only candles that
+    OPEN after the entry minute can fire. That matters because the entry
+    candle is the very candle that pushed into the level, so the mirrored
+    condition is disproportionately already true on it (44% of all rule
+    exits over full-year 2026 fired on bar 0). Index 1 is unaffected: its
+    reference is still the full entry minute, which is exactly right."""
+    closes = bars["close"].to_numpy(float)
+    n = len(closes)
+    if n == 0:
+        return np.empty(0, dtype=int)
+    # prev_ref[k] = candle k-1's low (long) / high (short)
+    prev_ref = np.full(n, -np.inf if is_long else np.inf)
+    if n > 2:
+        edge = bars["low"].to_numpy(float) if is_long else bars["high"].to_numpy(float)
+        prev_ref[2:] = edge[1:-1]
+    first_minute = bars.index[0]
+    for k, minute in ((0, first_minute - pd.Timedelta(minutes=1)), (1, first_minute)):
+        if k >= n:
+            break
+        ohlc = _full_minute_ohlc(sym, minute)
+        if ohlc is not None:
+            prev_ref[k] = ohlc["low"] if is_long else ohlc["high"]
+    if is_long:
+        sig = (closes < prev_ref) & (closes < raw_entry)
+    else:
+        sig = (closes > prev_ref) & (closes > raw_entry)
+    if skip_entry_bar:
+        sig[0] = False
+    return np.flatnonzero(sig)
+
+
+def _market_fill(sym, signal_ts, is_long):
+    """Fill for the MARKET order the candle rule sends at `signal_ts` (the
+    signalling candle's close instant).
+
+    Sierra's raw .scid tick records carry the live quote alongside the trade:
+    `Low` is the best BID and `High` the best ASK at that record. (Verified on
+    2026 EPU26 data: High-Low is exactly one tick on 99.3% of records, an
+    ask-side print's Close equals High 97.6% of the time and a bid-side
+    print's Close equals Low 96.5%.) A market SELL -- a long's exit -- is
+    therefore filled at the first record's `Low`, and a market BUY -- a
+    short's exit -- at its `High`: literally "the best bid/ask at that point",
+    paying the spread, rather than booking the candle's close price.
+
+    Returns (exit_time, raw_price), or (None, None) if the tape has no record
+    at all within ~3 days (only reachable at the very end of the data).
+    Prices are in raw/uncontinuous per-contract terms, like `bars`."""
+    for span in MARKET_FILL_SEARCH_MINUTES:
+        ticks = R._ticks_for_window(signal_ts, signal_ts + pd.Timedelta(minutes=span))
+        if ticks is not None and not ticks.empty:
+            r = ticks.iloc[0]
+            return ticks.index[0], float(r["Low"] if is_long else r["High"])
+    return None, None
+
+
+def resolve_trades(trades, series_by_idx, stop=None, target=None, candle_exit=False,
+                   candle_exit_skip_entry=False):
     """Per-trade version of analyze_breakout_exits_1min.stop_target_grid_1min,
     with the same tick-accurate anchoring fix (see that module's docstring):
     series_by_idx's bars are already anchored to each trade's real touch_time
@@ -91,7 +218,19 @@ def resolve_trades(trades, series_by_idx, stop=None, target=None):
     that leg per-trade from `t["stop_dist"]` / `t["target_dist"]` -- what a
     structural, level-derived bracket needs (e.g.
     analyze_spike_atr_strategy.py: stop = beyond the breakout candle,
-    target = the level's own FTA), where every trade has its own size."""
+    target = the level's own FTA), where every trade has its own size.
+
+    `candle_exit` adds the candle rule (see _candle_exit_signals) as a third
+    exit: whichever of stop / target / candle-rule comes FIRST in real time
+    ends the trade. Because the rule can only be known at a candle's close,
+    a stop or target actually filled anywhere inside that same minute wins;
+    the rule only takes that minute if the bracket's own escalation found no
+    qualifying fill there. Outcome "candle" carries a real, variable R (the
+    market fill vs entry, over the stop distance) instead of the bracket's
+    fixed +target/stop or -1.
+
+    `candle_exit_skip_entry` makes the rule ignore the entry minute itself,
+    so the earliest it can fire is the first full candle after entry."""
     out = []
     for i, t in enumerate(trades):
         stop_pts = float(t["stop_dist"]) if stop is None else float(stop)
@@ -116,6 +255,9 @@ def resolve_trades(trades, series_by_idx, stop=None, target=None):
             target_hit = lows <= target_price
         s_idx = np.flatnonzero(stop_hit)
         tg_idx = np.flatnonzero(target_hit)
+        sig_idx = (_candle_exit_signals(bars, sym, raw_entry, is_long,
+                                        skip_entry_bar=candle_exit_skip_entry)
+                   if candle_exit else np.empty(0, dtype=int))
 
         # TARGET is a resting LIMIT order (opposite-side fill required --
         # see M._pin_exact_exit's docstring), so a minute whose naive
@@ -126,27 +268,48 @@ def resolve_trades(trades, series_by_idx, stop=None, target=None):
         # to the next candidate minute (whichever of stop/target comes
         # first from there) until M._pin_exact_exit actually finds a
         # qualifying fill, or we run out of bars (-> no_hit).
+        #
+        # `b_idx` and `sig_cur` are SEPARATE cursors, both monotonically
+        # increasing (so this always terminates). They have to be separate
+        # for the one case where a bracket candidate and a candle signal
+        # land on the SAME minute: the bracket is tried first (its ticks are
+        # inside the minute, the signal is at its close), and if that
+        # escalation finds no qualifying fill, only the bracket cursor moves
+        # past the minute -- the signal at that same minute is still the
+        # earliest remaining exit and fires on the next pass.
         n_bars_series = len(bars)
-        idx = 0
+        b_idx = sig_cur = 0
         outcome = exact_time = exact_price = None
-        while True:
-            s_rem = s_idx[s_idx >= idx]
-            tg_rem = tg_idx[tg_idx >= idx]
+        while b_idx < n_bars_series or sig_cur < n_bars_series:
+            s_rem = s_idx[s_idx >= b_idx]
+            tg_rem = tg_idx[tg_idx >= b_idx]
             hs = s_rem[0] if s_rem.size else None
             ht = tg_rem[0] if tg_rem.size else None
-            if hs is None and ht is None:
+            sig_rem = sig_idx[sig_idx >= sig_cur]
+            sg = sig_rem[0] if sig_rem.size else None
+            cand = min((x for x in (hs, ht) if x is not None), default=None)
+            if cand is None and sg is None:
                 break
-            resolving_idx = min(x for x in (hs, ht) if x is not None)
-            minute_start = bars.index[resolving_idx]
-            o, et, ep = M._pin_exact_exit(
-                sym, minute_start, offset, entry_adj, stop_pts, target_pts, is_long,
-                not_before=touch_time)
-            if o is not None:
-                outcome, exact_time, exact_price = o, et, ep
-                break
-            idx = resolving_idx + 1
-            if idx >= n_bars_series:
-                break
+            if cand is not None and (sg is None or cand <= sg):
+                minute_start = bars.index[cand]
+                o, et, ep = M._pin_exact_exit(
+                    sym, minute_start, offset, entry_adj, stop_pts, target_pts, is_long,
+                    not_before=touch_time)
+                if o is not None:
+                    outcome, exact_time, exact_price = o, et, ep
+                    break
+                b_idx = cand + 1
+                continue
+            # Candle rule: the order is sent the instant that candle closes,
+            # i.e. at the start of the next minute, and takes the prevailing
+            # bid/ask (see _market_fill).
+            fill_ts, fill_raw = _market_fill(
+                sym, bars.index[sg] + pd.Timedelta(minutes=1), is_long)
+            if fill_ts is None:
+                sig_cur = sg + 1
+                continue
+            outcome, exact_time, exact_price = "candle", fill_ts, fill_raw + offset
+            break
 
         if outcome is None:
             last_time = bars.index[-1]
@@ -156,7 +319,17 @@ def resolve_trades(trades, series_by_idx, stop=None, target=None):
             })
             continue
 
-        r = target_pts / stop_pts if outcome == "target" else -1.0
+        if outcome == "candle":
+            # Real, variable R: what the market fill actually gave up (or
+            # kept) against entry, expressed in stop units. Deliberately NOT
+            # clamped to >= -1: the fill is a market order, and so is the
+            # stop once triggered, so if the tape jumped past the stop in
+            # the instant between the candle's close and the fill, both
+            # orders would have suffered the same slippage.
+            gain = (exact_price - entry_adj) if is_long else (entry_adj - exact_price)
+            r = gain / stop_pts
+        else:
+            r = target_pts / stop_pts if outcome == "target" else -1.0
         favorable_pts, adverse_pts, entry_traded = _compute_excursion(
             bars, touch_time, exact_time, raw_entry, is_long, sym, offset)
         out.append({"outcome": outcome, "r": r, "exit_time": exact_time,
@@ -171,16 +344,13 @@ def _compute_excursion(bars, touch_time, exit_time, raw_entry, is_long, sym, off
     scale) between touch_time and exit_time inclusive, at real-1s-tick
     precision throughout -- not just 1-minute OHLC precision.
 
-    `bars`'s own high/low columns are built by resampling REAL 1s ticks
-    (see build_or_load_1min_series), so every FULL minute strictly before
-    the resolving minute already has exact 1s-tick-accurate high/low and
-    needs no re-fetch.
-
     A trade starts and ends mid-minute, so the minute containing
     `touch_time` and the minute containing `exit_time` are each only
     PARTLY inside the trade. Both are rescanned at 1s resolution and
     clipped to [touch_time, exit_time]; only the whole minutes strictly
-    between them are read from `bars`.
+    between them are read from `bars`, whose high/low columns are
+    themselves a resample of the same real 1s ticks (see
+    build_or_load_1min_series) and are therefore already exact.
 
     Clipping matters in both directions. Past `exit_time` it is the
     look-ahead bug class fixed by `_pin_exact_exit`'s `not_before` (see
@@ -315,6 +485,11 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target):
     elif outcome == "stop":
         exit_text = "LOSS -1.00R"
         exit_color, exit_shape = EXIT_LOSS_COLOR, ("arrowDown" if is_long else "arrowUp")
+        exit_pos_label = "belowBar" if is_long else "aboveBar"
+    elif outcome == "candle":
+        r_val = resolved.get("r")
+        exit_text = f"CANDLE {r_val:+.2f}R" if r_val is not None else "CANDLE"
+        exit_color, exit_shape = EXIT_CANDLE_COLOR, ("arrowDown" if is_long else "arrowUp")
         exit_pos_label = "belowBar" if is_long else "aboveBar"
     else:
         exit_text = "NO-HIT" if outcome == "no_hit" else "NO DATA"
@@ -574,6 +749,13 @@ def build_m5_chart(row, resolved, stop, target):
                         "color": EXIT_LOSS_COLOR,
                         "shape": "arrowDown" if is_long else "arrowUp",
                         "text": "LOSS -1.00R"})
+    elif outcome == "candle":
+        r_val = resolved.get("r")
+        markers.append({"time": R._to_epoch_utc(idx[exit_pos]),
+                        "position": "belowBar" if is_long else "aboveBar",
+                        "color": EXIT_CANDLE_COLOR,
+                        "shape": "arrowDown" if is_long else "arrowUp",
+                        "text": f"CANDLE {r_val:+.2f}R" if r_val is not None else "CANDLE"})
     markers.extend(skip_markers)
     markers.sort(key=lambda m: m["time"])
 
@@ -628,6 +810,7 @@ CSS = R.CSS + """
 <style>
 td.good { color:#4ade80; }
 td.bad { color:#f87171; }
+td.candle { color:#fbbf24; }
 .gap-flag { color:#fbbf24; margin-left:4px; cursor:help; }
 .table-wrap { max-height:none; }
 .expand-th { width:28px; }
@@ -1107,7 +1290,8 @@ def _select_rows(start=None, end=None, limit=A._DEFAULT, merged=False):
 
 
 def _build_records(h1_df, pos_by_ts, strong, trades, indices, stop, target,
-                   cache_path, label=""):
+                   cache_path, label="", candle_exit=False,
+                   candle_exit_skip_entry=False):
     """All the .scid-backed heavy lifting for the trades at `indices`
     (positions into the global `trades` list): 1-minute series, stop/target
     resolution, and the H1 / 1s-trio / 1min / footprint charts.
@@ -1123,7 +1307,9 @@ def _build_records(h1_df, pos_by_ts, strong, trades, indices, stop, target,
     out of a shared file and permanently corrupt it."""
     sub_trades = [trades[i] for i in indices]
     series_by_idx = M.build_or_load_1min_series(sub_trades, cache_path=cache_path)
-    resolved_list = resolve_trades(sub_trades, series_by_idx, stop, target)
+    resolved_list = resolve_trades(sub_trades, series_by_idx, stop, target,
+                                   candle_exit=candle_exit,
+                                   candle_exit_skip_entry=candle_exit_skip_entry)
 
     out = {}
     n = len(indices)
@@ -1177,7 +1363,8 @@ def _run_chunk_subprocess(spec):
         spec["start"], spec["end"], spec["limit"], spec["merged"])
     recs = _build_records(h1_df, pos_by_ts, strong, trades, spec["indices"],
                           spec["stop"], spec["target"], spec["cache_path"],
-                          label=spec["label"])
+                          label=spec["label"], candle_exit=spec["candle_exit"],
+                          candle_exit_skip_entry=spec["candle_exit_skip_entry"])
     with open(spec["out_path"], "wb") as f:
         pickle.dump(recs, f, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -1218,7 +1405,8 @@ def _build_records_parallel(specs, workers):
 
 
 def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
-           merged=False, workers=1, storage_key=None, title_suffix=None):
+           merged=False, workers=1, storage_key=None, title_suffix=None,
+           candle_exit=False, candle_exit_skip_entry=False):
     h1_df, pos_by_ts, strong, trades = _select_rows(start, end, limit, merged)
     print(f"Selected {len(trades)} strong-breakout trades "
           f"({strong['retest_time'].min()} -> {strong['retest_time'].max()})", flush=True)
@@ -1249,7 +1437,8 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
                 "merged": merged, "stop": stop, "target": target,
                 "cache_path": _chunk_cache(idxs),
                 "out_path": os.path.join(cache_dir, f"recs_{sel_tag}_c{c:02d}.pkl"),
-                "label": f"chunk{c:02d} ",
+                "label": f"chunk{c:02d} ", "candle_exit": candle_exit,
+                "candle_exit_skip_entry": candle_exit_skip_entry,
             })
         print(f"[parallel] {len(specs)} contract-pure chunks, {workers} concurrent: "
               + ", ".join(f"c{c:02d}={len(s['indices'])}" for c, s in enumerate(specs)), flush=True)
@@ -1257,7 +1446,8 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
     else:
         all_idx = list(range(len(trades)))
         records = _build_records(h1_df, pos_by_ts, strong, trades, all_idx, stop, target,
-                                 _chunk_cache(all_idx))
+                                 _chunk_cache(all_idx), candle_exit=candle_exit,
+                                 candle_exit_skip_entry=candle_exit_skip_entry)
 
     missing = [i for i in range(len(trades)) if i not in records]
     if missing:
@@ -1267,10 +1457,19 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
     wins = sum(1 for r in resolved_list if r["outcome"] == "target")
     losses = sum(1 for r in resolved_list if r["outcome"] == "stop")
     no_hits = sum(1 for r in resolved_list if r["outcome"] == "no_hit")
+    candles = sum(1 for r in resolved_list if r["outcome"] == "candle")
     r_values = [r["r"] for r in resolved_list if r["r"] is not None]
+    # "win rate" stays the target-hit rate (its meaning in every other
+    # report here). With the candle rule on, most exits are neither target
+    # nor stop, so `profit_rate` -- the share of resolved trades that ended
+    # up ahead at all -- is the number that actually describes the variant.
     win_rate = wins / len(r_values) if r_values else 0.0
+    profit_rate = (sum(1 for v in r_values if v > 0) / len(r_values)) if r_values else 0.0
     avg_r = float(np.mean(r_values)) if r_values else 0.0
     total_r = float(np.sum(r_values)) if r_values else 0.0
+    candle_r = [r["r"] for r in resolved_list
+                if r["outcome"] == "candle" and r["r"] is not None]
+    avg_candle_r = float(np.mean(candle_r)) if candle_r else 0.0
     # a) worst (largest) adverse excursion any WINNING trade went through
     #    before ultimately hitting target; b) largest favorable excursion
     #    any LOSING trade went through before ultimately hitting stop --
@@ -1298,9 +1497,21 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
 
         outcome = resolved["outcome"]
         r_val = resolved["r"]
-        outcome_cls = "good" if outcome == "target" else ("bad" if outcome == "stop" else "")
-        outcome_label = {"target": "WIN", "stop": "LOSS", "no_hit": "NO-HIT", "no_data": "NO DATA"}[outcome]
+        if outcome == "target":
+            outcome_cls = "good"
+        elif outcome == "stop":
+            outcome_cls = "bad"
+        elif outcome == "candle":
+            # The candle rule's R is variable, so colour by the actual
+            # result rather than by the exit reason.
+            outcome_cls = "good" if (r_val or 0) > 0 else ("bad" if (r_val or 0) < 0 else "candle")
+        else:
+            outcome_cls = ""
+        outcome_label = {"target": "WIN", "stop": "LOSS", "candle": "CANDLE",
+                         "no_hit": "NO-HIT", "no_data": "NO DATA"}[outcome]
         r_str = f"{r_val:+.2f}" if r_val is not None else "-"
+        exit_px = resolved.get("exit_price")
+        exit_px_str = f"{exit_px:.2f}" if outcome != "no_hit" and exit_px is not None else "-"
         exit_str = R._to_pt_str(resolved["exit_time"]) if resolved["exit_time"] is not None else "-"
         entry_str = R._to_pt_str(resolved["touch_time"]) if resolved.get("touch_time") is not None \
             else R._to_pt_str(row_d["retest_time"])
@@ -1313,11 +1524,18 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
         #    precision throughout, bounded to touch_time..exit_time (see
         #    _compute_excursion). "-" for no_hit/no_data rows (no pinned
         #    exit_time to bound the window at).
+        #    A CANDLE exit shows BOTH: unlike a bracket exit, neither number
+        #    is implied by the outcome (a winner's MFE is the target
+        #    distance by definition, a loser's MAE the stop distance), so
+        #    both carry real information about how the trade actually went.
         if outcome == "target":
             mae_str = f"{resolved['adverse_pts']:.2f}" if resolved.get("adverse_pts") is not None else "-"
             mfe_str = "-"
         elif outcome == "stop":
             mae_str = "-"
+            mfe_str = f"{resolved['favorable_pts']:.2f}" if resolved.get("favorable_pts") is not None else "-"
+        elif outcome == "candle":
+            mae_str = f"{resolved['adverse_pts']:.2f}" if resolved.get("adverse_pts") is not None else "-"
             mfe_str = f"{resolved['favorable_pts']:.2f}" if resolved.get("favorable_pts") is not None else "-"
         else:
             mae_str = mfe_str = "-"
@@ -1355,7 +1573,7 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
   <td class="left">{entry_str}</td>
   <td>{price:.2f}{gap_flag}</td><td>{stop_price:.2f}</td><td>{target_price:.2f}</td>
   <td class="{outcome_cls}">{outcome_label}</td><td class="{outcome_cls}">{r_str}</td>
-  <td class="left">{exit_str}</td>
+  <td class="left">{exit_str}</td><td>{exit_px_str}</td>
   <td class="bad">{mae_str}</td><td class="good">{mfe_str}</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
   <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb"></td>
@@ -1365,7 +1583,7 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
       onclick="event.stopPropagation();toggleChart({i})">\u25b6</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="{i}" id="chart-row-{i}">
-  <td colspan="16"><div class="chart-stack">
+  <td colspan="17"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-{i}"></div><div class="chart-ph" id="ch1-{i}"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-{i}"></div><div class="chart-ph" id="cm5-{i}"></div></div>
@@ -1385,10 +1603,45 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
 </tr>
 """)
 
+    candle_rule_html = ""
+    candle_boxes = ""
+    if candle_exit:
+        side_txt = ("closes BELOW the previous candle's LOW <em>and</em> below the entry level "
+                    "(mirrored for a short: closes above the previous candle's HIGH and above "
+                    "the entry level)")
+        entry_bar_txt = (
+            "The entry minute's own candle is <b>NOT</b> eligible here: the rule starts at the "
+            "first full candle after entry, whose reference is the FULL entry clock minute. "
+            "(The entry candle is the very candle that pushed into the level, so the mirrored "
+            "condition is disproportionately already true on it -- it accounted for 44% of all "
+            "rule exits when it was allowed to fire.)"
+            if candle_exit_skip_entry else
+            "The entry minute's own candle is eligible (it does close after the retest), and it "
+            "is compared against the FULL clock minute before entry -- both rebuilt from whole "
+            "clock minutes rather than from the trade-anchored series, whose first bar is only "
+            "the post-entry fragment of its minute.")
+        candle_rule_html = f"""
+<b>Candle-close exit variant.</b> On top of the {stop:.0f}/{target:.0f} bracket, the trade is also
+closed at market by the first 1-minute candle after the retest that {side_txt}. The signal is only
+known at that candle's CLOSE, so a stop or target actually filled anywhere inside the same minute
+still wins; the rule takes the minute only when the bracket's own tick escalation found no
+qualifying fill there. {entry_bar_txt} The market order goes in at the candle's close instant and
+is filled at the prevailing quote on the very next tick record -- the best BID for a long, the best
+ASK for a short (Sierra's raw tick records carry the quote: Low = bid, High = ask), so the spread
+is paid rather than the candle's close price being booked. These rows show outcome CANDLE with a
+real, variable R = (fill - entry) / {stop:.0f}pt, coloured by whether that R came out positive.
+"""
+        candle_boxes = (f'\n  <div class="box"><strong>{candles}</strong>candle exits</div>'
+                        f'\n  <div class="box"><strong>{profit_rate*100:.1f}%</strong>profitable</div>'
+                        f'\n  <div class="box"><strong>{avg_candle_r:+.2f}</strong>avg R (candle)</div>')
+
     header = f"""
-<h1>LXPB Strong-Breakout Trades &mdash; Stop {stop:.0f} / Target {target:.0f}</h1>
+<h1>LXPB Strong-Breakout Trades &mdash; Stop {stop:.0f} / Target {target:.0f}{
+    ' &mdash; candle-close exit' if candle_exit else ''}{
+    ' (from the candle after entry)' if candle_exit and candle_exit_skip_entry else ''}</h1>
 <p class="lead">Same {len(trades)} "strong breakout" LXPB retests as exit_analysis_report.html's
 1-minute-resolved grid, walked forward with a fixed stop={stop:.0f}pt / target={target:.0f}pt bracket.
+{candle_rule_html}
 Entry is anchored to the real 1-second-tick instant the level was actually FILLABLE within the
 retest H1 bar: a long entry is a resting buy, so only a bid-side (seller-initiated) print at/through
 the level counts (an earlier version used the naive first touch by EITHER side, which could be
@@ -1403,7 +1656,7 @@ exit bar. "MAE (win)" = max points a WINNING trade moved against the position be
 target; "MFE (loss)" = max points a LOSING trade moved in the position's favor before hitting
 stop -- both computed from real 1s ticks (see _compute_excursion), not just 1-minute bars, and
 both measured over the trade's own [touch, exit] span so neither pre-entry nor post-exit movement
-is credited. A \u26a0 beside the Entry price marks a GAPPED ENTRY: that price never traded between
+is credited. (A CANDLE row shows both, since for it neither number is implied by the outcome.) A \u26a0 beside the Entry price marks a GAPPED ENTRY: that price never traded between
 touch and exit, so the modeled no-slippage fill was never actually available and the row's R is
 not something the strategy could have realised.
 Reviewed/Valid/Replayed/Notes persist in this browser's localStorage (keyed to this
@@ -1413,7 +1666,7 @@ stop/target report) and can be exported/imported as CSV (top-right buttons).</p>
   <div class="box"><strong>{wins}</strong>wins</div>
   <div class="box"><strong>{losses}</strong>losses</div>
   <div class="box"><strong>{no_hits}</strong>no-hit</div>
-  <div class="box"><strong>{win_rate*100:.1f}%</strong>win rate</div>
+  <div class="box"><strong>{win_rate*100:.1f}%</strong>win rate</div>{candle_boxes}
   <div class="box"><strong>{avg_r:.2f}</strong>avg R</div>
   <div class="box"><strong>{total_r:.1f}</strong>total R</div>
   <div class="box"><strong>{max_win_mae:.2f}</strong>max MAE (win)</div>
@@ -1460,7 +1713,7 @@ stop/target report) and can be exported/imported as CSV (top-right buttons).</p>
 <thead><tr>
   <th class="left">#</th><th class="left">Type</th><th class="left">Entry (touch) time</th>
   <th>Entry</th><th>Stop</th><th>Target</th><th>Outcome</th><th>R</th>
-  <th class="left">Exit time</th><th>MAE (win)</th><th>MFE (loss)</th>
+  <th class="left">Exit time</th><th>Exit px</th><th>MAE (win)</th><th>MFE (loss)</th>
   <th>Reviewed</th><th>Valid</th><th>Replayed</th>
   <th class="left">Notes</th><th class="expand-th">\u25b6</th>
 </tr></thead>
@@ -1468,7 +1721,7 @@ stop/target report) and can be exported/imported as CSV (top-right buttons).</p>
 """
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<title>LXPB Stop {stop:.0f} / Target {target:.0f} Trades{title_suffix or ''}</title>
+<title>LXPB Stop {stop:.0f} / Target {target:.0f}{' candle-exit' if candle_exit else ''}{' (skip entry bar)' if candle_exit and candle_exit_skip_entry else ''} Trades{title_suffix or ''}</title>
 {CSS}
 </head><body>
 {header}
@@ -1483,8 +1736,9 @@ stop/target report) and can be exported/imported as CSV (top-right buttons).</p>
 """
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"Saved -> {output_path}  ({len(trades)} trades, {wins}W/{losses}L/{no_hits}NH, "
-          f"win rate {win_rate*100:.1f}%, avg_R {avg_r:.2f}, total_R {total_r:.1f})")
+    print(f"Saved -> {output_path}  ({len(trades)} trades, {wins}W/{losses}L/"
+          f"{candles}C/{no_hits}NH, win rate {win_rate*100:.1f}%, "
+          f"profitable {profit_rate*100:.1f}%, avg_R {avg_r:.2f}, total_R {total_r:.1f})")
 
 
 if __name__ == "__main__":
@@ -1508,6 +1762,14 @@ if __name__ == "__main__":
                         help="concurrent chunk processes; chunks are contract-pure so each "
                              "holds only ~1 contract (~2-3GB) of .scid ticks in memory")
     parser.add_argument("--storage-key", default=None)
+    parser.add_argument("--candle-exit", action="store_true",
+                        help="also close at market on the first 1-minute candle after the "
+                             "retest that closes below the previous candle's LOW and below "
+                             "the entry level (mirrored for shorts) -- see resolve_trades")
+    parser.add_argument("--candle-exit-skip-entry", action="store_true",
+                        help="with --candle-exit, make the entry minute's own candle "
+                             "ineligible so the rule can only fire from the first full "
+                             "candle after entry onwards")
     args = parser.parse_args()
 
     start, end, merged = args.start, args.end, args.merged
@@ -1515,15 +1777,28 @@ if __name__ == "__main__":
     if args.limit is not None:
         limit = None if str(args.limit).lower() in ("none", "0", "all") else int(args.limit)
     suffix, skey = None, args.storage_key
+    # The candle rule is a different STRATEGY on the same bracket, so it gets
+    # its own filename and its own localStorage key -- otherwise its rows
+    # would inherit (and overwrite) the plain combo's saved review notes.
+    ce_tag = "_candleexit" if args.candle_exit else ""
+    if args.candle_exit and args.candle_exit_skip_entry:
+        ce_tag += "_skipentry"
     if args.full_year:
         start, end, limit, merged = start or "2026-01-01", end or "2026-12-31", None, True
         suffix = " (2026 full year)"
-        skey = skey or f"lxpb_trade_review_v1_stop{args.stop:.0f}_target{args.target:.0f}_fy2026"
+        skey = skey or (f"lxpb_trade_review_v1_stop{args.stop:.0f}_"
+                        f"target{args.target:.0f}{ce_tag}_fy2026")
+    else:
+        skey = skey or (f"lxpb_trade_review_v1_stop{args.stop:.0f}_"
+                        f"target{args.target:.0f}{ce_tag}")
 
-    default_name = f"stop{args.stop:.0f}_target{args.target:.0f}_trades_report.html"
+    default_name = f"stop{args.stop:.0f}_target{args.target:.0f}{ce_tag}_trades_report.html"
     if args.full_year:
-        default_name = f"stop{args.stop:.0f}_target{args.target:.0f}_trades_report_2026_full_year.html"
+        default_name = (f"stop{args.stop:.0f}_target{args.target:.0f}{ce_tag}"
+                        f"_trades_report_2026_full_year.html")
     out = args.output or os.path.join(_HERE, default_name)
     render(args.stop, args.target, out, start=start, end=end, limit=limit,
-           merged=merged, workers=args.workers, storage_key=skey, title_suffix=suffix)
+           merged=merged, workers=args.workers, storage_key=skey, title_suffix=suffix,
+           candle_exit=args.candle_exit,
+           candle_exit_skip_entry=args.candle_exit_skip_entry)
 
