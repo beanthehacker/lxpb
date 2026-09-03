@@ -100,6 +100,71 @@ def _fmt_pts(v):
     return f"{v:.0f}" if v.is_integer() else f"{v:g}"
 
 
+EXCURSION_PCTILES = (5, 10, 25, 50, 75, 90, 95, 99)
+
+# Kept apart from CSS so a report rendered before this table existed can be
+# retro-fitted with exactly the rules a fresh render would have emitted.
+EXCURSION_CSS = """.pctile-wrap { margin:14px 0 18px; }
+.pctile-wrap h2 { font-size:1.05em; margin:0 0 6px; color:var(--text); }
+.pctile-tbl { border-collapse:collapse; font-size:0.92em; }
+.pctile-tbl th, .pctile-tbl td { border:1px solid var(--border); padding:3px 9px;
+                                 text-align:right; white-space:nowrap; }
+.pctile-tbl th { background:var(--surface2); }
+.pctile-tbl td.left, .pctile-tbl th.left { text-align:left; }
+.pctile-tbl tr.pctile-r td { color:#94a3b8; border-top:none; font-style:italic; }
+.pctile-note { color:#94a3b8; font-style:italic; margin-left:8px; font-size:0.9em; }
+.pctile-cap { max-width:1100px; color:#94a3b8; font-size:0.88em; line-height:1.5;
+              margin:8px 0 0; }"""
+
+
+def excursion_percentile_html(groups, stop):
+    """Percentile tables for the MAE/MFE excursion columns.
+
+    `groups` is an ordered list of (label, note, values_in_points). Kept as a
+    plain function of already-extracted numbers -- rather than reading
+    `resolved_list` directly -- so the exact same markup can be produced from
+    a report that has already been rendered, without re-resolving 500 trades
+    off the tick data just to add a summary table.
+
+    Every population is also shown in R (points / stop), since that is the
+    unit the rest of the report reasons in."""
+    if not any(vals for _, _, vals in groups):
+        return ""
+    head = "".join(f"<th>p{q}</th>" for q in EXCURSION_PCTILES)
+    body = []
+    for label, note, vals in groups:
+        if not vals:
+            continue
+        a = np.asarray(vals, dtype=float)
+        pcts = [float(np.percentile(a, q)) for q in EXCURSION_PCTILES]
+        body.append(
+            f'<tr><td class="left">{label}<span class="pctile-note">{note}</span></td>'
+            f'<td>{a.size}</td>'
+            + "".join(f"<td>{v:.2f}</td>" for v in pcts)
+            + f'<td>{a.mean():.2f}</td><td>{a.max():.2f}</td></tr>'
+            + f'<tr class="pctile-r"><td class="left">&nbsp;&nbsp;same, in R</td><td></td>'
+            + "".join(f"<td>{v / stop:.2f}</td>" for v in pcts)
+            + f'<td>{a.mean() / stop:.2f}</td><td>{a.max() / stop:.2f}</td></tr>')
+    return f"""
+<div class="pctile-wrap">
+<h2>Excursion percentiles</h2>
+<table class="pctile-tbl">
+<thead><tr><th class="left">Population</th><th>n</th>{head}<th>mean</th><th>max</th></tr></thead>
+<tbody>{"".join(body)}</tbody>
+</table>
+<p class="pctile-cap">Read a percentile as a share of <em>that population</em>, not as a win rate.
+p75 = 5.75pt means 75% of losing trades ran LESS than 5.75pt in the position's favour before
+stopping out, so only the top 25% of them would have been rescued by a 5.75pt target &mdash; the
+win rate at that target is those 25% of losers plus every trade that already won, not 75%.
+The excursion is also a quote touch, not a fill: it is the extreme of the raw tick High/Low
+(= ask/bid, see _compute_excursion), whereas a target is a resting limit order that needs an
+opposite-side print, so a target placed at a given MFE level converts slightly fewer trades than
+the percentile implies. Both effects are why these numbers sit just above the corresponding row
+of exit_analysis_report's stop/target grid rather than reproducing it exactly.</p>
+</div>
+"""
+
+
 def _full_minute_ohlc(sym, minute_start):
     """Real, FULL clock-minute OHLC for one minute, built from 1s ticks with
     the same aggregation M.build_or_load_1min_series uses, so it is directly
@@ -832,6 +897,7 @@ tr.lvl-row.is-valid td.valid-cell { color:#4ade80; font-weight:600; }
 textarea.trade-note { width:160px; height:34px; resize:vertical; background:var(--surface2);
                        color:var(--text); border:1px solid var(--border); border-radius:4px;
                        font-size:0.9em; padding:3px 5px; }
+""" + EXCURSION_CSS + """
 /* Half-width H1/M5 panes: keep the hover OHLC readout pinned right and
    fully visible, letting the descriptive part ellipsis instead. */
 .chart-title.chart-title-split { display:flex; align-items:baseline; gap:10px; }
@@ -1420,6 +1486,14 @@ def _build_records_parallel(specs, workers):
 def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
            merged=False, workers=1, storage_key=None, title_suffix=None,
            candle_exit=False, candle_exit_skip_entry=False):
+    # Resolve the "not passed" sentinel HERE, before it can reach a worker.
+    # A._DEFAULT is a bare object(), so its identity is what marks the
+    # default -- and identity does not survive pickling: a child process
+    # unpickles a DIFFERENT object, `limit is A._DEFAULT` is False there, and
+    # load_strong_breakout_rows calls .head() on the sentinel itself. That
+    # made every --workers>1 run crash unless the caller happened to pass a
+    # real limit (which --full-year does, as limit=None).
+    limit = A.DEFAULT_LIMIT if limit is A._DEFAULT else limit
     h1_df, pos_by_ts, strong, trades = _select_rows(start, end, limit, merged)
     print(f"Selected {len(trades)} strong-breakout trades "
           f"({strong['retest_time'].min()} -> {strong['retest_time'].max()})", flush=True)
@@ -1493,6 +1567,22 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
                         if r["outcome"] == "stop" and r.get("favorable_pts") is not None]
     max_win_mae = max(win_mae_values) if win_mae_values else 0.0
     max_loss_mfe = max(loss_mfe_values) if loss_mfe_values else 0.0
+    # Same two columns as the table below, summarised as a distribution. A
+    # candle exit implies neither number, so it gets its own rows.
+    candle_mfe_values = [r["favorable_pts"] for r in resolved_list
+                         if r["outcome"] == "candle" and r.get("favorable_pts") is not None]
+    candle_mae_values = [r["adverse_pts"] for r in resolved_list
+                         if r["outcome"] == "candle" and r.get("adverse_pts") is not None]
+    pctile_html = excursion_percentile_html([
+        ("MFE &mdash; losing trades", "ran this far in favour before hitting stop",
+         loss_mfe_values),
+        ("MAE &mdash; winning trades", "heat taken before reaching target",
+         win_mae_values),
+        ("MFE &mdash; candle exits", "ran this far in favour before the candle rule fired",
+         candle_mfe_values),
+        ("MAE &mdash; candle exits", "heat taken before the candle rule fired",
+         candle_mae_values),
+    ], stop)
     gapped_entries = sum(1 for r in resolved_list if r.get("entry_gapped"))
 
     charts, rows_html = [], []
@@ -1696,6 +1786,7 @@ stop/target report) and can be exported/imported as CSV (top-right buttons).</p>
     <button class="btn" onclick="if(confirm('Clear ALL saved Reviewed/Valid/Replayed/Notes in this browser for this report?')) clearAllReview();">\U0001f5d1 Clear all</button>
   </div>
 </div>
+{pctile_html}
 """
     filter_panel = """
 <div class="filter-panel">
