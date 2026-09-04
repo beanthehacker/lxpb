@@ -84,7 +84,7 @@ EXIT_CANDLE_COLOR = "#fbbf24"
 # LXPB levels within +/- CONFLUENCE_N_POINTS of the trade's own level, formed
 # before it, with a confirmed (non-failed) breakout of their own, and formed
 # no further back than CONFLUENCE_LOOKBACK_BARS H1 bars before the trade's
-# own P0 (formation) bar -- an unbounded lookback let a handful of very old
+# own P1 (breakout) bar -- an unbounded lookback let a handful of very old
 # levels (formed months earlier) count as "confluence" alongside genuinely
 # recent structure. CONFLUENCE_COLOR is a blue distinct from both P2_COLOR
 # (light purple circle marker) and M5_COLOR (the M5 pane's own rays) so the
@@ -1507,11 +1507,11 @@ def _build_records(h1_df, pos_by_ts, strong, trades, indices, stop, target,
         trade, resolved = sub_trades[j], resolved_list[j]
         row_d = strong.iloc[i]
         # Bound how far back "confluence" may reach: only H1 levels formed
-        # within CONFLUENCE_LOOKBACK_BARS bars before THIS trade's own P0
-        # (formation) bar. pos_by_ts/h1_df are the same naive-UTC-indexed
+        # within CONFLUENCE_LOOKBACK_BARS bars before THIS trade's own P1
+        # (breakout) bar. pos_by_ts/h1_df are the same naive-UTC-indexed
         # H1 series build_trade_chart's own P0/P1/P2 markers use.
-        form_pos = pos_by_ts[row_d["formation_time"]]
-        lookback_pos = max(0, form_pos - CONFLUENCE_LOOKBACK_BARS)
+        breakout_pos = pos_by_ts[row_d["breakout_time"]]
+        lookback_pos = max(0, breakout_pos - CONFLUENCE_LOOKBACK_BARS)
         min_formation_time = h1_df.index[lookback_pos]
         confluent = LC.find_confluent_levels(
             ledger, row_d["type"], float(row_d["price"]), row_d["formation_time"],

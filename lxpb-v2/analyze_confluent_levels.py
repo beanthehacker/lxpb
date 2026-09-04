@@ -24,7 +24,7 @@ Definition (per row-26 example of stop2_target8_trades_report.html: LHPB
   4. Among everything that passes, the MOST RECENTLY FORMED one is "the"
      confluent level (the strategy pairs with *recent* nearby structure).
   5. "Confluence" only reaches back CONFLUENCE_LOOKBACK_BARS H1 bars before
-     the trade's own P0 (formation) bar -- levels formed earlier than that
+     the trade's own P1 (breakout) bar -- levels formed earlier than that
      don't count, however close in price, so a handful of very old levels
      can't masquerade as "recent" structure.
 
@@ -80,7 +80,7 @@ def main():
     parser.add_argument("--n", type=float, default=SR.CONFLUENCE_N_POINTS,
                         help=f"zone half-width in points (default {SR.CONFLUENCE_N_POINTS})")
     parser.add_argument("--lookback-bars", type=int, default=SR.CONFLUENCE_LOOKBACK_BARS,
-                        help="max H1 bars before this trade's own P0 (formation) bar a "
+                        help="max H1 bars before this trade's own P1 (breakout) bar a "
                              f"candidate may have formed in (default {SR.CONFLUENCE_LOOKBACK_BARS})")
     args = parser.parse_args()
 
@@ -97,7 +97,7 @@ def main():
     breakout_time = subject["breakout_time"]      # P1 -- same_side_live_confluence cutoff
     cutoff_time = subject["retest_time"]          # P2 -- the trade's own retest, decision point
 
-    form_pos = pos_by_ts[formation_time]
+    form_pos = pos_by_ts[breakout_time]
     lookback_pos = max(0, form_pos - args.lookback_bars)
     min_formation_time = h1_df.index[lookback_pos]
 
@@ -105,7 +105,7 @@ def main():
           f"formed {R._to_pt_str(LC._as_utc(formation_time))}  "
           f"retest {R._to_pt_str(LC._as_utc(cutoff_time))}")
     print(f"Zone (N={args.n}): [{price - args.n:.2f}, {price + args.n:.2f}]")
-    print(f"Lookback bound ({args.lookback_bars} bars before P0): "
+    print(f"Lookback bound ({args.lookback_bars} bars before P1): "
           f"formed at/after {R._to_pt_str(min_formation_time)}")
 
     ledger = LC.h1_levels()

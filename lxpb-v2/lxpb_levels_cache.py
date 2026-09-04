@@ -725,7 +725,7 @@ def find_confluent_levels(ledger, level_type, price, formation_time, cutoff_time
       - formed strictly before `cutoff_time` (the subject trade's own retest
         -- the decision point; nothing after it may be used), AND
       - formed at or after `min_formation_time` when given (the subject
-        trade's own P0 bar minus CONFLUENCE_LOOKBACK_BARS H1 bars, in
+        trade's own P1 bar minus CONFLUENCE_LOOKBACK_BARS H1 bars, in
         render_stop_target_report.py) -- bounds how far back "confluence"
         may reach so a handful of very old levels don't count as recent
         supporting structure; omit for no lower bound, AND
