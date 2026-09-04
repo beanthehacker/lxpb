@@ -1004,6 +1004,9 @@ tr.lvl-row.is-valid td.valid-cell { color:#4ade80; font-weight:600; }
 textarea.trade-note { width:160px; height:34px; resize:vertical; background:var(--surface2);
                        color:var(--text); border:1px solid var(--border); border-radius:4px;
                        font-size:0.9em; padding:3px 5px; }
+select.f-num-op, input.f-num-val { background:var(--surface2); color:var(--text);
+    border:1px solid var(--border); border-radius:4px; font-size:0.85em; padding:3px 5px; }
+input.f-num-val { width:4.5em; }
 """ + EXCURSION_CSS + """
 /* Half-width H1/M5 panes: keep the hover OHLC readout pinned right and
    fully visible, letting the descriptive part ellipsis instead. */
@@ -1410,6 +1413,19 @@ function clearAllReview() {
   updateReviewSummary();
   applyReviewFilters();
 }
+function numFilterOk(tr, target) {
+  const op = document.querySelector('.f-num-op[data-target="' + target + '"]').value;
+  if (op === 'any') return true;
+  const val = parseFloat(document.querySelector('.f-num-val[data-target="' + target + '"]').value);
+  if (isNaN(val)) return true;
+  const actual = parseFloat(tr.dataset[target]);
+  if (op === 'gte') return actual >= val;
+  if (op === 'gt') return actual > val;
+  if (op === 'eq') return actual === val;
+  if (op === 'lte') return actual <= val;
+  if (op === 'lt') return actual < val;
+  return true;
+}
 function applyReviewFilters() {
   const statusOn = Array.from(document.querySelectorAll('.f-review-status:checked')).map(c => c.value);
   const validOn = Array.from(document.querySelectorAll('.f-review-valid:checked')).map(c => c.value);
@@ -1425,7 +1441,9 @@ function applyReviewFilters() {
     const validOk = validOn.includes(isValid ? 'valid' : 'not_valid');
     const replayOk = replayOn.includes(isReplayed ? 'replayed' : 'not_replayed');
     const notesOk = notesOn.includes(hasNotes ? 'has_notes' : 'no_notes');
-    const show = statusOk && validOk && replayOk && notesOk;
+    const conflOk = numFilterOk(tr, 'confl');
+    const ssconflOk = numFilterOk(tr, 'ssconfl');
+    const show = statusOk && validOk && replayOk && notesOk && conflOk && ssconflOk;
     tr.classList.toggle('hidden', !show);
     if (show) shown++;
     if (!show) {
@@ -1437,6 +1455,8 @@ function applyReviewFilters() {
 }
 document.querySelectorAll('.f-review-status, .f-review-valid, .f-review-replay, .f-review-notes')
   .forEach(cb => cb.addEventListener('change', applyReviewFilters));
+document.querySelectorAll('.f-num-op, .f-num-val')
+  .forEach(el => el.addEventListener('input', applyReviewFilters));
 initReview();
 applyReviewFilters();
 </script>
@@ -1812,7 +1832,9 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
         row_key = f"{level_type}_{price:.2f}_{entry_str}".replace(" ", "_")
 
         rows_html.append(f"""
-<tr class="lvl-row {type_cls}" data-idx="{i}" data-key="{row_key}" onclick="toggleChart({i})">
+<tr class="lvl-row {type_cls}" data-idx="{i}" data-key="{row_key}"
+    data-confl="{confluence_count}" data-ssconfl="{same_side_confluence_count}"
+    onclick="toggleChart({i})">
   <td class="left">{i}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{entry_str}</td>
   <td>{price:.2f}{gap_flag}</td><td>{stop_price:.2f}</td><td>{target_price:.2f}</td>
@@ -1941,6 +1963,30 @@ stop/target report) and can be exported/imported as CSV (top-right buttons).</p>
 """
     filter_panel = """
 <div class="filter-panel">
+  <div class="filter-row">
+    <span class="filter-label">Confl.</span>
+    <select class="f-num-op" data-target="confl">
+      <option value="any" selected>any</option>
+      <option value="gte">&ge;</option>
+      <option value="gt">&gt;</option>
+      <option value="eq">=</option>
+      <option value="lte">&le;</option>
+      <option value="lt">&lt;</option>
+    </select>
+    <input type="number" class="f-num-val" data-target="confl" value="0" min="0" step="1">
+  </div>
+  <div class="filter-row">
+    <span class="filter-label">SS Confl.</span>
+    <select class="f-num-op" data-target="ssconfl">
+      <option value="any" selected>any</option>
+      <option value="gte">&ge;</option>
+      <option value="gt">&gt;</option>
+      <option value="eq">=</option>
+      <option value="lte">&le;</option>
+      <option value="lt">&lt;</option>
+    </select>
+    <input type="number" class="f-num-val" data-target="ssconfl" value="0" min="0" step="1">
+  </div>
   <div class="filter-row">
     <span class="filter-label">Status</span>
     <label class="chip"><input type="checkbox" class="f-cb f-review-status" value="unreviewed" checked> Unreviewed</label>

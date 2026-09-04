@@ -112,6 +112,9 @@ tr.lvl-row.is-valid td.valid-cell { color:#4ade80; font-weight:600; }
 textarea.trade-note { width:160px; height:34px; resize:vertical; background:var(--surface2);
                        color:var(--text); border:1px solid var(--border); border-radius:4px;
                        font-size:0.9em; padding:3px 5px; }
+select.f-num-op, input.f-num-val { background:var(--surface2); color:var(--text);
+    border:1px solid var(--border); border-radius:4px; font-size:0.85em; padding:3px 5px; }
+input.f-num-val { width:4.5em; }
 .pctile-wrap { margin:14px 0 18px; }
 .pctile-wrap h2 { font-size:1.05em; margin:0 0 6px; color:var(--text); }
 .pctile-tbl { border-collapse:collapse; font-size:0.92em; }
@@ -217,6 +220,30 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
 
 <div class="filter-panel">
   <div class="filter-row">
+    <span class="filter-label">Confl.</span>
+    <select class="f-num-op" data-target="confl">
+      <option value="any" selected>any</option>
+      <option value="gte">&ge;</option>
+      <option value="gt">&gt;</option>
+      <option value="eq">=</option>
+      <option value="lte">&le;</option>
+      <option value="lt">&lt;</option>
+    </select>
+    <input type="number" class="f-num-val" data-target="confl" value="0" min="0" step="1">
+  </div>
+  <div class="filter-row">
+    <span class="filter-label">SS Confl.</span>
+    <select class="f-num-op" data-target="ssconfl">
+      <option value="any" selected>any</option>
+      <option value="gte">&ge;</option>
+      <option value="gt">&gt;</option>
+      <option value="eq">=</option>
+      <option value="lte">&le;</option>
+      <option value="lt">&lt;</option>
+    </select>
+    <input type="number" class="f-num-val" data-target="ssconfl" value="0" min="0" step="1">
+  </div>
+  <div class="filter-row">
     <span class="filter-label">Status</span>
     <label class="chip"><input type="checkbox" class="f-cb f-review-status" value="unreviewed" checked> Unreviewed</label>
     <label class="chip"><input type="checkbox" class="f-cb f-review-status" value="reviewed" checked> Reviewed</label>
@@ -252,7 +279,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
 <tbody>
 
 
-<tr class="lvl-row type-lhpb" data-idx="0" data-key="LHPB_7511.00_2026-07-01_00:18:19_PT" onclick="toggleChart(0)">
+<tr class="lvl-row type-lhpb" data-idx="0" data-key="LHPB_7511.00_2026-07-01_00:18:19_PT"
+    data-confl="3" data-ssconfl="0"
+    onclick="toggleChart(0)">
   <td class="left">0</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-07-01 00:18:19 PT</td>
   <td>7511.00</td><td>7509.00</td><td>7519.00</td>
@@ -288,7 +317,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="1" data-key="LLPB_7568.00_2026-07-01_08:17:59_PT" onclick="toggleChart(1)">
+<tr class="lvl-row type-llpb" data-idx="1" data-key="LLPB_7568.00_2026-07-01_08:17:59_PT"
+    data-confl="3" data-ssconfl="0"
+    onclick="toggleChart(1)">
   <td class="left">1</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-01 08:17:59 PT</td>
   <td>7568.00</td><td>7570.00</td><td>7560.00</td>
@@ -324,7 +355,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="2" data-key="LHPB_7554.50_2026-07-01_11:15:10_PT" onclick="toggleChart(2)">
+<tr class="lvl-row type-lhpb" data-idx="2" data-key="LHPB_7554.50_2026-07-01_11:15:10_PT"
+    data-confl="2" data-ssconfl="0"
+    onclick="toggleChart(2)">
   <td class="left">2</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-07-01 11:15:10 PT</td>
   <td>7554.50</td><td>7552.50</td><td>7562.50</td>
@@ -360,7 +393,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="3" data-key="LHPB_7549.50_2026-07-02_07:42:13_PT" onclick="toggleChart(3)">
+<tr class="lvl-row type-lhpb" data-idx="3" data-key="LHPB_7549.50_2026-07-02_07:42:13_PT"
+    data-confl="7" data-ssconfl="0"
+    onclick="toggleChart(3)">
   <td class="left">3</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-07-02 07:42:13 PT</td>
   <td>7549.50</td><td>7547.50</td><td>7557.50</td>
@@ -396,7 +431,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="4" data-key="LLPB_7531.75_2026-07-02_12:58:45_PT" onclick="toggleChart(4)">
+<tr class="lvl-row type-llpb" data-idx="4" data-key="LLPB_7531.75_2026-07-02_12:58:45_PT"
+    data-confl="7" data-ssconfl="0"
+    onclick="toggleChart(4)">
   <td class="left">4</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-02 12:58:45 PT</td>
   <td>7531.75</td><td>7533.75</td><td>7523.75</td>
@@ -432,7 +469,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="5" data-key="LLPB_7538.50_2026-07-02_17:00:15_PT" onclick="toggleChart(5)">
+<tr class="lvl-row type-llpb" data-idx="5" data-key="LLPB_7538.50_2026-07-02_17:00:15_PT"
+    data-confl="9" data-ssconfl="1"
+    onclick="toggleChart(5)">
   <td class="left">5</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-02 17:00:15 PT</td>
   <td>7538.50</td><td>7540.50</td><td>7530.50</td>
@@ -468,7 +507,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="6" data-key="LLPB_7540.25_2026-07-02_17:00:38_PT" onclick="toggleChart(6)">
+<tr class="lvl-row type-llpb" data-idx="6" data-key="LLPB_7540.25_2026-07-02_17:00:38_PT"
+    data-confl="11" data-ssconfl="1"
+    onclick="toggleChart(6)">
   <td class="left">6</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-02 17:00:38 PT</td>
   <td>7540.25</td><td>7542.25</td><td>7532.25</td>
@@ -504,7 +545,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="7" data-key="LHPB_7574.25_2026-07-06_20:30:06_PT" onclick="toggleChart(7)">
+<tr class="lvl-row type-lhpb" data-idx="7" data-key="LHPB_7574.25_2026-07-06_20:30:06_PT"
+    data-confl="3" data-ssconfl="1"
+    onclick="toggleChart(7)">
   <td class="left">7</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-07-06 20:30:06 PT</td>
   <td>7574.25</td><td>7572.25</td><td>7582.25</td>
@@ -540,7 +583,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="8" data-key="LHPB_7574.00_2026-07-06_20:30:09_PT" onclick="toggleChart(8)">
+<tr class="lvl-row type-lhpb" data-idx="8" data-key="LHPB_7574.00_2026-07-06_20:30:09_PT"
+    data-confl="2" data-ssconfl="1"
+    onclick="toggleChart(8)">
   <td class="left">8</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-07-06 20:30:09 PT</td>
   <td>7574.00</td><td>7572.00</td><td>7582.00</td>
@@ -576,7 +621,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="9" data-key="LLPB_7558.50_2026-07-07_09:12:54_PT" onclick="toggleChart(9)">
+<tr class="lvl-row type-llpb" data-idx="9" data-key="LLPB_7558.50_2026-07-07_09:12:54_PT"
+    data-confl="12" data-ssconfl="1"
+    onclick="toggleChart(9)">
   <td class="left">9</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-07 09:12:54 PT</td>
   <td>7558.50</td><td>7560.50</td><td>7550.50</td>
@@ -612,7 +659,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="10" data-key="LLPB_7560.50_2026-07-07_09:20:07_PT" onclick="toggleChart(10)">
+<tr class="lvl-row type-llpb" data-idx="10" data-key="LLPB_7560.50_2026-07-07_09:20:07_PT"
+    data-confl="7" data-ssconfl="1"
+    onclick="toggleChart(10)">
   <td class="left">10</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-07 09:20:07 PT</td>
   <td>7560.50</td><td>7562.50</td><td>7552.50</td>
@@ -648,7 +697,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="11" data-key="LLPB_7551.75_2026-07-07_09:00:49_PT" onclick="toggleChart(11)">
+<tr class="lvl-row type-llpb" data-idx="11" data-key="LLPB_7551.75_2026-07-07_09:00:49_PT"
+    data-confl="11" data-ssconfl="0"
+    onclick="toggleChart(11)">
   <td class="left">11</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-07 09:00:49 PT</td>
   <td>7551.75</td><td>7553.75</td><td>7543.75</td>
@@ -684,7 +735,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="12" data-key="LLPB_7571.25_2026-07-07_10:08:21_PT" onclick="toggleChart(12)">
+<tr class="lvl-row type-llpb" data-idx="12" data-key="LLPB_7571.25_2026-07-07_10:08:21_PT"
+    data-confl="4" data-ssconfl="1"
+    onclick="toggleChart(12)">
   <td class="left">12</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-07 10:08:21 PT</td>
   <td>7571.25</td><td>7573.25</td><td>7563.25</td>
@@ -720,7 +773,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="13" data-key="LLPB_7491.75_2026-07-08_04:43:35_PT" onclick="toggleChart(13)">
+<tr class="lvl-row type-llpb" data-idx="13" data-key="LLPB_7491.75_2026-07-08_04:43:35_PT"
+    data-confl="1" data-ssconfl="0"
+    onclick="toggleChart(13)">
   <td class="left">13</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-08 04:43:35 PT</td>
   <td>7491.75</td><td>7493.75</td><td>7483.75</td>
@@ -756,7 +811,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="14" data-key="LLPB_7517.75_2026-07-08_05:56:21_PT" onclick="toggleChart(14)">
+<tr class="lvl-row type-llpb" data-idx="14" data-key="LLPB_7517.75_2026-07-08_05:56:21_PT"
+    data-confl="1" data-ssconfl="0"
+    onclick="toggleChart(14)">
   <td class="left">14</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-08 05:56:21 PT</td>
   <td>7517.75</td><td>7519.75</td><td>7509.75</td>
@@ -792,7 +849,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="15" data-key="LLPB_7523.75_2026-07-08_06:46:49_PT" onclick="toggleChart(15)">
+<tr class="lvl-row type-llpb" data-idx="15" data-key="LLPB_7523.75_2026-07-08_06:46:49_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(15)">
   <td class="left">15</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-08 06:46:49 PT</td>
   <td>7523.75</td><td>7525.75</td><td>7515.75</td>
@@ -828,7 +887,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="16" data-key="LLPB_7501.75_2026-07-08_09:17:18_PT" onclick="toggleChart(16)">
+<tr class="lvl-row type-llpb" data-idx="16" data-key="LLPB_7501.75_2026-07-08_09:17:18_PT"
+    data-confl="1" data-ssconfl="0"
+    onclick="toggleChart(16)">
   <td class="left">16</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-08 09:17:18 PT</td>
   <td>7501.75</td><td>7503.75</td><td>7493.75</td>
@@ -864,7 +925,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="17" data-key="LLPB_7527.25_2026-07-08_10:20:06_PT" onclick="toggleChart(17)">
+<tr class="lvl-row type-llpb" data-idx="17" data-key="LLPB_7527.25_2026-07-08_10:20:06_PT"
+    data-confl="2" data-ssconfl="1"
+    onclick="toggleChart(17)">
   <td class="left">17</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-08 10:20:06 PT</td>
   <td>7527.25</td><td>7529.25</td><td>7519.25</td>
@@ -900,7 +963,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="18" data-key="LLPB_7529.50_2026-07-08_10:24:52_PT" onclick="toggleChart(18)">
+<tr class="lvl-row type-llpb" data-idx="18" data-key="LLPB_7529.50_2026-07-08_10:24:52_PT"
+    data-confl="5" data-ssconfl="3"
+    onclick="toggleChart(18)">
   <td class="left">18</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-08 10:24:52 PT</td>
   <td>7529.50</td><td>7531.50</td><td>7521.50</td>
@@ -936,7 +1001,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="19" data-key="LLPB_7531.25_2026-07-08_10:25:03_PT" onclick="toggleChart(19)">
+<tr class="lvl-row type-llpb" data-idx="19" data-key="LLPB_7531.25_2026-07-08_10:25:03_PT"
+    data-confl="3" data-ssconfl="2"
+    onclick="toggleChart(19)">
   <td class="left">19</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-08 10:25:03 PT</td>
   <td>7531.25</td><td>7533.25</td><td>7523.25</td>
@@ -972,7 +1039,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="20" data-key="LLPB_7532.00_2026-07-08_10:25:05_PT" onclick="toggleChart(20)">
+<tr class="lvl-row type-llpb" data-idx="20" data-key="LLPB_7532.00_2026-07-08_10:25:05_PT"
+    data-confl="4" data-ssconfl="2"
+    onclick="toggleChart(20)">
   <td class="left">20</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-08 10:25:05 PT</td>
   <td>7532.00</td><td>7534.00</td><td>7524.00</td>
@@ -1008,7 +1077,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="21" data-key="LLPB_7572.00_2026-07-09_08:22:29_PT" onclick="toggleChart(21)">
+<tr class="lvl-row type-llpb" data-idx="21" data-key="LLPB_7572.00_2026-07-09_08:22:29_PT"
+    data-confl="6" data-ssconfl="1"
+    onclick="toggleChart(21)">
   <td class="left">21</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-09 08:22:29 PT</td>
   <td>7572.00</td><td>7574.00</td><td>7564.00</td>
@@ -1044,7 +1115,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="22" data-key="LLPB_7578.00_2026-07-09_08:45:02_PT" onclick="toggleChart(22)">
+<tr class="lvl-row type-llpb" data-idx="22" data-key="LLPB_7578.00_2026-07-09_08:45:02_PT"
+    data-confl="5" data-ssconfl="0"
+    onclick="toggleChart(22)">
   <td class="left">22</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-09 08:45:02 PT</td>
   <td>7578.00</td><td>7580.00</td><td>7570.00</td>
@@ -1080,7 +1153,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="23" data-key="LLPB_7581.75_2026-07-14_05:30:01_PT" onclick="toggleChart(23)">
+<tr class="lvl-row type-llpb" data-idx="23" data-key="LLPB_7581.75_2026-07-14_05:30:01_PT"
+    data-confl="12" data-ssconfl="0"
+    onclick="toggleChart(23)">
   <td class="left">23</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-14 05:30:01 PT</td>
   <td>7581.75</td><td>7583.75</td><td>7573.75</td>
@@ -1116,7 +1191,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="24" data-key="LHPB_7598.00_2026-07-16_01:10:17_PT" onclick="toggleChart(24)">
+<tr class="lvl-row type-lhpb" data-idx="24" data-key="LHPB_7598.00_2026-07-16_01:10:17_PT"
+    data-confl="7" data-ssconfl="0"
+    onclick="toggleChart(24)">
   <td class="left">24</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-07-16 01:10:17 PT</td>
   <td>7598.00</td><td>7596.00</td><td>7606.00</td>
@@ -1152,7 +1229,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="25" data-key="LHPB_7495.25_2026-07-17_01:20:33_PT" onclick="toggleChart(25)">
+<tr class="lvl-row type-lhpb" data-idx="25" data-key="LHPB_7495.25_2026-07-17_01:20:33_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(25)">
   <td class="left">25</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-07-17 01:20:33 PT</td>
   <td>7495.25</td><td>7493.25</td><td>7503.25</td>
@@ -1188,7 +1267,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="26" data-key="LHPB_7523.25_2026-07-22_15:02:13_PT" onclick="toggleChart(26)">
+<tr class="lvl-row type-lhpb" data-idx="26" data-key="LHPB_7523.25_2026-07-22_15:02:13_PT"
+    data-confl="7" data-ssconfl="0"
+    onclick="toggleChart(26)">
   <td class="left">26</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-07-22 15:02:13 PT</td>
   <td>7523.25</td><td>7521.25</td><td>7531.25</td>
@@ -1224,7 +1305,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="27" data-key="LLPB_7488.75_2026-07-24_08:15:49_PT" onclick="toggleChart(27)">
+<tr class="lvl-row type-llpb" data-idx="27" data-key="LLPB_7488.75_2026-07-24_08:15:49_PT"
+    data-confl="5" data-ssconfl="1"
+    onclick="toggleChart(27)">
   <td class="left">27</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-24 08:15:49 PT</td>
   <td>7488.75</td><td>7490.75</td><td>7480.75</td>
@@ -1260,7 +1343,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="28" data-key="LLPB_7490.00_2026-07-24_08:28:04_PT" onclick="toggleChart(28)">
+<tr class="lvl-row type-llpb" data-idx="28" data-key="LLPB_7490.00_2026-07-24_08:28:04_PT"
+    data-confl="4" data-ssconfl="1"
+    onclick="toggleChart(28)">
   <td class="left">28</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-24 08:28:04 PT</td>
   <td>7490.00</td><td>7492.00</td><td>7482.00</td>
@@ -1296,7 +1381,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="29" data-key="LLPB_7508.50_2026-07-26_15:00:14_PT" onclick="toggleChart(29)">
+<tr class="lvl-row type-llpb" data-idx="29" data-key="LLPB_7508.50_2026-07-26_15:00:14_PT"
+    data-confl="8" data-ssconfl="0"
+    onclick="toggleChart(29)">
   <td class="left">29</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-26 15:00:14 PT</td>
   <td>7508.50</td><td>7510.50</td><td>7500.50</td>
@@ -1332,7 +1419,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="30" data-key="LLPB_7473.75_2026-07-28_08:26:13_PT" onclick="toggleChart(30)">
+<tr class="lvl-row type-llpb" data-idx="30" data-key="LLPB_7473.75_2026-07-28_08:26:13_PT"
+    data-confl="1" data-ssconfl="0"
+    onclick="toggleChart(30)">
   <td class="left">30</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-28 08:26:13 PT</td>
   <td>7473.75</td><td>7475.75</td><td>7465.75</td>
@@ -1368,7 +1457,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="31" data-key="LHPB_7462.25_2026-07-28_11:13:30_PT" onclick="toggleChart(31)">
+<tr class="lvl-row type-lhpb" data-idx="31" data-key="LHPB_7462.25_2026-07-28_11:13:30_PT"
+    data-confl="4" data-ssconfl="0"
+    onclick="toggleChart(31)">
   <td class="left">31</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-07-28 11:13:30 PT</td>
   <td>7462.25</td><td>7460.25</td><td>7470.25</td>
@@ -1404,7 +1495,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="32" data-key="LHPB_7456.00_2026-07-28_15:32:18_PT" onclick="toggleChart(32)">
+<tr class="lvl-row type-lhpb" data-idx="32" data-key="LHPB_7456.00_2026-07-28_15:32:18_PT"
+    data-confl="6" data-ssconfl="0"
+    onclick="toggleChart(32)">
   <td class="left">32</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-07-28 15:32:18 PT</td>
   <td>7456.00</td><td>7454.00</td><td>7464.00</td>
@@ -1440,7 +1533,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="33" data-key="LLPB_7487.00_2026-07-28_16:47:35_PT" onclick="toggleChart(33)">
+<tr class="lvl-row type-llpb" data-idx="33" data-key="LLPB_7487.00_2026-07-28_16:47:35_PT"
+    data-confl="4" data-ssconfl="1"
+    onclick="toggleChart(33)">
   <td class="left">33</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-28 16:47:35 PT</td>
   <td>7487.00</td><td>7489.00</td><td>7479.00</td>
@@ -1476,7 +1571,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="34" data-key="LLPB_7495.75_2026-07-28_17:01:27_PT" onclick="toggleChart(34)">
+<tr class="lvl-row type-llpb" data-idx="34" data-key="LLPB_7495.75_2026-07-28_17:01:27_PT"
+    data-confl="1" data-ssconfl="1"
+    onclick="toggleChart(34)">
   <td class="left">34</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-28 17:01:27 PT</td>
   <td>7495.75</td><td>7497.75</td><td>7487.75</td>
@@ -1512,7 +1609,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="35" data-key="LLPB_7498.00_2026-07-28_17:02:14_PT" onclick="toggleChart(35)">
+<tr class="lvl-row type-llpb" data-idx="35" data-key="LLPB_7498.00_2026-07-28_17:02:14_PT"
+    data-confl="2" data-ssconfl="2"
+    onclick="toggleChart(35)">
   <td class="left">35</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-28 17:02:14 PT</td>
   <td>7498.00</td><td>7500.00</td><td>7490.00</td>
@@ -1548,7 +1647,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="36" data-key="LLPB_7498.75_2026-07-28_17:07:31_PT" onclick="toggleChart(36)">
+<tr class="lvl-row type-llpb" data-idx="36" data-key="LLPB_7498.75_2026-07-28_17:07:31_PT"
+    data-confl="1" data-ssconfl="1"
+    onclick="toggleChart(36)">
   <td class="left">36</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-28 17:07:31 PT</td>
   <td>7498.75</td><td>7500.75</td><td>7490.75</td>
@@ -1584,7 +1685,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="37" data-key="LHPB_7477.50_2026-07-28_18:10:33_PT" onclick="toggleChart(37)">
+<tr class="lvl-row type-lhpb" data-idx="37" data-key="LHPB_7477.50_2026-07-28_18:10:33_PT"
+    data-confl="1" data-ssconfl="0"
+    onclick="toggleChart(37)">
   <td class="left">37</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-07-28 18:10:33 PT</td>
   <td>7477.50</td><td>7475.50</td><td>7485.50</td>
@@ -1620,7 +1723,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="38" data-key="LHPB_7474.00_2026-07-28_18:11:18_PT" onclick="toggleChart(38)">
+<tr class="lvl-row type-lhpb" data-idx="38" data-key="LHPB_7474.00_2026-07-28_18:11:18_PT"
+    data-confl="2" data-ssconfl="0"
+    onclick="toggleChart(38)">
   <td class="left">38</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-07-28 18:11:18 PT</td>
   <td>7474.00</td><td>7472.00</td><td>7482.00</td>
@@ -1656,7 +1761,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="39" data-key="LLPB_7416.25_2026-07-29_10:12:52_PT" onclick="toggleChart(39)">
+<tr class="lvl-row type-llpb" data-idx="39" data-key="LLPB_7416.25_2026-07-29_10:12:52_PT"
+    data-confl="1" data-ssconfl="1"
+    onclick="toggleChart(39)">
   <td class="left">39</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-29 10:12:52 PT</td>
   <td>7416.25</td><td>7418.25</td><td>7408.25</td>
@@ -1692,7 +1799,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="40" data-key="LLPB_7417.00_2026-07-29_10:12:56_PT" onclick="toggleChart(40)">
+<tr class="lvl-row type-llpb" data-idx="40" data-key="LLPB_7417.00_2026-07-29_10:12:56_PT"
+    data-confl="1" data-ssconfl="1"
+    onclick="toggleChart(40)">
   <td class="left">40</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-29 10:12:56 PT</td>
   <td>7417.00</td><td>7419.00</td><td>7409.00</td>
@@ -1728,7 +1837,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="41" data-key="LLPB_7420.00_2026-07-29_10:13:19_PT" onclick="toggleChart(41)">
+<tr class="lvl-row type-llpb" data-idx="41" data-key="LLPB_7420.00_2026-07-29_10:13:19_PT"
+    data-confl="1" data-ssconfl="1"
+    onclick="toggleChart(41)">
   <td class="left">41</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-29 10:13:19 PT</td>
   <td>7420.00</td><td>7422.00</td><td>7412.00</td>
@@ -1764,7 +1875,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="42" data-key="LLPB_7422.00_2026-07-29_10:14:59_PT" onclick="toggleChart(42)">
+<tr class="lvl-row type-llpb" data-idx="42" data-key="LLPB_7422.00_2026-07-29_10:14:59_PT"
+    data-confl="2" data-ssconfl="1"
+    onclick="toggleChart(42)">
   <td class="left">42</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-29 10:14:59 PT</td>
   <td>7422.00</td><td>7424.00</td><td>7414.00</td>
@@ -1800,7 +1913,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="43" data-key="LLPB_7448.50_2026-07-29_11:01:40_PT" onclick="toggleChart(43)">
+<tr class="lvl-row type-llpb" data-idx="43" data-key="LLPB_7448.50_2026-07-29_11:01:40_PT"
+    data-confl="11" data-ssconfl="0"
+    onclick="toggleChart(43)">
   <td class="left">43</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-29 11:01:40 PT</td>
   <td>7448.50</td><td>7450.50</td><td>7440.50</td>
@@ -1836,7 +1951,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="44" data-key="LLPB_7451.25_2026-07-29_11:02:39_PT" onclick="toggleChart(44)">
+<tr class="lvl-row type-llpb" data-idx="44" data-key="LLPB_7451.25_2026-07-29_11:02:39_PT"
+    data-confl="14" data-ssconfl="0"
+    onclick="toggleChart(44)">
   <td class="left">44</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-29 11:02:39 PT</td>
   <td>7451.25</td><td>7453.25</td><td>7443.25</td>
@@ -1872,7 +1989,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="45" data-key="LLPB_7455.50_2026-07-29_11:41:10_PT" onclick="toggleChart(45)">
+<tr class="lvl-row type-llpb" data-idx="45" data-key="LLPB_7455.50_2026-07-29_11:41:10_PT"
+    data-confl="9" data-ssconfl="0"
+    onclick="toggleChart(45)">
   <td class="left">45</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-29 11:41:10 PT</td>
   <td>7455.50</td><td>7457.50</td><td>7447.50</td>
@@ -1908,7 +2027,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="46" data-key="LLPB_7368.50_2026-07-29_15:10:32_PT" onclick="toggleChart(46)">
+<tr class="lvl-row type-llpb" data-idx="46" data-key="LLPB_7368.50_2026-07-29_15:10:32_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(46)">
   <td class="left">46</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-29 15:10:32 PT</td>
   <td>7368.50</td><td>7370.50</td><td>7360.50</td>
@@ -1944,7 +2065,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="47" data-key="LLPB_7360.00_2026-07-29_15:06:34_PT" onclick="toggleChart(47)">
+<tr class="lvl-row type-llpb" data-idx="47" data-key="LLPB_7360.00_2026-07-29_15:06:34_PT"
+    data-confl="1" data-ssconfl="0"
+    onclick="toggleChart(47)">
   <td class="left">47</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-29 15:06:34 PT</td>
   <td>7360.00</td><td>7362.00</td><td>7352.00</td>
@@ -1980,7 +2103,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="48" data-key="LLPB_7371.75_2026-07-29_15:11:16_PT" onclick="toggleChart(48)">
+<tr class="lvl-row type-llpb" data-idx="48" data-key="LLPB_7371.75_2026-07-29_15:11:16_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(48)">
   <td class="left">48</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-29 15:11:16 PT</td>
   <td>7371.75</td><td>7373.75</td><td>7363.75</td>
@@ -2016,7 +2141,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="49" data-key="LLPB_7402.75_2026-07-30_05:04:01_PT" onclick="toggleChart(49)">
+<tr class="lvl-row type-llpb" data-idx="49" data-key="LLPB_7402.75_2026-07-30_05:04:01_PT"
+    data-confl="1" data-ssconfl="0"
+    onclick="toggleChart(49)">
   <td class="left">49</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-30 05:04:01 PT</td>
   <td>7402.75</td><td>7404.75</td><td>7394.75</td>
@@ -2052,7 +2179,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="50" data-key="LLPB_7414.75_2026-07-30_06:29:58_PT" onclick="toggleChart(50)">
+<tr class="lvl-row type-llpb" data-idx="50" data-key="LLPB_7414.75_2026-07-30_06:29:58_PT"
+    data-confl="3" data-ssconfl="0"
+    onclick="toggleChart(50)">
   <td class="left">50</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-30 06:29:58 PT</td>
   <td>7414.75</td><td>7416.75</td><td>7406.75</td>
@@ -2088,7 +2217,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="51" data-key="LLPB_7504.25_2026-07-30_18:18:05_PT" onclick="toggleChart(51)">
+<tr class="lvl-row type-llpb" data-idx="51" data-key="LLPB_7504.25_2026-07-30_18:18:05_PT"
+    data-confl="2" data-ssconfl="1"
+    onclick="toggleChart(51)">
   <td class="left">51</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-30 18:18:05 PT</td>
   <td>7504.25</td><td>7506.25</td><td>7496.25</td>
@@ -2124,7 +2255,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="52" data-key="LLPB_7504.50_2026-07-30_18:18:05_PT" onclick="toggleChart(52)">
+<tr class="lvl-row type-llpb" data-idx="52" data-key="LLPB_7504.50_2026-07-30_18:18:05_PT"
+    data-confl="3" data-ssconfl="1"
+    onclick="toggleChart(52)">
   <td class="left">52</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-07-30 18:18:05 PT</td>
   <td>7504.50</td><td>7506.50</td><td>7496.50</td>
@@ -2160,7 +2293,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="53" data-key="LHPB_7755.75_2026-08-05_08:57:15_PT" onclick="toggleChart(53)">
+<tr class="lvl-row type-lhpb" data-idx="53" data-key="LHPB_7755.75_2026-08-05_08:57:15_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(53)">
   <td class="left">53</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-05 08:57:15 PT</td>
   <td>7755.75</td><td>7753.75</td><td>7763.75</td>
@@ -2196,7 +2331,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="54" data-key="LLPB_7740.25_2026-08-06_10:00:02_PT" onclick="toggleChart(54)">
+<tr class="lvl-row type-llpb" data-idx="54" data-key="LLPB_7740.25_2026-08-06_10:00:02_PT"
+    data-confl="1" data-ssconfl="0"
+    onclick="toggleChart(54)">
   <td class="left">54</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-06 10:00:02 PT</td>
   <td>7740.25</td><td>7742.25</td><td>7732.25</td>
@@ -2232,7 +2369,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="55" data-key="LLPB_7745.25_2026-08-06_11:16:58_PT" onclick="toggleChart(55)">
+<tr class="lvl-row type-llpb" data-idx="55" data-key="LLPB_7745.25_2026-08-06_11:16:58_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(55)">
   <td class="left">55</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-06 11:16:58 PT</td>
   <td>7745.25</td><td>7747.25</td><td>7737.25</td>
@@ -2268,7 +2407,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="56" data-key="LLPB_7775.75_2026-08-07_05:39:51_PT" onclick="toggleChart(56)">
+<tr class="lvl-row type-llpb" data-idx="56" data-key="LLPB_7775.75_2026-08-07_05:39:51_PT"
+    data-confl="2" data-ssconfl="1"
+    onclick="toggleChart(56)">
   <td class="left">56</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-07 05:39:51 PT</td>
   <td>7775.75</td><td>7777.75</td><td>7767.75</td>
@@ -2304,7 +2445,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="57" data-key="LLPB_7776.00_2026-08-07_05:39:52_PT" onclick="toggleChart(57)">
+<tr class="lvl-row type-llpb" data-idx="57" data-key="LLPB_7776.00_2026-08-07_05:39:52_PT"
+    data-confl="2" data-ssconfl="1"
+    onclick="toggleChart(57)">
   <td class="left">57</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-07 05:39:52 PT</td>
   <td>7776.00</td><td>7778.00</td><td>7768.00</td>
@@ -2340,7 +2483,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="58" data-key="LLPB_7792.50_2026-08-09_23:10:48_PT" onclick="toggleChart(58)">
+<tr class="lvl-row type-llpb" data-idx="58" data-key="LLPB_7792.50_2026-08-09_23:10:48_PT"
+    data-confl="3" data-ssconfl="1"
+    onclick="toggleChart(58)">
   <td class="left">58</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-09 23:10:48 PT</td>
   <td>7792.50</td><td>7794.50</td><td>7784.50</td>
@@ -2376,7 +2521,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="59" data-key="LLPB_7795.00_2026-08-10_00:45:12_PT" onclick="toggleChart(59)">
+<tr class="lvl-row type-llpb" data-idx="59" data-key="LLPB_7795.00_2026-08-10_00:45:12_PT"
+    data-confl="3" data-ssconfl="1"
+    onclick="toggleChart(59)">
   <td class="left">59</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-10 00:45:12 PT</td>
   <td>7795.00</td><td>7797.00</td><td>7787.00</td>
@@ -2412,7 +2559,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="60" data-key="LLPB_7770.00_2026-08-12_02:23:58_PT" onclick="toggleChart(60)">
+<tr class="lvl-row type-llpb" data-idx="60" data-key="LLPB_7770.00_2026-08-12_02:23:58_PT"
+    data-confl="10" data-ssconfl="3"
+    onclick="toggleChart(60)">
   <td class="left">60</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-12 02:23:58 PT</td>
   <td>7770.00</td><td>7772.00</td><td>7762.00</td>
@@ -2448,7 +2597,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="61" data-key="LLPB_7771.50_2026-08-12_02:24:17_PT" onclick="toggleChart(61)">
+<tr class="lvl-row type-llpb" data-idx="61" data-key="LLPB_7771.50_2026-08-12_02:24:17_PT"
+    data-confl="10" data-ssconfl="2"
+    onclick="toggleChart(61)">
   <td class="left">61</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-12 02:24:17 PT</td>
   <td>7771.50</td><td>7773.50</td><td>7763.50</td>
@@ -2484,7 +2635,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="62" data-key="LLPB_7771.75_2026-08-12_02:24:19_PT" onclick="toggleChart(62)">
+<tr class="lvl-row type-llpb" data-idx="62" data-key="LLPB_7771.75_2026-08-12_02:24:19_PT"
+    data-confl="10" data-ssconfl="2"
+    onclick="toggleChart(62)">
   <td class="left">62</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-12 02:24:19 PT</td>
   <td>7771.75</td><td>7773.75</td><td>7763.75</td>
@@ -2520,7 +2673,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="63" data-key="LLPB_7778.00_2026-08-12_05:29:22_PT" onclick="toggleChart(63)">
+<tr class="lvl-row type-llpb" data-idx="63" data-key="LLPB_7778.00_2026-08-12_05:29:22_PT"
+    data-confl="10" data-ssconfl="0"
+    onclick="toggleChart(63)">
   <td class="left">63</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-12 05:29:22 PT</td>
   <td>7778.00</td><td>7780.00</td><td>7770.00</td>
@@ -2556,7 +2711,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="64" data-key="LHPB_7798.00_2026-08-13_08:59:10_PT" onclick="toggleChart(64)">
+<tr class="lvl-row type-lhpb" data-idx="64" data-key="LHPB_7798.00_2026-08-13_08:59:10_PT"
+    data-confl="1" data-ssconfl="1"
+    onclick="toggleChart(64)">
   <td class="left">64</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-13 08:59:10 PT</td>
   <td>7798.00</td><td>7796.00</td><td>7806.00</td>
@@ -2592,7 +2749,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="65" data-key="LLPB_7818.00_2026-08-13_10:08:33_PT" onclick="toggleChart(65)">
+<tr class="lvl-row type-llpb" data-idx="65" data-key="LLPB_7818.00_2026-08-13_10:08:33_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(65)">
   <td class="left">65</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-13 10:08:33 PT</td>
   <td>7818.00</td><td>7820.00</td><td>7810.00</td>
@@ -2628,7 +2787,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="66" data-key="LLPB_7818.00_2026-08-16_23:00:07_PT" onclick="toggleChart(66)">
+<tr class="lvl-row type-llpb" data-idx="66" data-key="LLPB_7818.00_2026-08-16_23:00:07_PT"
+    data-confl="5" data-ssconfl="2"
+    onclick="toggleChart(66)">
   <td class="left">66</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-16 23:00:07 PT</td>
   <td>7818.00</td><td>7820.00</td><td>7810.00</td>
@@ -2664,7 +2825,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="67" data-key="LLPB_7818.50_2026-08-16_23:04:08_PT" onclick="toggleChart(67)">
+<tr class="lvl-row type-llpb" data-idx="67" data-key="LLPB_7818.50_2026-08-16_23:04:08_PT"
+    data-confl="5" data-ssconfl="2"
+    onclick="toggleChart(67)">
   <td class="left">67</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-16 23:04:08 PT</td>
   <td>7818.50</td><td>7820.50</td><td>7810.50</td>
@@ -2700,7 +2863,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="68" data-key="LLPB_7819.25_2026-08-16_23:05:47_PT" onclick="toggleChart(68)">
+<tr class="lvl-row type-llpb" data-idx="68" data-key="LLPB_7819.25_2026-08-16_23:05:47_PT"
+    data-confl="6" data-ssconfl="2"
+    onclick="toggleChart(68)">
   <td class="left">68</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-16 23:05:47 PT</td>
   <td>7819.25</td><td>7821.25</td><td>7811.25</td>
@@ -2736,7 +2901,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="69" data-key="LHPB_7796.00_2026-08-17_06:35:00_PT" onclick="toggleChart(69)">
+<tr class="lvl-row type-lhpb" data-idx="69" data-key="LHPB_7796.00_2026-08-17_06:35:00_PT"
+    data-confl="4" data-ssconfl="3"
+    onclick="toggleChart(69)">
   <td class="left">69</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-17 06:35:00 PT</td>
   <td>7796.00</td><td>7794.00</td><td>7804.00</td>
@@ -2772,7 +2939,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="70" data-key="LHPB_7795.25_2026-08-17_06:35:00_PT" onclick="toggleChart(70)">
+<tr class="lvl-row type-lhpb" data-idx="70" data-key="LHPB_7795.25_2026-08-17_06:35:00_PT"
+    data-confl="3" data-ssconfl="2"
+    onclick="toggleChart(70)">
   <td class="left">70</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-17 06:35:00 PT</td>
   <td>7795.25</td><td>7793.25</td><td>7803.25</td>
@@ -2808,7 +2977,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="71" data-key="LHPB_7794.00_2026-08-17_06:46:35_PT" onclick="toggleChart(71)">
+<tr class="lvl-row type-lhpb" data-idx="71" data-key="LHPB_7794.00_2026-08-17_06:46:35_PT"
+    data-confl="3" data-ssconfl="2"
+    onclick="toggleChart(71)">
   <td class="left">71</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-17 06:46:35 PT</td>
   <td>7794.00</td><td>7792.00</td><td>7802.00</td>
@@ -2844,7 +3015,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="72" data-key="LHPB_7790.25_2026-08-17_07:54:16_PT" onclick="toggleChart(72)">
+<tr class="lvl-row type-lhpb" data-idx="72" data-key="LHPB_7790.25_2026-08-17_07:54:16_PT"
+    data-confl="4" data-ssconfl="0"
+    onclick="toggleChart(72)">
   <td class="left">72</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-17 07:54:16 PT</td>
   <td>7790.25</td><td>7788.25</td><td>7798.25</td>
@@ -2880,7 +3053,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="73" data-key="LLPB_7799.50_2026-08-17_08:20:04_PT" onclick="toggleChart(73)">
+<tr class="lvl-row type-llpb" data-idx="73" data-key="LLPB_7799.50_2026-08-17_08:20:04_PT"
+    data-confl="3" data-ssconfl="2"
+    onclick="toggleChart(73)">
   <td class="left">73</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-17 08:20:04 PT</td>
   <td>7799.50</td><td>7801.50</td><td>7791.50</td>
@@ -2916,7 +3091,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="74" data-key="LLPB_7799.75_2026-08-17_08:20:06_PT" onclick="toggleChart(74)">
+<tr class="lvl-row type-llpb" data-idx="74" data-key="LLPB_7799.75_2026-08-17_08:20:06_PT"
+    data-confl="3" data-ssconfl="2"
+    onclick="toggleChart(74)">
   <td class="left">74</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-17 08:20:06 PT</td>
   <td>7799.75</td><td>7801.75</td><td>7791.75</td>
@@ -2952,7 +3129,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="75" data-key="LHPB_7716.50_2026-08-18_01:00:23_PT" onclick="toggleChart(75)">
+<tr class="lvl-row type-lhpb" data-idx="75" data-key="LHPB_7716.50_2026-08-18_01:00:23_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(75)">
   <td class="left">75</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-18 01:00:23 PT</td>
   <td>7716.50</td><td>7714.50</td><td>7724.50</td>
@@ -2988,7 +3167,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="76" data-key="LLPB_7754.25_2026-08-19_05:50:20_PT" onclick="toggleChart(76)">
+<tr class="lvl-row type-llpb" data-idx="76" data-key="LLPB_7754.25_2026-08-19_05:50:20_PT"
+    data-confl="4" data-ssconfl="2"
+    onclick="toggleChart(76)">
   <td class="left">76</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-19 05:50:20 PT</td>
   <td>7754.25</td><td>7756.25</td><td>7746.25</td>
@@ -3024,7 +3205,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="77" data-key="LLPB_7755.25_2026-08-19_05:50:34_PT" onclick="toggleChart(77)">
+<tr class="lvl-row type-llpb" data-idx="77" data-key="LLPB_7755.25_2026-08-19_05:50:34_PT"
+    data-confl="5" data-ssconfl="2"
+    onclick="toggleChart(77)">
   <td class="left">77</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-19 05:50:34 PT</td>
   <td>7755.25</td><td>7757.25</td><td>7747.25</td>
@@ -3060,7 +3243,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="78" data-key="LLPB_7752.75_2026-08-19_05:50:06_PT" onclick="toggleChart(78)">
+<tr class="lvl-row type-llpb" data-idx="78" data-key="LLPB_7752.75_2026-08-19_05:50:06_PT"
+    data-confl="3" data-ssconfl="2"
+    onclick="toggleChart(78)">
   <td class="left">78</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-19 05:50:06 PT</td>
   <td>7752.75</td><td>7754.75</td><td>7744.75</td>
@@ -3096,7 +3281,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="79" data-key="LHPB_7719.25_2026-08-20_01:31:12_PT" onclick="toggleChart(79)">
+<tr class="lvl-row type-lhpb" data-idx="79" data-key="LHPB_7719.25_2026-08-20_01:31:12_PT"
+    data-confl="7" data-ssconfl="1"
+    onclick="toggleChart(79)">
   <td class="left">79</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-20 01:31:12 PT</td>
   <td>7719.25</td><td>7717.25</td><td>7727.25</td>
@@ -3132,7 +3319,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="80" data-key="LHPB_7694.50_2026-08-20_05:04:48_PT" onclick="toggleChart(80)">
+<tr class="lvl-row type-lhpb" data-idx="80" data-key="LHPB_7694.50_2026-08-20_05:04:48_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(80)">
   <td class="left">80</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-20 05:04:48 PT</td>
   <td>7694.50</td><td>7692.50</td><td>7702.50</td>
@@ -3168,7 +3357,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="81" data-key="LHPB_7690.75_2026-08-20_05:06:44_PT" onclick="toggleChart(81)">
+<tr class="lvl-row type-lhpb" data-idx="81" data-key="LHPB_7690.75_2026-08-20_05:06:44_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(81)">
   <td class="left">81</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-20 05:06:44 PT</td>
   <td>7690.75</td><td>7688.75</td><td>7698.75</td>
@@ -3204,7 +3395,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="82" data-key="LHPB_7681.25_2026-08-20_05:36:27_PT" onclick="toggleChart(82)">
+<tr class="lvl-row type-lhpb" data-idx="82" data-key="LHPB_7681.25_2026-08-20_05:36:27_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(82)">
   <td class="left">82</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-20 05:36:27 PT</td>
   <td>7681.25</td><td>7679.25</td><td>7689.25</td>
@@ -3240,7 +3433,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="83" data-key="LHPB_7692.25_2026-08-20_05:06:13_PT" onclick="toggleChart(83)">
+<tr class="lvl-row type-lhpb" data-idx="83" data-key="LHPB_7692.25_2026-08-20_05:06:13_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(83)">
   <td class="left">83</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-20 05:06:13 PT</td>
   <td>7692.25</td><td>7690.25</td><td>7700.25</td>
@@ -3276,7 +3471,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="84" data-key="LHPB_7688.25_2026-08-20_05:09:26_PT" onclick="toggleChart(84)">
+<tr class="lvl-row type-lhpb" data-idx="84" data-key="LHPB_7688.25_2026-08-20_05:09:26_PT"
+    data-confl="1" data-ssconfl="1"
+    onclick="toggleChart(84)">
   <td class="left">84</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-20 05:09:26 PT</td>
   <td>7688.25</td><td>7686.25</td><td>7696.25</td>
@@ -3312,7 +3509,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="85" data-key="LHPB_7689.25_2026-08-20_05:08:09_PT" onclick="toggleChart(85)">
+<tr class="lvl-row type-lhpb" data-idx="85" data-key="LHPB_7689.25_2026-08-20_05:08:09_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(85)">
   <td class="left">85</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-20 05:08:09 PT</td>
   <td>7689.25</td><td>7687.25</td><td>7697.25</td>
@@ -3348,7 +3547,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="86" data-key="LHPB_7686.50_2026-08-20_05:12:45_PT" onclick="toggleChart(86)">
+<tr class="lvl-row type-lhpb" data-idx="86" data-key="LHPB_7686.50_2026-08-20_05:12:45_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(86)">
   <td class="left">86</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-20 05:12:45 PT</td>
   <td>7686.50</td><td>7684.50</td><td>7694.50</td>
@@ -3384,7 +3585,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="87" data-key="LHPB_7694.25_2026-08-20_05:05:34_PT" onclick="toggleChart(87)">
+<tr class="lvl-row type-lhpb" data-idx="87" data-key="LHPB_7694.25_2026-08-20_05:05:34_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(87)">
   <td class="left">87</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-20 05:05:34 PT</td>
   <td>7694.25</td><td>7692.25</td><td>7702.25</td>
@@ -3420,7 +3623,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="88" data-key="LHPB_7686.75_2026-08-20_05:12:45_PT" onclick="toggleChart(88)">
+<tr class="lvl-row type-lhpb" data-idx="88" data-key="LHPB_7686.75_2026-08-20_05:12:45_PT"
+    data-confl="1" data-ssconfl="1"
+    onclick="toggleChart(88)">
   <td class="left">88</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-20 05:12:45 PT</td>
   <td>7686.75</td><td>7684.75</td><td>7694.75</td>
@@ -3456,7 +3661,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="89" data-key="LLPB_7714.75_2026-08-20_06:35:34_PT" onclick="toggleChart(89)">
+<tr class="lvl-row type-llpb" data-idx="89" data-key="LLPB_7714.75_2026-08-20_06:35:34_PT"
+    data-confl="6" data-ssconfl="2"
+    onclick="toggleChart(89)">
   <td class="left">89</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-20 06:35:34 PT</td>
   <td>7714.75</td><td>7716.75</td><td>7706.75</td>
@@ -3492,7 +3699,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="90" data-key="LLPB_7713.25_2026-08-20_06:35:29_PT" onclick="toggleChart(90)">
+<tr class="lvl-row type-llpb" data-idx="90" data-key="LLPB_7713.25_2026-08-20_06:35:29_PT"
+    data-confl="5" data-ssconfl="2"
+    onclick="toggleChart(90)">
   <td class="left">90</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-20 06:35:29 PT</td>
   <td>7713.25</td><td>7715.25</td><td>7705.25</td>
@@ -3528,7 +3737,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="91" data-key="LLPB_7715.50_2026-08-20_06:35:35_PT" onclick="toggleChart(91)">
+<tr class="lvl-row type-llpb" data-idx="91" data-key="LLPB_7715.50_2026-08-20_06:35:35_PT"
+    data-confl="8" data-ssconfl="3"
+    onclick="toggleChart(91)">
   <td class="left">91</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-20 06:35:35 PT</td>
   <td>7715.50</td><td>7717.50</td><td>7707.50</td>
@@ -3564,7 +3775,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="92" data-key="LLPB_7709.50_2026-08-20_06:34:42_PT" onclick="toggleChart(92)">
+<tr class="lvl-row type-llpb" data-idx="92" data-key="LLPB_7709.50_2026-08-20_06:34:42_PT"
+    data-confl="6" data-ssconfl="0"
+    onclick="toggleChart(92)">
   <td class="left">92</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-20 06:34:42 PT</td>
   <td>7709.50</td><td>7711.50</td><td>7701.50</td>
@@ -3600,7 +3813,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-llpb" data-idx="93" data-key="LLPB_7717.50_2026-08-20_08:01:28_PT" onclick="toggleChart(93)">
+<tr class="lvl-row type-llpb" data-idx="93" data-key="LLPB_7717.50_2026-08-20_08:01:28_PT"
+    data-confl="7" data-ssconfl="1"
+    onclick="toggleChart(93)">
   <td class="left">93</td><td class="left type-cell">LLPB</td>
   <td class="left">2026-08-20 08:01:28 PT</td>
   <td>7717.50</td><td>7719.50</td><td>7709.50</td>
@@ -3636,7 +3851,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="94" data-key="LHPB_7677.00_2026-08-20_11:05:44_PT" onclick="toggleChart(94)">
+<tr class="lvl-row type-lhpb" data-idx="94" data-key="LHPB_7677.00_2026-08-20_11:05:44_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(94)">
   <td class="left">94</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-20 11:05:44 PT</td>
   <td>7677.00</td><td>7675.00</td><td>7685.00</td>
@@ -3672,7 +3889,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="95" data-key="LHPB_7673.75_2026-08-20_11:08:14_PT" onclick="toggleChart(95)">
+<tr class="lvl-row type-lhpb" data-idx="95" data-key="LHPB_7673.75_2026-08-20_11:08:14_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(95)">
   <td class="left">95</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-20 11:08:14 PT</td>
   <td>7673.75</td><td>7671.75</td><td>7681.75</td>
@@ -3708,7 +3927,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="96" data-key="LHPB_7664.25_2026-08-20_12:55:30_PT" onclick="toggleChart(96)">
+<tr class="lvl-row type-lhpb" data-idx="96" data-key="LHPB_7664.25_2026-08-20_12:55:30_PT"
+    data-confl="0" data-ssconfl="0"
+    onclick="toggleChart(96)">
   <td class="left">96</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-20 12:55:30 PT</td>
   <td>7664.25</td><td>7662.25</td><td>7672.25</td>
@@ -3744,7 +3965,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="97" data-key="LHPB_7657.75_2026-08-20_13:17:50_PT" onclick="toggleChart(97)">
+<tr class="lvl-row type-lhpb" data-idx="97" data-key="LHPB_7657.75_2026-08-20_13:17:50_PT"
+    data-confl="1" data-ssconfl="1"
+    onclick="toggleChart(97)">
   <td class="left">97</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-20 13:17:50 PT</td>
   <td>7657.75</td><td>7655.75</td><td>7665.75</td>
@@ -3780,7 +4003,9 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   </div></td>
 </tr>
 
-<tr class="lvl-row type-lhpb" data-idx="98" data-key="LHPB_7656.25_2026-08-24_06:44:58_PT" onclick="toggleChart(98)">
+<tr class="lvl-row type-lhpb" data-idx="98" data-key="LHPB_7656.25_2026-08-24_06:44:58_PT"
+    data-confl="1" data-ssconfl="1"
+    onclick="toggleChart(98)">
   <td class="left">98</td><td class="left type-cell">LHPB</td>
   <td class="left">2026-08-24 06:44:58 PT</td>
   <td>7656.25</td><td>7654.25</td><td>7664.25</td>
@@ -4204,6 +4429,19 @@ function clearAllReview() {
   updateReviewSummary();
   applyReviewFilters();
 }
+function numFilterOk(tr, target) {
+  const op = document.querySelector('.f-num-op[data-target="' + target + '"]').value;
+  if (op === 'any') return true;
+  const val = parseFloat(document.querySelector('.f-num-val[data-target="' + target + '"]').value);
+  if (isNaN(val)) return true;
+  const actual = parseFloat(tr.dataset[target]);
+  if (op === 'gte') return actual >= val;
+  if (op === 'gt') return actual > val;
+  if (op === 'eq') return actual === val;
+  if (op === 'lte') return actual <= val;
+  if (op === 'lt') return actual < val;
+  return true;
+}
 function applyReviewFilters() {
   const statusOn = Array.from(document.querySelectorAll('.f-review-status:checked')).map(c => c.value);
   const validOn = Array.from(document.querySelectorAll('.f-review-valid:checked')).map(c => c.value);
@@ -4219,7 +4457,9 @@ function applyReviewFilters() {
     const validOk = validOn.includes(isValid ? 'valid' : 'not_valid');
     const replayOk = replayOn.includes(isReplayed ? 'replayed' : 'not_replayed');
     const notesOk = notesOn.includes(hasNotes ? 'has_notes' : 'no_notes');
-    const show = statusOk && validOk && replayOk && notesOk;
+    const conflOk = numFilterOk(tr, 'confl');
+    const ssconflOk = numFilterOk(tr, 'ssconfl');
+    const show = statusOk && validOk && replayOk && notesOk && conflOk && ssconflOk;
     tr.classList.toggle('hidden', !show);
     if (show) shown++;
     if (!show) {
@@ -4231,6 +4471,8 @@ function applyReviewFilters() {
 }
 document.querySelectorAll('.f-review-status, .f-review-valid, .f-review-replay, .f-review-notes')
   .forEach(cb => cb.addEventListener('change', applyReviewFilters));
+document.querySelectorAll('.f-num-op, .f-num-val')
+  .forEach(el => el.addEventListener('input', applyReviewFilters));
 initReview();
 applyReviewFilters();
 </script>
