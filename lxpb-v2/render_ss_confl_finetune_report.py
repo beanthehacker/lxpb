@@ -451,7 +451,7 @@ def build_chart_stack_for_row(h1_df, pos_by_ts, res):
     return chart_stack, fp
 
 
-N_COLS = 25  # keep in sync with `head` below and every colspan in this section
+N_COLS = 27  # keep in sync with `head` below and every colspan in this section
 
 
 def render(args):
@@ -511,7 +511,7 @@ def render(args):
   <td class="left">{retest_str}</td>
   <td>{confl_h1_n}</td><td>{res['ss_confl']}</td><td>{res['m5_confl']}</td><td>{res['group_n']}</td>
   <td>{res['own_price']:.2f}</td>
-  <td colspan="16">UNFILLED &mdash; {res.get('fail_reason', '')}</td>
+  <td colspan="18">UNFILLED &mdash; {res.get('fail_reason', '')}</td>
   <td class="expand-cell"></td>
 </tr>""")
             continue
@@ -522,6 +522,22 @@ def render(args):
         base_label, base_cls = _outcome_label(base)
         r_val = resolved.get("r")
         base_r = base.get("r") if base else None
+        # R available at entry = reward:risk on offer for this trade's own
+        # bracket, independent of how it actually resolved (target_pts and
+        # stop_pts are both already fixed once the fine-tuned entry/target
+        # are picked -- unlike resolved["r"], which collapses to -1.0 on a
+        # loss, this stays the same number whether the trade wins or loses).
+        rr_avail = res["target_pts"] / res["stop_pts"] if res["stop_pts"] else None
+        rr_str = f"{rr_avail:.2f}" if rr_avail is not None else "-"
+        # Realized PnL in points: resolved["r"] is already gain/stop_pts for
+        # every outcome (including the variable "candle" case), so
+        # multiplying back out gives the actual points won/lost without
+        # re-deriving it from exit_price a second time. None (shown "-") for
+        # no_hit/no_data, which have no realized exit.
+        pnl_pts = (r_val * res["stop_pts"]) if r_val is not None else None
+        pnl_str = format(pnl_pts, '+.2f') if pnl_pts is not None else "-"
+        pnl_cls = "good" if (pnl_pts is not None and pnl_pts > 0) else (
+            "bad" if (pnl_pts is not None and pnl_pts < 0) else "")
         exit_str = R._to_pt_str(resolved["exit_time"]) if resolved.get("exit_time") is not None else "-"
         exit_px = resolved.get("exit_price")
         exit_px_str = (f"{exit_px:.2f}" if resolved.get("outcome") != "no_hit"
@@ -570,8 +586,10 @@ def render(args):
   <td>{res['stop_price']:.2f}</td>
   <td>{res['target_price']:.2f}</td>
   <td><span class="{target_src_cls}">{res['target_source']}</span></td>
+  <td>{rr_str}</td>
   <td class="{outcome_cls}">{outcome_label}</td>
   <td class="left">{exit_str}</td><td>{exit_px_str}</td>
+  <td class="{pnl_cls}">{pnl_str}</td>
   <td class="bad">{mae_str}</td><td class="good">{mfe_str}</td><td>{gb_str}</td>
   <td class="{base_cls}">{base_label}{base_r_str}</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -705,7 +723,12 @@ docstring for full detail and design-choice caveats).</p>
             f"(subject + SS Confl. + M5 Confl.)\">Group N</th>"
             f"<th>Own Entry</th><th>Entry</th><th class=\"left\">Entry (touch) time</th>"
             f"<th>Stop</th><th>Target</th><th>Target Src</th>"
+            f"<th title=\"Reward:risk on offer for THIS trade's own bracket at entry "
+            f"(target pts / stop pts) -- fixed once entry/target are picked, independent "
+            f"of whether the trade goes on to win or lose\">R</th>"
             f"<th>Outcome</th><th class=\"left\">Exit time</th><th>Exit px</th>"
+            f"<th title=\"Realized profit/loss in points (signed): +target pts on a win, "
+            f"-stop pts on a loss\">PnL</th>"
             f"<th>MAE (win)</th><th>MFE (loss)</th><th>Max DD</th>"
             f"<th title=\"Same subject trade at its original H1 price, stop{SR._fmt_pts(args.baseline_stop)}"
             f"/target{SR._fmt_pts(args.baseline_target)}\">Baseline</th>"

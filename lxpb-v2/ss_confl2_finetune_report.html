@@ -262,7 +262,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
 </div>
 
 <div class="table-wrap"><table id="lvl-table">
-<thead><tr><th class="left">#</th><th class="left">Type</th><th class="left">Retest (H1)</th><th title="All H1 levels within 2.5pt (same construction as stop2_target8_trades_report.html's own Confl. column)">Confl.</th><th title="Same-side confluence: other H1 levels of the SAME type, still un-retested as of this trade's own P1 breakout bar -- what this report filters on">SS Confl.</th><th title="Same-side M5 levels contributing to the fine-tuned entry">M5 Confl.</th><th title="Size of the confluence group the fine-tuned entry was picked from (subject + SS Confl. + M5 Confl.)">Group N</th><th>Own Entry</th><th>Entry</th><th class="left">Entry (touch) time</th><th>Stop</th><th>Target</th><th>Target Src</th><th>Outcome</th><th class="left">Exit time</th><th>Exit px</th><th>MAE (win)</th><th>MFE (loss)</th><th>Max DD</th><th title="Same subject trade at its original H1 price, stop2/target8">Baseline</th><th>Reviewed</th><th>Valid</th><th>Replayed</th><th class="left">Notes</th><th class="expand-th">▶</th></tr></thead>
+<thead><tr><th class="left">#</th><th class="left">Type</th><th class="left">Retest (H1)</th><th title="All H1 levels within 2.5pt (same construction as stop2_target8_trades_report.html's own Confl. column)">Confl.</th><th title="Same-side confluence: other H1 levels of the SAME type, still un-retested as of this trade's own P1 breakout bar -- what this report filters on">SS Confl.</th><th title="Same-side M5 levels contributing to the fine-tuned entry">M5 Confl.</th><th title="Size of the confluence group the fine-tuned entry was picked from (subject + SS Confl. + M5 Confl.)">Group N</th><th>Own Entry</th><th>Entry</th><th class="left">Entry (touch) time</th><th>Stop</th><th>Target</th><th>Target Src</th><th title="Reward:risk on offer for THIS trade's own bracket at entry (target pts / stop pts) -- fixed once entry/target are picked, independent of whether the trade goes on to win or lose">R</th><th>Outcome</th><th class="left">Exit time</th><th>Exit px</th><th title="Realized profit/loss in points (signed): +target pts on a win, -stop pts on a loss">PnL</th><th>MAE (win)</th><th>MFE (loss)</th><th>Max DD</th><th title="Same subject trade at its original H1 price, stop2/target8">Baseline</th><th>Reviewed</th><th>Valid</th><th>Replayed</th><th class="left">Notes</th><th class="expand-th">▶</th></tr></thead>
 <tbody>
 
 <tr class="lvl-row type-llpb" data-idx="0" data-key="LLPB_7532.00_2026-07-08_10:25:05_PT"
@@ -277,8 +277,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7534.00</td>
   <td>7530.00</td>
   <td><span class="src-tag m5">m5_opposite</span></td>
+  <td>1.00</td>
   <td class="good">WIN</td>
   <td class="left">2026-07-08 10:25:29 PT</td><td>7530.00</td>
+  <td class="good">+2.00</td>
   <td class="bad">0.50</td><td class="good">2.00</td><td>2.25</td>
   <td class="bad">LOSS -1.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -289,7 +291,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(0)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="0" id="chart-row-0">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-0"></div><div class="chart-ph" id="ch1-0"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-0"></div><div class="chart-ph" id="cm5-0"></div></div>
@@ -319,8 +321,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7535.25</td>
   <td>7530.00</td>
   <td><span class="src-tag m5">m5_opposite</span></td>
+  <td>1.62</td>
   <td class="bad">LOSS</td>
   <td class="left">2026-07-08 10:31:01 PT</td><td>7535.25</td>
+  <td class="bad">-2.00</td>
   <td class="bad">2.00</td><td class="good">1.75</td><td>3.75</td>
   <td class="bad">LOSS -1.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -331,7 +335,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(1)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="1" id="chart-row-1">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-1"></div><div class="chart-ph" id="ch1-1"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-1"></div><div class="chart-ph" id="cm5-1"></div></div>
@@ -361,8 +365,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7535.25</td>
   <td>7530.00</td>
   <td><span class="src-tag m5">m5_opposite</span></td>
+  <td>1.62</td>
   <td class="bad">LOSS</td>
   <td class="left">2026-07-08 10:31:01 PT</td><td>7535.25</td>
+  <td class="bad">-2.00</td>
   <td class="bad">2.00</td><td class="good">1.75</td><td>3.75</td>
   <td class="bad">LOSS -1.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -373,7 +379,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(2)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="2" id="chart-row-2">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-2"></div><div class="chart-ph" id="ch1-2"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-2"></div><div class="chart-ph" id="cm5-2"></div></div>
@@ -403,8 +409,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7500.75</td>
   <td>7495.00</td>
   <td><span class="src-tag m5">m5_opposite</span></td>
+  <td>1.88</td>
   <td class="good">WIN</td>
   <td class="left">2026-07-28 17:09:58 PT</td><td>7495.00</td>
+  <td class="good">+3.75</td>
   <td class="bad">0.50</td><td class="good">3.75</td><td>1.75</td>
   <td class="bad">LOSS -1.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -415,7 +423,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(3)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="3" id="chart-row-3">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-3"></div><div class="chart-ph" id="ch1-3"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-3"></div><div class="chart-ph" id="cm5-3"></div></div>
@@ -445,8 +453,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7773.75</td>
   <td>7763.75</td>
   <td><span class="src-tag">fallback_fixed</span></td>
+  <td>4.00</td>
   <td class="bad">LOSS</td>
   <td class="left">2026-08-12 02:25:26 PT</td><td>7773.75</td>
+  <td class="bad">-2.00</td>
   <td class="bad">2.00</td><td class="good">2.75</td><td>4.75</td>
   <td class="bad">LOSS -1.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -457,7 +467,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(4)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="4" id="chart-row-4">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-4"></div><div class="chart-ph" id="ch1-4"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-4"></div><div class="chart-ph" id="cm5-4"></div></div>
@@ -481,7 +491,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td class="left">2026-08-12 02:00:00 PT</td>
   <td>10</td><td>2</td><td>5</td><td>8</td>
   <td>7771.50</td>
-  <td colspan="16">UNFILLED &mdash; unfilled_within_window</td>
+  <td colspan="18">UNFILLED &mdash; unfilled_within_window</td>
   <td class="expand-cell"></td>
 </tr>
 <tr class="lvl-row unfilled-row" data-idx="6"
@@ -490,7 +500,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td class="left">2026-08-12 02:00:00 PT</td>
   <td>10</td><td>2</td><td>5</td><td>8</td>
   <td>7771.75</td>
-  <td colspan="16">UNFILLED &mdash; unfilled_within_window</td>
+  <td colspan="18">UNFILLED &mdash; unfilled_within_window</td>
   <td class="expand-cell"></td>
 </tr>
 <tr class="lvl-row type-llpb" data-idx="7" data-key="LLPB_7820.00_2026-08-16_23:35:57_PT"
@@ -505,8 +515,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7822.00</td>
   <td>7812.00</td>
   <td><span class="src-tag">fallback_fixed</span></td>
+  <td>4.00</td>
   <td class="bad">LOSS</td>
   <td class="left">2026-08-17 03:29:46 PT</td><td>7822.00</td>
+  <td class="bad">-2.00</td>
   <td class="bad">2.00</td><td class="good">7.50</td><td>9.50</td>
   <td class="bad">LOSS -1.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -517,7 +529,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(7)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="7" id="chart-row-7">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-7"></div><div class="chart-ph" id="ch1-7"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-7"></div><div class="chart-ph" id="cm5-7"></div></div>
@@ -547,8 +559,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7822.00</td>
   <td>7812.00</td>
   <td><span class="src-tag">fallback_fixed</span></td>
+  <td>4.00</td>
   <td class="bad">LOSS</td>
   <td class="left">2026-08-17 03:29:46 PT</td><td>7822.00</td>
+  <td class="bad">-2.00</td>
   <td class="bad">2.00</td><td class="good">7.50</td><td>9.50</td>
   <td class="bad">LOSS -1.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -559,7 +573,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(8)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="8" id="chart-row-8">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-8"></div><div class="chart-ph" id="ch1-8"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-8"></div><div class="chart-ph" id="cm5-8"></div></div>
@@ -589,8 +603,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7822.00</td>
   <td>7812.00</td>
   <td><span class="src-tag">fallback_fixed</span></td>
+  <td>4.00</td>
   <td class="bad">LOSS</td>
   <td class="left">2026-08-17 03:29:46 PT</td><td>7822.00</td>
+  <td class="bad">-2.00</td>
   <td class="bad">2.00</td><td class="good">7.50</td><td>9.50</td>
   <td class="bad">LOSS -1.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -601,7 +617,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(9)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="9" id="chart-row-9">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-9"></div><div class="chart-ph" id="ch1-9"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-9"></div><div class="chart-ph" id="cm5-9"></div></div>
@@ -631,8 +647,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7791.50</td>
   <td>7796.25</td>
   <td><span class="src-tag m5">m5_opposite</span></td>
+  <td>1.38</td>
   <td class="good">WIN</td>
   <td class="left">2026-08-17 06:47:34 PT</td><td>7796.25</td>
+  <td class="good">+2.75</td>
   <td class="bad">0.25</td><td class="good">2.75</td><td>1.00</td>
   <td class="bad">LOSS -1.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -643,7 +661,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(10)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="10" id="chart-row-10">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-10"></div><div class="chart-ph" id="ch1-10"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-10"></div><div class="chart-ph" id="cm5-10"></div></div>
@@ -673,8 +691,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7791.50</td>
   <td>7796.25</td>
   <td><span class="src-tag m5">m5_opposite</span></td>
+  <td>1.38</td>
   <td class="good">WIN</td>
   <td class="left">2026-08-17 06:47:34 PT</td><td>7796.25</td>
+  <td class="good">+2.75</td>
   <td class="bad">0.25</td><td class="good">2.75</td><td>1.00</td>
   <td class="bad">LOSS -1.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -685,7 +705,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(11)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="11" id="chart-row-11">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-11"></div><div class="chart-ph" id="ch1-11"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-11"></div><div class="chart-ph" id="cm5-11"></div></div>
@@ -715,8 +735,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7789.75</td>
   <td>7797.00</td>
   <td><span class="src-tag m5">m5_opposite</span></td>
+  <td>2.62</td>
   <td class="good">WIN</td>
   <td class="left">2026-08-17 07:02:25 PT</td><td>7797.00</td>
+  <td class="good">+5.25</td>
   <td class="bad">0.25</td><td class="good">6.25</td><td>1.25</td>
   <td class="good">WIN +4.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -727,7 +749,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(12)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="12" id="chart-row-12">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-12"></div><div class="chart-ph" id="ch1-12"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-12"></div><div class="chart-ph" id="cm5-12"></div></div>
@@ -751,7 +773,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td class="left">2026-08-17 08:00:00 PT</td>
   <td>3</td><td>2</td><td>6</td><td>9</td>
   <td>7799.50</td>
-  <td colspan="16">UNFILLED &mdash; unfilled_within_window</td>
+  <td colspan="18">UNFILLED &mdash; unfilled_within_window</td>
   <td class="expand-cell"></td>
 </tr>
 <tr class="lvl-row unfilled-row" data-idx="14"
@@ -760,7 +782,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td class="left">2026-08-17 08:00:00 PT</td>
   <td>3</td><td>2</td><td>6</td><td>9</td>
   <td>7799.75</td>
-  <td colspan="16">UNFILLED &mdash; unfilled_within_window</td>
+  <td colspan="18">UNFILLED &mdash; unfilled_within_window</td>
   <td class="expand-cell"></td>
 </tr>
 <tr class="lvl-row type-llpb" data-idx="15" data-key="LLPB_7755.25_2026-08-19_05:50:34_PT"
@@ -775,8 +797,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7757.25</td>
   <td>7753.50</td>
   <td><span class="src-tag m5">m5_opposite</span></td>
+  <td>0.88</td>
   <td class="bad">LOSS</td>
   <td class="left">2026-08-19 05:51:50 PT</td><td>7757.25</td>
+  <td class="bad">-2.00</td>
   <td class="bad">2.00</td><td class="good">1.25</td><td>3.25</td>
   <td class="bad">LOSS -1.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -787,7 +811,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(15)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="15" id="chart-row-15">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-15"></div><div class="chart-ph" id="ch1-15"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-15"></div><div class="chart-ph" id="cm5-15"></div></div>
@@ -817,8 +841,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7759.50</td>
   <td>7753.50</td>
   <td><span class="src-tag m5">m5_opposite</span></td>
+  <td>2.00</td>
   <td class="good">WIN</td>
   <td class="left">2026-08-19 05:52:33 PT</td><td>7753.50</td>
+  <td class="good">+4.00</td>
   <td class="bad">0.75</td><td class="good">4.00</td><td>1.25</td>
   <td class="bad">LOSS -1.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -829,7 +855,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(16)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="16" id="chart-row-16">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-16"></div><div class="chart-ph" id="ch1-16"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-16"></div><div class="chart-ph" id="cm5-16"></div></div>
@@ -859,8 +885,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7757.25</td>
   <td>7753.50</td>
   <td><span class="src-tag m5">m5_opposite</span></td>
+  <td>0.88</td>
   <td class="bad">LOSS</td>
   <td class="left">2026-08-19 05:51:50 PT</td><td>7757.25</td>
+  <td class="bad">-2.00</td>
   <td class="bad">2.00</td><td class="good">1.25</td><td>3.25</td>
   <td class="bad">LOSS -1.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -871,7 +899,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(17)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="17" id="chart-row-17">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-17"></div><div class="chart-ph" id="ch1-17"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-17"></div><div class="chart-ph" id="cm5-17"></div></div>
@@ -901,8 +929,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7719.25</td>
   <td>7716.25</td>
   <td><span class="src-tag m5">m5_opposite</span></td>
+  <td>0.50</td>
   <td class="good">WIN</td>
   <td class="left">2026-08-20 08:01:31 PT</td><td>7716.25</td>
+  <td class="good">+1.00</td>
   <td class="bad">1.50</td><td class="good">1.00</td><td>2.00</td>
   <td class="good">WIN +4.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -913,7 +943,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(18)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="18" id="chart-row-18">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-18"></div><div class="chart-ph" id="ch1-18"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-18"></div><div class="chart-ph" id="cm5-18"></div></div>
@@ -943,8 +973,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7717.50</td>
   <td>7710.25</td>
   <td><span class="src-tag m5">m5_opposite</span></td>
+  <td>2.62</td>
   <td class="good">WIN</td>
   <td class="left">2026-08-20 06:38:09 PT</td><td>7710.25</td>
+  <td class="good">+5.25</td>
   <td class="bad">0.50</td><td class="good">5.25</td><td>2.50</td>
   <td class="bad">LOSS -1.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -955,7 +987,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(19)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="19" id="chart-row-19">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-19"></div><div class="chart-ph" id="ch1-19"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-19"></div><div class="chart-ph" id="cm5-19"></div></div>
@@ -985,8 +1017,10 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
   <td>7720.00</td>
   <td>7716.25</td>
   <td><span class="src-tag m5">m5_opposite</span></td>
+  <td>0.88</td>
   <td class="good">WIN</td>
   <td class="left">2026-08-20 08:01:31 PT</td><td>7716.25</td>
+  <td class="good">+1.75</td>
   <td class="bad">0.75</td><td class="good">1.75</td><td>1.50</td>
   <td class="good">WIN +4.00</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -997,7 +1031,7 @@ of exit_analysis_report's stop/target grid rather than reproducing it exactly.</
       onclick="event.stopPropagation();toggleChart(20)">▶</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="20" id="chart-row-20">
-  <td colspan="25"><div class="chart-stack">
+  <td colspan="27"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-20"></div><div class="chart-ph" id="ch1-20"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-20"></div><div class="chart-ph" id="cm5-20"></div></div>
