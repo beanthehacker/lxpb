@@ -80,6 +80,19 @@ EXIT_WIN_COLOR = "#4ade80"
 EXIT_LOSS_COLOR = "#f87171"
 EXIT_CANDLE_COLOR = "#fbbf24"
 
+# "Confluence" strategy (see lxpb_levels_cache.find_confluent_levels): other
+# LXPB levels within +/- CONFLUENCE_N_POINTS of the trade's own level, formed
+# before it, with a confirmed (non-failed) breakout of their own, and formed
+# no further back than CONFLUENCE_LOOKBACK_BARS H1 bars before the trade's
+# own P0 (formation) bar -- an unbounded lookback let a handful of very old
+# levels (formed months earlier) count as "confluence" alongside genuinely
+# recent structure. CONFLUENCE_COLOR is a blue distinct from both P2_COLOR
+# (light purple circle marker) and M5_COLOR (the M5 pane's own rays) so the
+# c1/c2/... markers/rays are never confused with either on the H1 chart.
+CONFLUENCE_N_POINTS = 2.5
+CONFLUENCE_LOOKBACK_BARS = 100
+CONFLUENCE_COLOR = "#3b82f6"
+
 # How far past a candle-rule signal to look for the market order's fill.
 # The first window is the minute right after the signal (which is where the
 # fill essentially always lands); the rest only matter across a session
@@ -550,7 +563,8 @@ def _compute_excursion(bars, touch_time, exit_time, raw_entry, is_long, sym, off
     return float(favorable), float(adverse), entry_traded
 
 
-def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target):
+def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target,
+                      confluent=None):
     level_type = row["type"]
     price = float(row["price"])
     is_long = level_type == "LHPB"
@@ -598,6 +612,50 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target):
         "low": float(r.low), "close": float(r.close),
     } for t, r in window.iterrows()]
 
+    # Confluence strategy (see lxpb_levels_cache.find_confluent_levels): drawn
+    # exactly like the M5 pane's own LXPB rays (build_m5_chart above) rather
+    # than as always-visible price lines -- a flat ray from the level's own
+    # formation to its death (or the right edge of view, when it's still
+    # open/unretested), clipped to bars that survived this window's
+    # compression. Rays carry no drawn label (c1..cN would overlap into
+    # unreadable text) -- the details show in the shared hover tooltip
+    # (_renderPane already wires this up generically for any pane's
+    # cd.rays). Solid = still open/unretested (live going forward), dashed =
+    # already retested/consumed (resolved history). Each level ALSO gets an
+    # on-timeline "c1"/"c2"/... marker when its formation bar happens to
+    # fall inside this window.
+    wt = window.index
+    confluence_markers, confluence_rays = [], []
+    n_confluent = 0 if confluent is None else len(confluent)
+    if confluent is not None and not confluent.empty:
+        for c_idx, lvl in enumerate(confluent.itertuples(index=False), start=1):
+            label = f"c{c_idx}"
+            lvl_form = lvl.formation_time
+            lvl_form_naive = lvl_form.tz_localize(None) if lvl_form.tzinfo is not None else lvl_form
+            if lvl_form_naive in wt:
+                confluence_markers.append({
+                    "time": R._to_epoch_utc(lvl_form_naive),
+                    "position": "aboveBar" if lvl.type == "LHPB" else "belowBar",
+                    "color": CONFLUENCE_COLOR, "shape": "circle", "text": label,
+                })
+            still_open = pd.isna(lvl.death_time)
+            if still_open:
+                end_naive = wt[-1]
+            else:
+                end_naive = (lvl.death_time.tz_localize(None)
+                            if lvl.death_time.tzinfo is not None else lvl.death_time)
+            mask = (wt >= lvl_form_naive) & (wt <= end_naive)
+            pts = [{"time": R._to_epoch_utc(t), "value": float(lvl.price)} for t in wt[mask]]
+            if not pts:
+                continue
+            confluence_rays.append({
+                "points": pts, "color": CONFLUENCE_COLOR, "lineWidth": 1,
+                "lineStyle": 0 if still_open else 2,
+                "label": (f"{label} {lvl.type} {lvl.price:.2f}  &middot;  formed "
+                          f"{R._to_pt_str(lvl.formation_time)}  &middot;  {lvl.fate}"
+                          f"  &middot;  {lvl.dist:.2f}pt from entry"),
+            })
+
     outcome = resolved["outcome"]
     win = outcome == "target"
     exit_marker_time = h1_df.index[exit_pos]
@@ -631,7 +689,7 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target):
          "color": R.P2_COLOR, "shape": "circle", "text": "P2"},
         {"time": R._to_epoch_utc(exit_marker_time),
          "position": exit_pos_label, "color": exit_color, "shape": exit_shape, "text": exit_text},
-    ] + skip_markers
+    ] + skip_markers + confluence_markers
     markers.sort(key=lambda m: m["time"])
 
     target_price = price + target if is_long else price - target
@@ -648,11 +706,15 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target):
     title = (f"{level_type} {price:.2f}  |  formed {R._to_pt_str(row['formation_time'])}  "
              f"broke {R._to_pt_str(row['breakout_time'])}  retest {R._to_pt_str(row['retest_time'])}  "
              f"exit {R._to_pt_str(exit_marker_time)}")
+    if n_confluent:
+        title += f"  |  {n_confluent} confluent level(s)"
+        if len(confluence_rays) != n_confluent:
+            title += f" ({len(confluence_rays)} shown)"
     if total_skipped:
         title += f"  [{total_skipped} bars compressed out of view]"
 
     return {"title": title, "candles": candles, "markers": markers,
-            "priceLines": price_lines, "precision": 2}
+            "priceLines": price_lines, "rays": confluence_rays, "precision": 2}
 
 
 M5_LOOKBACK_DAYS = 3         # minimum M5 history shown before the retest
@@ -1435,12 +1497,31 @@ def _build_records(h1_df, pos_by_ts, strong, trades, indices, stop, target,
                                    candle_exit=candle_exit,
                                    candle_exit_skip_entry=candle_exit_skip_entry)
 
+    # Loaded once per chunk (not per row) -- see lxpb_levels_cache.h1_levels,
+    # it's the whole merged H1 ledger and is cheap once cached on disk.
+    ledger = LC.h1_levels(verbose=False)
+
     out = {}
     n = len(indices)
     for j, i in enumerate(indices):
         trade, resolved = sub_trades[j], resolved_list[j]
         row_d = strong.iloc[i]
-        chart = build_trade_chart(h1_df, pos_by_ts, row_d, trade, resolved, stop, target)
+        # Bound how far back "confluence" may reach: only H1 levels formed
+        # within CONFLUENCE_LOOKBACK_BARS bars before THIS trade's own P0
+        # (formation) bar. pos_by_ts/h1_df are the same naive-UTC-indexed
+        # H1 series build_trade_chart's own P0/P1/P2 markers use.
+        form_pos = pos_by_ts[row_d["formation_time"]]
+        lookback_pos = max(0, form_pos - CONFLUENCE_LOOKBACK_BARS)
+        min_formation_time = h1_df.index[lookback_pos]
+        confluent = LC.find_confluent_levels(
+            ledger, row_d["type"], float(row_d["price"]), row_d["formation_time"],
+            row_d["retest_time"], CONFLUENCE_N_POINTS,
+            min_formation_time=min_formation_time)
+        # Narrower same-side reading (see same_side_live_confluence): same
+        # type as this trade, still un-retested as of this trade's own P1.
+        same_side = LC.same_side_live_confluence(confluent, row_d["type"], row_d["breakout_time"])
+        chart = build_trade_chart(h1_df, pos_by_ts, row_d, trade, resolved, stop, target,
+                                  confluent=confluent)
 
         is_long = row_d["type"] == "LHPB"
         # Real-tick 1s/1min/footprint charts, same real-tick machinery as
@@ -1468,7 +1549,9 @@ def _build_records(h1_df, pos_by_ts, strong, trades, indices, stop, target,
             fp = {"narrow": "<p class='note'>(no tick data in this window)</p>",
                   "wide": "<p class='note'>(no tick data in this window)</p>"}
         chart_stack["m5"] = build_m5_chart(row_d, resolved, stop, target)
-        out[i] = {"chart_stack": chart_stack, "fp": fp, "resolved": resolved}
+        out[i] = {"chart_stack": chart_stack, "fp": fp, "resolved": resolved,
+                  "confluence_count": len(confluent),
+                  "same_side_confluence_count": len(same_side)}
         if (j + 1) % 10 == 0 or (j + 1) == n:
             print(f"  {label}built charts for {j + 1}/{n} rows", flush=True)
     return out
@@ -1641,6 +1724,8 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
         rec = records[i]
         charts.append(rec["chart_stack"])
         fp = rec["fp"]
+        confluence_count = rec.get("confluence_count", 0)
+        same_side_confluence_count = rec.get("same_side_confluence_count", 0)
 
         level_type = row_d["type"]
         price = float(row_d["price"])
@@ -1662,7 +1747,6 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
             outcome_cls = ""
         outcome_label = {"target": "WIN", "stop": "LOSS", "candle": "CANDLE",
                          "no_hit": "NO-HIT", "no_data": "NO DATA"}[outcome]
-        r_str = f"{r_val:+.2f}" if r_val is not None else "-"
         exit_px = resolved.get("exit_price")
         exit_px_str = f"{exit_px:.2f}" if outcome != "no_hit" and exit_px is not None else "-"
         exit_str = R._to_pt_str(resolved["exit_time"]) if resolved["exit_time"] is not None else "-"
@@ -1732,7 +1816,9 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
   <td class="left">{i}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{entry_str}</td>
   <td>{price:.2f}{gap_flag}</td><td>{stop_price:.2f}</td><td>{target_price:.2f}</td>
-  <td class="{outcome_cls}">{outcome_label}</td><td class="{outcome_cls}">{r_str}</td>
+  <td>{confluence_count}</td>
+  <td>{same_side_confluence_count}</td>
+  <td class="{outcome_cls}">{outcome_label}</td>
   <td class="left">{exit_str}</td><td>{exit_px_str}</td>
   <td class="bad">{mae_str}</td><td class="good">{mfe_str}</td><td>{gb_str}</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -1743,7 +1829,7 @@ def render(stop, target, output_path, start=None, end=None, limit=A._DEFAULT,
       onclick="event.stopPropagation();toggleChart({i})">\u25b6</button></td>
 </tr>
 <tr class="chart-row hidden" data-idx="{i}" id="chart-row-{i}">
-  <td colspan="18"><div class="chart-stack">
+  <td colspan="19"><div class="chart-stack">
     <div class="chart-row-2col">
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-{i}"></div><div class="chart-ph" id="ch1-{i}"></div></div>
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-{i}"></div><div class="chart-ph" id="cm5-{i}"></div></div>
@@ -1881,7 +1967,9 @@ stop/target report) and can be exported/imported as CSV (top-right buttons).</p>
 <table id="lvl-table">
 <thead><tr>
   <th class="left">#</th><th class="left">Type</th><th class="left">Entry (touch) time</th>
-  <th>Entry</th><th>Stop</th><th>Target</th><th>Outcome</th><th>R</th>
+  <th>Entry</th><th>Stop</th><th>Target</th><th>Confl.</th>
+  <th title="Same-side confluence: other LXPB levels of the SAME type (LHPB for a long, LLPB for a short) in the confluence zone, still un-retested as of this trade's own P1 breakout bar">SS Confl.</th>
+  <th>Outcome</th>
   <th class="left">Exit time</th><th>Exit px</th><th>MAE (win)</th><th>MFE (loss)</th><th>Max DD</th>
   <th>Reviewed</th><th>Valid</th><th>Replayed</th>
   <th class="left">Notes</th><th class="expand-th">\u25b6</th>

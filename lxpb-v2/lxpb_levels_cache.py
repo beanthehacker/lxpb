@@ -710,6 +710,86 @@ def retests(ledger):
     return ledger[ledger["fate"] == FATE_RETESTED].reset_index(drop=True)
 
 
+def _as_utc(ts):
+    ts = pd.Timestamp(ts)
+    return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+
+
+def find_confluent_levels(ledger, level_type, price, formation_time, cutoff_time,
+                          n_points, min_formation_time=None):
+    """"Confluence" strategy query: other LXPB levels within +/- n_points of
+    `price` that could support pairing with the subject level (type
+    `level_type`, formed at `formation_time`).
+
+    A candidate qualifies if it was:
+      - formed strictly before `cutoff_time` (the subject trade's own retest
+        -- the decision point; nothing after it may be used), AND
+      - formed at or after `min_formation_time` when given (the subject
+        trade's own P0 bar minus CONFLUENCE_LOOKBACK_BARS H1 bars, in
+        render_stop_target_report.py) -- bounds how far back "confluence"
+        may reach so a handful of very old levels don't count as recent
+        supporting structure; omit for no lower bound, AND
+      - given a CONFIRMED breakout at or before `cutoff_time`: breakout_time
+        not null and <= cutoff_time.
+
+    That excludes exactly the two "no real breakout" fates:
+      - discarded_no_close: price wicked through but the bar's CLOSE didn't
+        confirm -- a failed breakout (for an LLPB: wick below, close above;
+        mirrored close-below-a-high for LHPB).
+      - open_unbroken: never even broken out.
+    The remaining fates (retested / consumed_early / open_awaiting_retest)
+    all have a real, confirmed breakout_time, i.e. "a successful break did
+    happen" -- whether or not the level was ever itself later retested is
+    irrelevant to whether it counts as confluence.
+
+    Excludes the subject level's own ledger row (matched by
+    type+price+formation_time). Sorted most-recently-formed first, so
+    `.iloc[0]` (if any rows exist) is the "recent nearby structure" a
+    confluence strategy would pair the subject level with.
+    """
+    cutoff_time = _as_utc(cutoff_time)
+    formation_time = _as_utc(formation_time)
+    zone_lo, zone_hi = price - n_points, price + n_points
+
+    keep = ((ledger["price"] >= zone_lo) & (ledger["price"] <= zone_hi) &
+            (ledger["formation_time"] < cutoff_time) &
+            ledger["breakout_time"].notna() &
+            (ledger["breakout_time"] <= cutoff_time))
+    if min_formation_time is not None:
+        keep &= ledger["formation_time"] >= _as_utc(min_formation_time)
+    cand = ledger[keep].copy()
+    is_self = ((cand["type"] == level_type) &
+               (cand["price"].round(2) == round(price, 2)) &
+               (cand["formation_time"] == formation_time))
+    cand = cand[~is_self]
+    cand["dist"] = (cand["price"] - price).abs()
+    return cand.sort_values("formation_time", ascending=False).reset_index(drop=True)
+
+
+def same_side_live_confluence(confluent, level_type, breakout_time):
+    """Narrower reading of the same confluence strategy: restrict `confluent`
+    (see find_confluent_levels) to levels on the SAME side as the subject
+    trade -- SAME type, not "same-or-opposite" (an LHPB retest for a long
+    only counts nearby LHPB structure, an LLPB retest for a short only counts
+    nearby LLPB structure) -- that had NOT yet been retested as of the
+    subject's own P1 (breakout) bar.
+
+    A same-type candidate qualifies here if death_time is null (still
+    open_awaiting_retest, i.e. never retested at all) or its death_time is
+    AFTER `breakout_time` -- i.e. it was still live, competing/reinforcing
+    structure at the moment the subject level's own breakout confirmed,
+    rather than already-resolved history by then. Note this is a stricter
+    "as of P1" liveness check than find_confluent_levels' own filtering
+    (which only cares that the candidate's breakout was confirmed by the
+    subject's retest/P2, regardless of whether it later died before P1).
+    """
+    breakout_time = _as_utc(breakout_time)
+    same_type = confluent[confluent["type"] == level_type]
+    live = same_type[same_type["death_time"].isna() |
+                     (same_type["death_time"] > breakout_time)]
+    return live.reset_index(drop=True)
+
+
 # --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
