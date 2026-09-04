@@ -350,11 +350,12 @@ def process_row(cand, args):
 # reusing SR.CSS/SR.JS/SR.build_trade_chart/SR.build_m5_chart/
 # R.build_1s_trio_chart verbatim so this report never re-implements any of
 # that rendering. Extra columns beyond the base layout are this strategy's
-# own: Confl./SS Confl./M5 Confl./Group N (the confluence-group filter and
-# its size), Own Entry vs fine-tuned Entry (with a source tag h1/m5/own),
-# Target Src (m5_opposite vs fallback_fixed), and a Baseline column (the
-# same subject trade at its original H1 price/stop2/target8, for direct
-# side-by-side comparison).
+# own: Confl./SS Confl. (the confluence-group filter this report selects
+# on), H1 Entry vs fine-tuned Entry (with a source tag h1/m5/own), Target
+# Src (m5_opposite vs fallback_fixed), R (reward:risk on offer at entry)
+# and PnL (realized points). Baseline (same subject trade at its original
+# H1 price/stop2/target8) is still computed for the summary stats boxes
+# but is no longer shown as its own table column.
 # --------------------------------------------------------------------------
 
 CSS = SR.CSS + """
@@ -364,6 +365,12 @@ CSS = SR.CSS + """
 .src-tag.h1 { color:#3b82f6; }
 .src-tag.own { color:var(--text-dim); }
 .unfilled-row td { color:var(--text-faint); font-style:italic; }
+/* Keep the Type cell neutral (same as every other column) instead of the
+   base report's bull/bear red-green coloring -- this report's whole point
+   is comparing LLPB/LHPB trades side by side, not flagging direction. */
+tr.lvl-row.type-lhpb td.type-cell, tr.lvl-row.type-llpb td.type-cell {
+  color:var(--text); font-weight:normal;
+}
 </style>
 """
 
@@ -451,7 +458,7 @@ def build_chart_stack_for_row(h1_df, pos_by_ts, res):
     return chart_stack, fp
 
 
-N_COLS = 27  # keep in sync with `head` below and every colspan in this section
+N_COLS = 24  # keep in sync with `head` below and every colspan in this section
 
 
 def render(args):
@@ -509,19 +516,16 @@ def render(args):
     data-confl="{confl_h1_n}" data-ssconfl="{res['ss_confl']}">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
-  <td>{confl_h1_n}</td><td>{res['ss_confl']}</td><td>{res['m5_confl']}</td><td>{res['group_n']}</td>
+  <td>{confl_h1_n}</td><td>{res['ss_confl']}</td>
   <td>{res['own_price']:.2f}</td>
-  <td colspan="18">UNFILLED &mdash; {res.get('fail_reason', '')}</td>
+  <td colspan="17">UNFILLED &mdash; {res.get('fail_reason', '')}</td>
   <td class="expand-cell"></td>
 </tr>""")
             continue
 
         resolved = res["resolved"]
-        base = res["baseline_resolved"]
         outcome_label, outcome_cls = _outcome_label(resolved)
-        base_label, base_cls = _outcome_label(base)
         r_val = resolved.get("r")
-        base_r = base.get("r") if base else None
         # R available at entry = reward:risk on offer for this trade's own
         # bracket, independent of how it actually resolved (target_pts and
         # stop_pts are both already fixed once the fine-tuned entry/target
@@ -552,7 +556,6 @@ def render(args):
                     'and exit -- price gapped through the level, so this fill was not '
                     'actually available.">\u26a0</span>' if res.get("entry_gapped") else "")
         target_src_cls = "src-tag m5" if res["target_source"] == "m5_opposite" else "src-tag"
-        base_r_str = (' ' + format(base_r, '+.2f')) if base_r is not None else ''
 
         # Stable per-row key for the Reviewed/Replayed/Notes localStorage
         # store -- same identity scheme as render_stop_target_report's own
@@ -579,7 +582,7 @@ def render(args):
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
-  <td>{confl_h1_n}</td><td>{res['ss_confl']}</td><td>{res['m5_confl']}</td><td>{res['group_n']}</td>
+  <td>{confl_h1_n}</td><td>{res['ss_confl']}</td>
   <td>{res['own_price']:.2f}</td>
   <td>{res['alt_price']:.2f}{gap_flag}<span class="{src_cls}">{res['alt_source']}{improved_flag}</span></td>
   <td class="left">{entry_touch_str}</td>
@@ -591,7 +594,6 @@ def render(args):
   <td class="left">{exit_str}</td><td>{exit_px_str}</td>
   <td class="{pnl_cls}">{pnl_str}</td>
   <td class="bad">{mae_str}</td><td class="good">{mfe_str}</td><td>{gb_str}</td>
-  <td class="{base_cls}">{base_label}{base_r_str}</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
   <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb"></td>
   <td class="replayed-cell" onclick="event.stopPropagation();"><input type="checkbox" class="replayed-cb"></td>
@@ -718,10 +720,9 @@ docstring for full detail and design-choice caveats).</p>
             f"<th title=\"Same-side confluence: other H1 levels of the SAME type, still "
             f"un-retested as of this trade's own P1 breakout bar -- what this report filters on\">"
             f"SS Confl.</th>"
-            f"<th title=\"Same-side M5 levels contributing to the fine-tuned entry\">M5 Confl.</th>"
-            f"<th title=\"Size of the confluence group the fine-tuned entry was picked from "
-            f"(subject + SS Confl. + M5 Confl.)\">Group N</th>"
-            f"<th>Own Entry</th><th>Entry</th><th class=\"left\">Entry (touch) time</th>"
+            f"<th title=\"The level's original H1 entry price, before fine-tuning to the "
+            f"confluence group's extreme price\">H1 Entry</th><th>Entry</th>"
+            f"<th class=\"left\">Entry (touch) time</th>"
             f"<th>Stop</th><th>Target</th><th>Target Src</th>"
             f"<th title=\"Reward:risk on offer for THIS trade's own bracket at entry "
             f"(target pts / stop pts) -- fixed once entry/target are picked, independent "
@@ -730,8 +731,6 @@ docstring for full detail and design-choice caveats).</p>
             f"<th title=\"Realized profit/loss in points (signed): +target pts on a win, "
             f"-stop pts on a loss\">PnL</th>"
             f"<th>MAE (win)</th><th>MFE (loss)</th><th>Max DD</th>"
-            f"<th title=\"Same subject trade at its original H1 price, stop{SR._fmt_pts(args.baseline_stop)}"
-            f"/target{SR._fmt_pts(args.baseline_target)}\">Baseline</th>"
             f"<th>Reviewed</th><th>Valid</th><th>Replayed</th>"
             f"<th class=\"left\">Notes</th><th class=\"expand-th\">\u25b6</th>")
 
