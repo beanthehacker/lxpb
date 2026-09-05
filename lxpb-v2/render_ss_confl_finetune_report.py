@@ -326,21 +326,25 @@ def cluster_confluence(cluster):
 
     Returns a dict: alt_price/alt_source/group_n (the fine-tuned entry),
     alt_formation_time/alt_end_time (the specific level that SUPPLIED
-    alt_price's own lifespan -- see below -- for drawing its H1 chart ray
-    correctly instead of always defaulting to the anchor's own P0/P2, which
-    is wrong whenever alt_source != "own"), confl_h1_n/ss_confl_n (external-
-    confluence counts), confluent_h1/confluent_m5 (deduped broader pools for
-    chart rays), and m5_ledger (one member's full M5 ledger -- same
-    contract for the whole cluster -- for dynamic_target's own opposite-
-    type search).
+    alt_price's own lifespan -- see below), h1_price/h1_source/
+    h1_formation_time/h1_end_time (the closest H1-NATIVE level in the same
+    pool -- own+h1 only, excluding m5 -- always used for the H1 chart's own
+    level ray regardless of which pool alt_price itself came from, since the
+    H1 pane should always show a genuine H1 LXPB structure with a real
+    formation-to-retest span; alt_price/alt_formation_time/alt_end_time
+    remain what the trade actually enters at, shown as a separate "entry"
+    line when it differs), confl_h1_n/ss_confl_n (external-confluence
+    counts), confluent_h1/confluent_m5 (deduped broader pools for chart
+    rays), and m5_ledger (one member's full M5 ledger -- same contract for
+    the whole cluster -- for dynamic_target's own opposite-type search).
 
-    alt_formation_time is always that specific level's own formation bar.
-    alt_end_time is that level's own death_time when known (it may have
-    since been consumed by an unrelated retest of its own, independent of
-    this cluster), else this cluster's own retest_time as the latest time
-    we can vouch the level was actually live and usable as this trade's
-    resting price -- never later, since nothing past this cluster's own
-    retest is part of the trade."""
+    alt_formation_time/h1_formation_time are always that specific level's
+    own formation bar. alt_end_time/h1_end_time are that level's own
+    death_time when known (it may have since been consumed by an unrelated
+    retest of its own, independent of this cluster), else this cluster's
+    own retest_time as the latest time we can vouch the level was actually
+    live and usable as this trade's resting price -- never later, since
+    nothing past this cluster's own retest is part of the trade."""
     level_type = cluster[0]["row"]["type"]
     cluster_retest_time = cluster_anchor(cluster)["row"]["retest_time"]
 
@@ -408,12 +412,30 @@ def cluster_confluence(cluster):
     ends = own_ends + [_ext_end(r) for r in same_h1_list] + [_ext_end(r) for r in same_m5_list]
     idx = int(np.argmax(prices)) if level_type == "LLPB" else int(np.argmin(prices))
 
+    # The H1 chart always anchors its yellow level ray to the closest H1-
+    # NATIVE LXPB level in the group -- own_prices + same_h1_list only, never
+    # an M5 level -- regardless of which pool the fine-tuned entry (alt_price
+    # above) actually came from. The strategy may enter on an M5-sourced
+    # price, but the level being traded is always an H1 structure, so the
+    # chart should never show a chart-window ray sourced from an M5 level
+    # (formed/died at sub-hour granularity, often far from any H1 candle in
+    # the anchor's own window -- see the "H1 yellow ray floats away from P0"
+    # bug this fixes). own_prices is never empty (every cluster member's own
+    # row is H1), so this always resolves to a real H1 level.
+    h1_prices = own_prices + [float(r["price"]) for r in same_h1_list]
+    h1_sources = ["own"] * len(own_prices) + ["h1"] * len(same_h1_list)
+    h1_starts = own_starts + [_naive(r["formation_time"]) for r in same_h1_list]
+    h1_ends = own_ends + [_ext_end(r) for r in same_h1_list]
+    h1_idx = int(np.argmax(h1_prices)) if level_type == "LLPB" else int(np.argmin(h1_prices))
+
     confluent_h1 = pd.DataFrame(list(seen_h1.values())) if seen_h1 else pd.DataFrame()
     confluent_m5 = pd.DataFrame(list(seen_m5.values())) if seen_m5 else pd.DataFrame()
 
     return {
         "alt_price": prices[idx], "alt_source": sources[idx], "group_n": len(prices),
         "alt_formation_time": starts[idx], "alt_end_time": ends[idx],
+        "h1_price": h1_prices[h1_idx], "h1_source": h1_sources[h1_idx],
+        "h1_formation_time": h1_starts[h1_idx], "h1_end_time": h1_ends[h1_idx],
         "confl_h1_n": len(seen_h1), "ss_confl_n": len(same_h1_list),
         "confluent_h1": confluent_h1, "confluent_m5": confluent_m5,
         "m5_ledger": m5_ledger if m5_ledger is not None else pd.DataFrame(),
@@ -631,6 +653,8 @@ def process_cluster(cluster, args):
         "cluster_size": len(cluster), "cluster_members": member_prices,
         "own_price": own_price, "alt_price": alt_price, "alt_source": alt_source,
         "alt_formation_time": conf["alt_formation_time"], "alt_end_time": conf["alt_end_time"],
+        "h1_price": conf["h1_price"], "h1_source": conf["h1_source"],
+        "h1_formation_time": conf["h1_formation_time"], "h1_end_time": conf["h1_end_time"],
         "improved": abs(alt_price - own_price) > 1e-9,
         "confluent_h1": conf["confluent_h1"], "confluent_m5": conf["confluent_m5"],
         "confluent_combined": pd.concat([conf["confluent_h1"], conf["confluent_m5"]], ignore_index=True)
@@ -789,8 +813,9 @@ def build_chart_stack_for_row(h1_df, pos_by_ts, res):
     row_for_chart["price"] = alt_price
     chart_h1 = SR.build_trade_chart(h1_df, pos_by_ts, row_for_chart, None, resolved,
                                     stop_pts, target_pts, confluent=res["confluent_combined"],
-                                    ray_formation_time=res["alt_formation_time"],
-                                    ray_end_time=res["alt_end_time"])
+                                    level_price=res["h1_price"],
+                                    ray_formation_time=res["h1_formation_time"],
+                                    ray_end_time=res["h1_end_time"])
     chart_h1["title"] += (f"  |  entry fine-tuned via {res['alt_source']} "
                           f"({res['group_n']} in group)  |  target: {res['target_source']}")
     if res.get("chased_pts", 0.0) > 1e-9:
@@ -850,8 +875,9 @@ def build_unfilled_chart_stack(h1_df, pos_by_ts, res, args):
     row_for_chart["price"] = alt_price
     chart_h1 = SR.build_trade_chart(h1_df, pos_by_ts, row_for_chart, None, resolved_stub,
                                     args.stop, args.fallback_target, confluent=res["confluent_combined"],
-                                    ray_formation_time=res["alt_formation_time"],
-                                    ray_end_time=res["alt_end_time"])
+                                    level_price=res["h1_price"],
+                                    ray_formation_time=res["h1_formation_time"],
+                                    ray_end_time=res["h1_end_time"])
     for m in chart_h1["markers"]:
         if m.get("text") == "NO DATA":
             m["text"] = "UNFILLED"

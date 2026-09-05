@@ -573,9 +573,19 @@ def _compute_excursion(bars, touch_time, exit_time, raw_entry, is_long, sym, off
 
 
 def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target,
-                      confluent=None, ray_formation_time=None, ray_end_time=None):
+                      confluent=None, ray_formation_time=None, ray_end_time=None,
+                      level_price=None):
     level_type = row["type"]
     price = float(row["price"])
+    # level_price is the H1 LXPB level actually being drawn as the windowed
+    # yellow ray -- defaults to the traded price itself (the plain report's
+    # only case: no fine-tuning, so the level IS the entry). The finetune
+    # report always passes its cluster's closest H1-NATIVE level here (see
+    # cluster_confluence's h1_price), which can differ from `price` whenever
+    # the entry was fine-tuned to a different (possibly M5-sourced) price --
+    # in which case a separate "entry" priceLine (below) shows where the
+    # trade actually enters, same treatment as the stop/target lines.
+    level_price = price if level_price is None else float(level_price)
     is_long = level_type == "LHPB"
     form_pos = pos_by_ts[row["formation_time"]]
     breakout_pos = pos_by_ts[row["breakout_time"]]
@@ -583,19 +593,19 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target,
     n_bars = len(h1_df)
 
     # ray_formation_time/ray_end_time let a caller override the OWN level's
-    # span for the case where `price` is a FINE-TUNED entry sourced from a
-    # different level entirely (e.g. render_ss_confl_finetune_report.py's
-    # confluence-group extreme) -- row["formation_time"]/row["retest_time"]
+    # span for the case where `level_price` is a level entirely different
+    # from the anchor row's own (e.g. render_ss_confl_finetune_report.py's
+    # closest-H1-in-group pick) -- row["formation_time"]/row["retest_time"]
     # are always the SUBJECT row's own, which would attribute the wrong
-    # lifespan whenever the displayed price didn't actually come from that
-    # level. Computed up front (rather than after the window/segments are
-    # built) so the window can be padded with context around THIS span too,
-    # the same treatment build_m5_chart gives its own rays -- otherwise an
-    # override sourced from a level that formed/died well outside the
-    # anchor row's own formation..retest window would draw a ray with no
-    # candle context around its endpoints (or vanish entirely if the span
-    # fell outside the compressed window), rather than looking anchored to
-    # its own formation candle the way the M5 pane's rays do.
+    # lifespan whenever level_price didn't actually come from that level.
+    # Computed up front (rather than after the window/segments are built) so
+    # the window can be padded with context around THIS span too, the same
+    # treatment build_m5_chart gives its own rays -- otherwise an override
+    # sourced from a level that formed/died well outside the anchor row's
+    # own formation..retest window would draw a ray with no candle context
+    # around its endpoints (or vanish entirely if the span fell outside the
+    # compressed window), rather than looking anchored to its own formation
+    # candle the way the M5 pane's rays do.
     ray_form = ray_formation_time if ray_formation_time is not None else row["formation_time"]
     ray_end = ray_end_time if ray_end_time is not None else row["retest_time"]
     # Round OUT to whole H1 bars: this pane's x-axis only has hourly points,
@@ -752,20 +762,35 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target,
         {"price": stop_price, "color": EXIT_LOSS_COLOR, "lineWidth": 1, "lineStyle": 2,
          "title": f"stop {stop_price:.2f} (-{_fmt_pts(stop)}pt)"},
     ]
+    # The entry price line: the price ACTUALLY traded. Chart-wide (like
+    # stop/target above), not windowed, since -- unlike the level ray below --
+    # it isn't itself an LXPB structure with a lifespan, just the fill. Drawn
+    # whenever it differs from level_price (the un-fine-tuned plain report's
+    # only case has them equal, where this would be a redundant duplicate of
+    # the level ray already at that price).
+    if abs(price - level_price) > 1e-9:
+        price_lines.append({
+            "price": price, "color": R.ENTRY_COLOR, "lineWidth": 1, "lineStyle": 0,
+            "title": f"entry {price:.2f}",
+        })
 
-    # The subject's OWN level, unlike stop/target (live-order lines that make
-    # sense chart-wide), is an LXPB structure with a real lifespan -- like the
+    # The H1 LXPB level being traded, unlike stop/target/entry (live-order
+    # lines that make sense chart-wide), has a real lifespan -- like the
     # confluence rays above, it should run only from its own P0 (formation)
     # to its own P2 (retest), not as a full-chart-width priceLine. Clipped to
     # bars that survived this window's compression, same as confluence_rays.
     # ray_form/ray_end/ray_form_floor/ray_end_ceil were computed up front
     # (see top of function) so the window above could be padded with
-    # context around this span too.
+    # context around this span too. Always drawn at level_price -- the
+    # closest H1-NATIVE level in the group (see cluster_confluence's
+    # h1_price) -- never at the (possibly M5-sourced) fine-tuned entry
+    # price, so this ray never floats away from an H1 candle regardless of
+    # where the entry itself actually is.
     own_mask = (wt >= ray_form_floor) & (wt <= ray_end_ceil)
-    own_pts = [{"time": R._to_epoch_utc(t), "value": price} for t in wt[own_mask]]
+    own_pts = [{"time": R._to_epoch_utc(t), "value": level_price} for t in wt[own_mask]]
     own_ray = {
         "points": own_pts, "color": R.LEVEL_COLOR, "lineWidth": 2, "lineStyle": 0,
-        "label": (f"{level_type} {price:.2f} (entry)  &middot;  formed "
+        "label": (f"H1 {level_type} {level_price:.2f}  &middot;  formed "
                   f"{R._to_pt_str(ray_form)}  &middot;  live to "
                   f"{R._to_pt_str(ray_end)}"),
     }
