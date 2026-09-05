@@ -422,17 +422,39 @@ def simulate_trades_for_combo(trades_df, bars_1s, stop_ticks, target_ticks, hori
 # ../../label-review/render_lxpb_retest_1s_report.py, with stop/target
 # price lines and a win/loss-colored exit marker added on top.
 # ---------------------------------------------------------------------------
-CHART_PAD_SECONDS_1S = 180          # +/- context around the touch instant
-CHART_PAD_MINUTES_1MIN = 20         # +/- context for the standalone 1min chart
-CHART_PAD_HOURS_H1_BEFORE = 8       # H1 context before the formation bar
-CHART_PAD_HOURS_H1_AFTER = 4        # H1 context after the retest bar
-CHART_MAX_WINDOW_SECONDS = 1800     # cap on how far the 1s window extends to reach a late exit
+CHART_PAD_SECONDS_1S = 420           # +/- context around the touch instant (was 180)
+CHART_PAD_MINUTES_1MIN = 45          # +/- context for the standalone 1min chart (was 20)
+CHART_PAD_HOURS_H1_BEFORE = 24       # H1 context before the formation bar (was 8)
+CHART_PAD_HOURS_H1_AFTER = 12        # H1 context after the retest bar (was 4)
+CHART_MAX_WINDOW_SECONDS = 3700      # cap on how far the 1s window extends to reach a late
+                                      # exit -- must cover the full GRID_HORIZON_S (3600s)
 
 ENTRY_COLOR = "#60a5fa"
 STOP_COLOR = "#f87171"
 TARGET_COLOR = "#4ade80"
 BID_COLOR_C = "#f87171"
 ASK_COLOR_C = "#4ade80"
+PT_TZ = "America/Los_Angeles"
+
+# --- Footprint (tick volume-by-price) -------------------------------------
+# Two windows per user request: a tight one bracketing just the touch itself,
+# and a wider one showing how volume built up over the ~2min around it.
+FOOTPRINT_PRE_SECONDS = 20          # both windows start 20s BEFORE the exact touch instant
+FOOTPRINT_NARROW_POST_SECONDS = 5   # narrow window ends 5s AFTER touch
+FOOTPRINT_WIDE_POST_SECONDS = 100   # wide window ends 100s AFTER touch
+_FOOTPRINT_CONTRACT_CACHE = {}
+
+
+def _to_pt(ts, assume_naive_is_utc=True):
+    """Convert any of our pipeline's timestamps (naive, assumed UTC per
+    lxpb.py's epoch-seconds convention -- OR already UTC-aware, e.g.
+    bars_1s.index-derived values) to Pacific Time for display."""
+    if ts is None or pd.isna(ts):
+        return None
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None and assume_naive_is_utc:
+        t = t.tz_localize("UTC")
+    return t.tz_convert(PT_TZ)
 
 
 def _resample_1min_from_1s(bars):
@@ -440,9 +462,115 @@ def _resample_1min_from_1s(bars):
     return out.dropna(subset=["Close"])
 
 
-def build_trade_chart(row, h1_df, bars_1s):
+def _contract_for_ts(ts_utc):
+    """Which CONTRACTS_NEEDED[i] was actually front-month (i.e. which .scid
+    file's RAW, unadjusted prices really traded) at ts_utc -- same rule as
+    ../../label-review/render_lxpb_retest_1s_report.py's `_contract_index_for`
+    / `_offset_for_ts`."""
+    n = len(CONTRACTS_NEEDED)
+    for i in range(n):
+        start, end = _segment_for(i)
+        if (start is None or ts_utc >= start) and (end is None or ts_utc < end):
+            sym = CONTRACTS_NEEDED[i][0]
+            return sym, B26.TV_GROUND_TRUTH_OFFSETS[sym]
+    sym = CONTRACTS_NEEDED[-1][0]
+    return sym, B26.TV_GROUND_TRUTH_OFFSETS[sym]
+
+
+def _footprint_load_contract(symbol):
+    """Cached raw-tick loader for footprint building -- separate cache from
+    build_continuous_1s's per-run parts list, since footprint sampling may
+    run standalone/later and shouldn't force a full reload."""
+    if symbol not in _FOOTPRINT_CONTRACT_CACHE:
+        _FOOTPRINT_CONTRACT_CACHE[symbol] = _load_contract(symbol, verbose=True)
+    return _FOOTPRINT_CONTRACT_CACHE[symbol]
+
+
+def build_footprint(touch_time_utc, pre_s=FOOTPRINT_PRE_SECONDS, post_s=FOOTPRINT_WIDE_POST_SECONDS):
+    """Tick-level volume-by-price footprint for
+    [touch_time_utc - pre_s, touch_time_utc + post_s]: every raw .scid trade
+    record's Close (the actual traded price -- Open is unreliable, see
+    _resample_1s's docstring) is rounded to the nearest tick and its
+    BidVolume/AskVolume summed per price level. Price is converted into
+    BACK-ADJUSTED terms (+ that segment's own TV_GROUND_TRUTH_OFFSETS) so
+    footprint rows line up with entry/stop/target on the other charts."""
+    lo = touch_time_utc - pd.Timedelta(seconds=pre_s)
+    hi = touch_time_utc + pd.Timedelta(seconds=post_s)
+    sym, offset = _contract_for_ts(touch_time_utc)
+    raw = _footprint_load_contract(sym)
+    ticks = raw.loc[(raw.index >= lo) & (raw.index <= hi)]
+    if ticks.empty:
+        return None
+    price = np.round((ticks["Close"].to_numpy(float) + offset) / TICK) * TICK
+    df = pd.DataFrame({
+        "price": price,
+        "bid": ticks["BidVolume"].to_numpy(float),
+        "ask": ticks["AskVolume"].to_numpy(float),
+    })
+    agg = df.groupby("price", as_index=False).sum().sort_values("price", ascending=False)
+    agg["total"] = agg["bid"] + agg["ask"]
+    agg["delta"] = agg["ask"] - agg["bid"]
+    poc_price = float(agg.loc[agg["total"].idxmax(), "price"]) if not agg.empty else None
+    return {
+        "sym": sym, "lo": lo, "hi": hi, "pre_s": pre_s, "post_s": post_s,
+        "rows": agg.to_dict("records"),
+        "total_bid": float(agg["bid"].sum()), "total_ask": float(agg["ask"].sum()),
+        "total_vol": float(agg["total"].sum()), "poc_price": poc_price,
+    }
+
+
+def _footprint_html(fp, entry_price, label=""):
+    """4-column bid/price/ask footprint block (Delta | Bid | Ask | Price,
+    left to right -- matches a standard footprint/order-flow layout) --
+    rendered as static HTML/CSS since this isn't a native lightweight-charts
+    series type."""
+    if fp is None or not fp["rows"]:
+        return "<p class='note'>(no tick data in this window)</p>"
+    max_vol = max((r["bid"] for r in fp["rows"]), default=0)
+    max_vol = max(max_vol, max((r["ask"] for r in fp["rows"]), default=0), 1)
+    max_abs_delta = max((abs(r["delta"]) for r in fp["rows"]), default=1) or 1
+    lo_pt, hi_pt = _to_pt(fp["lo"], assume_naive_is_utc=False), _to_pt(fp["hi"], assume_naive_is_utc=False)
+    rows_html = []
+    for r in fp["rows"]:
+        price = r["price"]
+        delta = r["delta"]
+        is_entry = abs(price - entry_price) < TICK / 2
+        is_poc = fp["poc_price"] is not None and abs(price - fp["poc_price"]) < TICK / 2
+        cls = " fp-entry" if is_entry else ""
+        cls += " fp-poc" if is_poc else ""
+        bid_w = round(100 * r["bid"] / max_vol, 1)
+        ask_w = round(100 * r["ask"] / max_vol, 1)
+        delta_w = round(100 * abs(delta) / max_abs_delta, 1)
+        delta_cls = "fp-delta-neg" if delta < 0 else ("fp-delta-pos" if delta > 0 else "fp-delta-flat")
+        rows_html.append(
+            f"<div class='fp-row{cls}'>"
+            f"<div class='fp-delta {delta_cls}'><span class='fp-bar fp-bar-delta' style='width:{delta_w}%'></span>"
+            f"<span class='fp-val'>{delta:+.0f}</span></div>"
+            f"<div class='fp-bid'><span class='fp-val'>{r['bid']:.0f}</span>"
+            f"<span class='fp-bar' style='width:{bid_w}%'></span></div>"
+            f"<div class='fp-ask'><span class='fp-bar fp-bar-ask' style='width:{ask_w}%'></span>"
+            f"<span class='fp-val'>{r['ask']:.0f}</span></div>"
+            f"<div class='fp-price'>{price:.2f}{' &#9679;' if is_poc else ''}{' &#8592;' if is_entry else ''}</div>"
+            "</div>"
+        )
+    label_prefix = f"{label}  |  " if label else ""
+    header = (
+        f"<div class='fp-header'>{label_prefix}{fp['sym']}  |  {lo_pt.strftime('%H:%M:%S')}-"
+        f"{hi_pt.strftime('%H:%M:%S')} PT (-{fp['pre_s']}s/+{fp['post_s']}s)  |  "
+        f"Vol {fp['total_vol']:.0f} (B {fp['total_bid']:.0f}/A {fp['total_ask']:.0f}, "
+        f"{fp['total_ask'] - fp['total_bid']:+.0f})  |  POC {fp['poc_price']:.2f}</div>"
+    )
+    return f"<div class='footprint-wrap'>{header}{''.join(rows_html)}</div>"
+
+
+
+def build_trade_chart(row, h1_df, bars_1s, include_footprint=False):
     """Build the embeddable chart-data dict for one simulated trade (a row
-    from simulate_trades_for_combo's output, as a namedtuple/Series)."""
+    from simulate_trades_for_combo's output, as a namedtuple/Series).
+    `include_footprint`: also build the tick-level volume-by-price
+    footprint (touch-20s .. touch+60s) -- opt-in per-row since it requires
+    loading raw .scid ticks (slow -- see _footprint_load_contract's cache
+    note) and is only wanted for a sample of rows."""
     is_long = row.type == "LHPB"
     entry, stop, target = float(row.entry_price), float(row.stop_price), float(row.target_price)
     touch_time = pd.Timestamp(row.touch_time_utc)
@@ -524,13 +652,19 @@ def build_trade_chart(row, h1_df, bars_1s):
         "color": ENTRY_COLOR, "shape": "arrowUp" if is_long else "arrowDown", "text": "RETEST",
     }
     h1 = {
-        "title": f"H1 context -- {row.type} formed {pd.Timestamp(row.formation_time)} "
-                  f"-> retest {pd.Timestamp(row.retest_time)}",
+        "title": f"H1 context -- {row.type} formed {_to_pt(row.formation_time).strftime('%Y-%m-%d %H:%M')} PT "
+                  f"-> retest {_to_pt(row.retest_time).strftime('%Y-%m-%d %H:%M')} PT",
         "candles": h1_candles, "markers": [h1_retest_marker], "priceLines": price_lines,
         "precision": 2,
     }
 
-    return {"h1": h1, "trio": chart_1s, "oneMin": one_min}
+    result = {"h1": h1, "trio": chart_1s, "oneMin": one_min}
+    if include_footprint:
+        fp_narrow = build_footprint(touch_time, pre_s=FOOTPRINT_PRE_SECONDS, post_s=FOOTPRINT_NARROW_POST_SECONDS)
+        fp_wide = build_footprint(touch_time, pre_s=FOOTPRINT_PRE_SECONDS, post_s=FOOTPRINT_WIDE_POST_SECONDS)
+        result["footprintNarrowHtml"] = _footprint_html(fp_narrow, entry, label="Narrow")
+        result["footprintWideHtml"] = _footprint_html(fp_wide, entry, label="Wide")
+    return result
 
 
 
@@ -585,6 +719,33 @@ tr.trade-row { cursor:pointer; }
                overflow:hidden; text-overflow:ellipsis; }
 .chart-ph { height:calc(100% - 24px); width:100%; }
 .hidden { display:none !important; }
+
+/* --- tick volume-by-price footprint (compact, 2-up, left half only) --- */
+.footprint-outer-row { margin-top:0; }
+.footprint-pair { display:grid; grid-template-columns: 1fr 1fr; gap:8px; }
+.footprint-placeholder { display:flex; align-items:center; justify-content:center;
+                          border-style:dashed; opacity:0.4; }
+.footprint-cell { padding:0; width:100%; }
+.footprint-wrap { max-height:170px; overflow-y:auto; font-family:ui-monospace,monospace; font-size:0.62em; width:100%; }
+.fp-header { color:var(--muted); padding:3px 6px; background:#0a0a0a; border-bottom:1px solid #1f1f1f;
+             position:sticky; top:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.fp-row { display:grid; grid-template-columns: 42px 1fr 1fr 44px; align-items:center; border-bottom:1px solid #1a1d24; }
+.fp-row.fp-poc { background:#26210a; }
+.fp-row.fp-entry { outline:1px solid var(--accent); outline-offset:-1px; }
+.fp-delta { display:flex; justify-content:flex-end; align-items:center; gap:2px; padding:0 3px; position:relative; }
+.fp-bar-delta { height:7px; border-radius:1px; }
+.fp-delta-neg .fp-bar-delta, .fp-delta-neg .fp-val { color:var(--bear); }
+.fp-delta-neg .fp-bar-delta { background:var(--bear); }
+.fp-delta-pos .fp-bar-delta, .fp-delta-pos .fp-val { color:var(--bull); }
+.fp-delta-pos .fp-bar-delta { background:var(--bull); }
+.fp-delta-flat .fp-bar-delta { background:var(--muted); }
+.fp-bid { display:flex; justify-content:flex-end; align-items:center; gap:2px; padding:0 3px; position:relative; }
+.fp-ask { display:flex; justify-content:flex-start; align-items:center; gap:2px; padding:0 3px; position:relative; }
+.fp-bar { height:7px; background:#9aa4b2; border-radius:1px; }
+.fp-bar-ask { background:#3b9ee5; }
+.fp-val { color:var(--text); min-width:22px; text-align:right; }
+.fp-ask .fp-val { text-align:left; }
+.fp-price { text-align:center; color:#e8eaed; font-weight:600; background:#12141a; padding:0 2px; white-space:nowrap; }
 """
 
 
@@ -593,9 +754,11 @@ def _outcome_class(o):
 
 
 def _fmt_ts(ts):
-    if ts is None or pd.isna(ts):
+    """Display formatter -- always Pacific Time (see _to_pt)."""
+    pt = _to_pt(ts)
+    if pt is None:
         return "-"
-    return pd.Timestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    return pt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _grid_table_html(df, id_attr, highlight_key=None):
@@ -658,7 +821,25 @@ def _trades_table_html(trades_df, charts=None):
             "</tr>"
         )
         if has_chart:
-            charts_json[i] = charts[i]
+            fp_narrow_html = charts[i].get("footprintNarrowHtml")
+            fp_wide_html = charts[i].get("footprintWideHtml")
+            # Keep the (potentially large) static footprint HTML out of the
+            # CHARTS JS blob -- it's only used inline in the table row below,
+            # never read by the JS renderer, so duplicating it there would
+            # just bloat the page (especially once extended to all rows).
+            charts_json[i] = {k: v for k, v in charts[i].items()
+                               if k not in ("footprintNarrowHtml", "footprintWideHtml")}
+            fp_section = (
+                f'<div class="chart-row-2col footprint-outer-row">'
+                f'<div class="footprint-pair">'
+                f'<div class="chart-cell footprint-cell">{fp_narrow_html}</div>'
+                f'<div class="chart-cell footprint-cell">{fp_wide_html}</div>'
+                f'</div>'
+                f'<div class="chart-cell footprint-placeholder">'
+                f'<div class="chart-title">(reserved for a future chart)</div></div>'
+                f'</div>'
+                if fp_narrow_html or fp_wide_html else ""
+            )
             rows_html.append(f"""
 <tr class="chart-row hidden" id="chart-row-{i}">
   <td colspan="14"><div class="chart-stack">
@@ -673,12 +854,13 @@ def _trades_table_html(trades_df, charts=None):
         <div class="chart-cell"><div class="chart-title" id="t1m-{i}"></div><div class="chart-ph" id="c1m-{i}"></div></div>
       </div>
     </div>
+    {fp_section}
   </div></td>
 </tr>""")
-    head = ("<th class='left'>Retest Time (H1)</th><th class='left'>Type</th>"
-            "<th class='left'>Dir</th><th class='left'>Touch Time (1s, UTC)</th>"
+    head = ("<th class='left'>Retest Time (H1, PT)</th><th class='left'>Type</th>"
+            "<th class='left'>Dir</th><th class='left'>Touch Time (1s, PT)</th>"
             "<th>Entry</th><th>Stop</th><th>Target</th><th>BidVol@R</th><th>AskVol@R</th>"
-            "<th class='left'>Outcome</th><th class='left'>Exit Time (UTC)</th>"
+            "<th class='left'>Outcome</th><th class='left'>Exit Time (PT)</th>"
             "<th>PnL (pts)</th><th>R</th><th>&#9654;</th>")
     table_html = f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(rows_html)}</tbody></table>"
     return table_html, charts_json
@@ -702,8 +884,8 @@ def build_report_html(signals, grid_df, best_row, best_trades_df, months, vol_th
     if best_row is not None:
         charts = None
         if h1_df is not None and bars_1s is not None and not best_trades_df.empty:
-            charts = [build_trade_chart(row, h1_df, bars_1s)
-                      for row in best_trades_df.itertuples(index=False)]
+            charts = [build_trade_chart(row, h1_df, bars_1s, include_footprint=True)
+                      for idx, row in enumerate(best_trades_df.itertuples(index=False))]
         trades_table, charts_json = _trades_table_html(best_trades_df, charts)
         summary_boxes = f"""
       <div class="box good"><div class="label">Best Stop / Target</div>
