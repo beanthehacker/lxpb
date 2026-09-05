@@ -325,21 +325,36 @@ def cluster_confluence(cluster):
     but still compete for the extreme-price pick like any other member.
 
     Returns a dict: alt_price/alt_source/group_n (the fine-tuned entry),
-    confl_h1_n/ss_confl_n (external-confluence counts), confluent_h1/
-    confluent_m5 (deduped broader pools for chart rays), and m5_ledger (one
-    member's full M5 ledger -- same contract for the whole cluster -- for
-    dynamic_target's own opposite-type search)."""
+    alt_formation_time/alt_end_time (the specific level that SUPPLIED
+    alt_price's own lifespan -- see below -- for drawing its H1 chart ray
+    correctly instead of always defaulting to the anchor's own P0/P2, which
+    is wrong whenever alt_source != "own"), confl_h1_n/ss_confl_n (external-
+    confluence counts), confluent_h1/confluent_m5 (deduped broader pools for
+    chart rays), and m5_ledger (one member's full M5 ledger -- same
+    contract for the whole cluster -- for dynamic_target's own opposite-
+    type search).
+
+    alt_formation_time is always that specific level's own formation bar.
+    alt_end_time is that level's own death_time when known (it may have
+    since been consumed by an unrelated retest of its own, independent of
+    this cluster), else this cluster's own retest_time as the latest time
+    we can vouch the level was actually live and usable as this trade's
+    resting price -- never later, since nothing past this cluster's own
+    retest is part of the trade."""
     level_type = cluster[0]["row"]["type"]
+    cluster_retest_time = cluster_anchor(cluster)["row"]["retest_time"]
 
     own_keys = set()
-    own_prices = []
+    own_prices, own_starts, own_ends = [], [], []
     for cand in cluster:
         row_d = cand["row"]
         own_keys.add(_level_key(row_d["type"], row_d["price"], row_d["formation_time"]))
         own_prices.append(float(row_d["price"]))
+        own_starts.append(row_d["formation_time"])
+        own_ends.append(row_d["retest_time"])
 
     seen_h1, seen_m5 = {}, {}            # broader pools (any type) -> ledger row, for chart rays
-    seen_same_h1, seen_same_m5 = {}, {}  # narrower same-type-live pools -> price, for Confl. counts
+    seen_same_h1, seen_same_m5 = {}, {}  # narrower same-type-live pools -> ledger row, for Confl. counts
     m5_ledger = None
 
     for cand in cluster:
@@ -351,7 +366,7 @@ def cluster_confluence(cluster):
         for _, r in cand["same_side_h1"].iterrows():
             k = _level_key(r["type"], r["price"], r["formation_time"])
             if k not in own_keys:
-                seen_same_h1.setdefault(k, float(r["price"]))
+                seen_same_h1.setdefault(k, r)
 
         ledger, confluent_m5, same_side_m5 = m5_confluence_for_row(row_d)
         if m5_ledger is None and ledger is not None and not ledger.empty:
@@ -363,10 +378,34 @@ def cluster_confluence(cluster):
         for _, r in same_side_m5.iterrows():
             k = _level_key(r["type"], r["price"], r["formation_time"])
             if k not in own_keys:
-                seen_same_m5.setdefault(k, float(r["price"]))
+                seen_same_m5.setdefault(k, r)
 
-    prices = own_prices + list(seen_same_h1.values()) + list(seen_same_m5.values())
-    sources = (["own"] * len(own_prices) + ["h1"] * len(seen_same_h1) + ["m5"] * len(seen_same_m5))
+    def _naive(t):
+        """Ledger timestamps (unlike row_d's, which come straight from
+        h1_df's own naive index) are tz-aware UTC -- strip that label (same
+        instant) so they compare directly against h1_df's naive index, same
+        convention build_trade_chart's own confluence-ray code uses."""
+        return t.tz_localize(None) if getattr(t, "tzinfo", None) is not None else t
+
+    def _ext_end(r):
+        """This external level's own end for ray-drawing: its own death (if
+        it has since been consumed, independent of this cluster) clipped to
+        never exceed this cluster's own retest -- past that point nothing
+        is part of this trade regardless of what that other level went on
+        to do."""
+        death = r["death_time"]
+        if pd.isna(death):
+            return cluster_retest_time
+        return min(_naive(death), cluster_retest_time)
+
+    same_h1_list = list(seen_same_h1.values())
+    same_m5_list = list(seen_same_m5.values())
+    prices = (own_prices + [float(r["price"]) for r in same_h1_list]
+                         + [float(r["price"]) for r in same_m5_list])
+    sources = (["own"] * len(own_prices) + ["h1"] * len(same_h1_list) + ["m5"] * len(same_m5_list))
+    starts = (own_starts + [_naive(r["formation_time"]) for r in same_h1_list]
+                         + [_naive(r["formation_time"]) for r in same_m5_list])
+    ends = own_ends + [_ext_end(r) for r in same_h1_list] + [_ext_end(r) for r in same_m5_list]
     idx = int(np.argmax(prices)) if level_type == "LLPB" else int(np.argmin(prices))
 
     confluent_h1 = pd.DataFrame(list(seen_h1.values())) if seen_h1 else pd.DataFrame()
@@ -374,7 +413,8 @@ def cluster_confluence(cluster):
 
     return {
         "alt_price": prices[idx], "alt_source": sources[idx], "group_n": len(prices),
-        "confl_h1_n": len(seen_h1), "ss_confl_n": len(seen_same_h1),
+        "alt_formation_time": starts[idx], "alt_end_time": ends[idx],
+        "confl_h1_n": len(seen_h1), "ss_confl_n": len(same_h1_list),
         "confluent_h1": confluent_h1, "confluent_m5": confluent_m5,
         "m5_ledger": m5_ledger if m5_ledger is not None else pd.DataFrame(),
     }
@@ -590,6 +630,7 @@ def process_cluster(cluster, args):
         "ss_confl": conf["ss_confl_n"], "group_n": group_n,
         "cluster_size": len(cluster), "cluster_members": member_prices,
         "own_price": own_price, "alt_price": alt_price, "alt_source": alt_source,
+        "alt_formation_time": conf["alt_formation_time"], "alt_end_time": conf["alt_end_time"],
         "improved": abs(alt_price - own_price) > 1e-9,
         "confluent_h1": conf["confluent_h1"], "confluent_m5": conf["confluent_m5"],
         "confluent_combined": pd.concat([conf["confluent_h1"], conf["confluent_m5"]], ignore_index=True)
@@ -747,7 +788,9 @@ def build_chart_stack_for_row(h1_df, pos_by_ts, res):
     row_for_chart = row_d.copy()
     row_for_chart["price"] = alt_price
     chart_h1 = SR.build_trade_chart(h1_df, pos_by_ts, row_for_chart, None, resolved,
-                                    stop_pts, target_pts, confluent=res["confluent_combined"])
+                                    stop_pts, target_pts, confluent=res["confluent_combined"],
+                                    ray_formation_time=res["alt_formation_time"],
+                                    ray_end_time=res["alt_end_time"])
     chart_h1["title"] += (f"  |  entry fine-tuned via {res['alt_source']} "
                           f"({res['group_n']} in group)  |  target: {res['target_source']}")
     if res.get("chased_pts", 0.0) > 1e-9:
@@ -806,7 +849,9 @@ def build_unfilled_chart_stack(h1_df, pos_by_ts, res, args):
     row_for_chart = row_d.copy()
     row_for_chart["price"] = alt_price
     chart_h1 = SR.build_trade_chart(h1_df, pos_by_ts, row_for_chart, None, resolved_stub,
-                                    args.stop, args.fallback_target, confluent=res["confluent_combined"])
+                                    args.stop, args.fallback_target, confluent=res["confluent_combined"],
+                                    ray_formation_time=res["alt_formation_time"],
+                                    ray_end_time=res["alt_end_time"])
     for m in chart_h1["markers"]:
         if m.get("text") == "NO DATA":
             m["text"] = "UNFILLED"

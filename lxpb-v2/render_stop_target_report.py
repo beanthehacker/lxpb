@@ -571,7 +571,7 @@ def _compute_excursion(bars, touch_time, exit_time, raw_entry, is_long, sym, off
 
 
 def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target,
-                      confluent=None):
+                      confluent=None, ray_formation_time=None, ray_end_time=None):
     level_type = row["type"]
     price = float(row["price"])
     is_long = level_type == "LHPB"
@@ -713,13 +713,30 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target,
     # confluence rays above, it should run only from its own P0 (formation)
     # to its own P2 (retest), not as a full-chart-width priceLine. Clipped to
     # bars that survived this window's compression, same as confluence_rays.
-    own_mask = (wt >= row["formation_time"]) & (wt <= row["retest_time"])
+    # ray_formation_time/ray_end_time let a caller override this span for the
+    # case where `price` is a FINE-TUNED entry sourced from a different
+    # level entirely (e.g. render_ss_confl_finetune_report.py's confluence-
+    # group extreme) -- row["formation_time"]/row["retest_time"] are always
+    # the SUBJECT row's own, which would draw the ray over the wrong window
+    # whenever the displayed price didn't actually come from that level.
+    ray_form = ray_formation_time if ray_formation_time is not None else row["formation_time"]
+    ray_end = ray_end_time if ray_end_time is not None else row["retest_time"]
+    # Round the mask window OUT to whole H1 bars: this pane's x-axis only
+    # has hourly points, so an override sourced from a sub-hour M5 level
+    # (ray_form/ray_end mid-bar) would otherwise match zero bars and the ray
+    # would silently vanish. A no-op for the normal H1-level case, since
+    # row["formation_time"]/row["retest_time"] already sit on bar boundaries.
+    ray_form_floor = pd.Timestamp(ray_form).floor("h")
+    ray_end_ceil = pd.Timestamp(ray_end).ceil("h")
+    if ray_end_ceil <= ray_form_floor:
+        ray_end_ceil = ray_form_floor + pd.Timedelta(hours=1)
+    own_mask = (wt >= ray_form_floor) & (wt <= ray_end_ceil)
     own_pts = [{"time": R._to_epoch_utc(t), "value": price} for t in wt[own_mask]]
     own_ray = {
         "points": own_pts, "color": R.LEVEL_COLOR, "lineWidth": 2, "lineStyle": 0,
         "label": (f"{level_type} {price:.2f} (entry)  &middot;  formed "
-                  f"{R._to_pt_str(row['formation_time'])}  &middot;  retest "
-                  f"{R._to_pt_str(row['retest_time'])}"),
+                  f"{R._to_pt_str(ray_form)}  &middot;  live to "
+                  f"{R._to_pt_str(ray_end)}"),
     }
 
     title = (f"{level_type} {price:.2f}  |  formed {R._to_pt_str(row['formation_time'])}  "
