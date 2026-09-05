@@ -75,6 +75,8 @@ CONTEXT_BARS_BEFORE_RETEST = 6
 BARS_AFTER_MIN = 8       # same floor as render_labels_report's BARS_AFTER
 BARS_AFTER_EXIT = 3      # extra bars of context shown past the exit bar
 MAX_MERGE_GAP = 15
+RAY_CTX_AROUND_FORM = 3  # context bars kept around an (possibly overridden) own-level
+RAY_CTX_AROUND_END = 3   # ray's formation/end, mirrors M5_CTX_*_FORMATION/M5_CTX_AROUND_RAY_END
 
 EXIT_WIN_COLOR = "#4ade80"
 EXIT_LOSS_COLOR = "#f87171"
@@ -580,6 +582,41 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target,
     retest_pos = pos_by_ts[row["retest_time"]]
     n_bars = len(h1_df)
 
+    # ray_formation_time/ray_end_time let a caller override the OWN level's
+    # span for the case where `price` is a FINE-TUNED entry sourced from a
+    # different level entirely (e.g. render_ss_confl_finetune_report.py's
+    # confluence-group extreme) -- row["formation_time"]/row["retest_time"]
+    # are always the SUBJECT row's own, which would attribute the wrong
+    # lifespan whenever the displayed price didn't actually come from that
+    # level. Computed up front (rather than after the window/segments are
+    # built) so the window can be padded with context around THIS span too,
+    # the same treatment build_m5_chart gives its own rays -- otherwise an
+    # override sourced from a level that formed/died well outside the
+    # anchor row's own formation..retest window would draw a ray with no
+    # candle context around its endpoints (or vanish entirely if the span
+    # fell outside the compressed window), rather than looking anchored to
+    # its own formation candle the way the M5 pane's rays do.
+    ray_form = ray_formation_time if ray_formation_time is not None else row["formation_time"]
+    ray_end = ray_end_time if ray_end_time is not None else row["retest_time"]
+    # Round OUT to whole H1 bars: this pane's x-axis only has hourly points,
+    # so an override sourced from a sub-hour M5 level (ray_form/ray_end
+    # mid-bar) would otherwise match zero bars. A no-op for the normal
+    # H1-level case, since row["formation_time"]/row["retest_time"] already
+    # sit on bar boundaries.
+    ray_form_floor = pd.Timestamp(ray_form).floor("h")
+    ray_end_ceil = pd.Timestamp(ray_end).ceil("h")
+    if ray_end_ceil <= ray_form_floor:
+        ray_end_ceil = ray_form_floor + pd.Timedelta(hours=1)
+
+    def _h1_pos(ts):
+        p = pos_by_ts.get(ts)
+        if p is None:
+            p = int(h1_df.index.searchsorted(ts, side="right")) - 1
+        return min(max(p, 0), n_bars - 1)
+
+    ray_form_pos = _h1_pos(ray_form_floor)
+    ray_end_pos = _h1_pos(ray_end_ceil)
+
     exit_time = resolved["exit_time"]
     if exit_time is not None:
         # h1_df's index is tz-naive (epoch-seconds -> naive UTC, see
@@ -598,6 +635,14 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target,
         (form_pos - BARS_BEFORE, form_pos + CONTEXT_BARS_AFTER_FORMATION),
         (breakout_pos - CONTEXT_BARS_BEFORE_BREAKOUT, breakout_pos + CONTEXT_BARS_AFTER_BREAKOUT),
         (retest_pos - CONTEXT_BARS_BEFORE_RETEST, retest_pos + retest_after),
+        # The own-level ray's endpoints get their own context segments too --
+        # a no-op when ray_form/ray_end match the anchor's own formation/
+        # retest (already covered above), but when they were overridden to a
+        # different level's span, this is what keeps the ray's start visibly
+        # anchored to its own formation candle and its end to its own retest,
+        # matching the M5 pane's treatment of its own rays.
+        (ray_form_pos - RAY_CTX_AROUND_FORM, ray_form_pos + RAY_CTX_AROUND_FORM),
+        (ray_end_pos - RAY_CTX_AROUND_END, ray_end_pos + RAY_CTX_AROUND_END),
     ]
     merged = R._merge_segments(segments, n_bars, MAX_MERGE_GAP)
 
@@ -713,23 +758,9 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target,
     # confluence rays above, it should run only from its own P0 (formation)
     # to its own P2 (retest), not as a full-chart-width priceLine. Clipped to
     # bars that survived this window's compression, same as confluence_rays.
-    # ray_formation_time/ray_end_time let a caller override this span for the
-    # case where `price` is a FINE-TUNED entry sourced from a different
-    # level entirely (e.g. render_ss_confl_finetune_report.py's confluence-
-    # group extreme) -- row["formation_time"]/row["retest_time"] are always
-    # the SUBJECT row's own, which would draw the ray over the wrong window
-    # whenever the displayed price didn't actually come from that level.
-    ray_form = ray_formation_time if ray_formation_time is not None else row["formation_time"]
-    ray_end = ray_end_time if ray_end_time is not None else row["retest_time"]
-    # Round the mask window OUT to whole H1 bars: this pane's x-axis only
-    # has hourly points, so an override sourced from a sub-hour M5 level
-    # (ray_form/ray_end mid-bar) would otherwise match zero bars and the ray
-    # would silently vanish. A no-op for the normal H1-level case, since
-    # row["formation_time"]/row["retest_time"] already sit on bar boundaries.
-    ray_form_floor = pd.Timestamp(ray_form).floor("h")
-    ray_end_ceil = pd.Timestamp(ray_end).ceil("h")
-    if ray_end_ceil <= ray_form_floor:
-        ray_end_ceil = ray_form_floor + pd.Timedelta(hours=1)
+    # ray_form/ray_end/ray_form_floor/ray_end_ceil were computed up front
+    # (see top of function) so the window above could be padded with
+    # context around this span too.
     own_mask = (wt >= ray_form_floor) & (wt <= ray_end_ceil)
     own_pts = [{"time": R._to_epoch_utc(t), "value": price} for t in wt[own_mask]]
     own_ray = {
