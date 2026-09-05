@@ -82,15 +82,22 @@ EXIT_CANDLE_COLOR = "#fbbf24"
 
 # "Confluence" strategy (see lxpb_levels_cache.find_confluent_levels): other
 # LXPB levels within +/- CONFLUENCE_N_POINTS of the trade's own level, formed
-# before it, with a confirmed (non-failed) breakout of their own, and formed
-# no further back than CONFLUENCE_LOOKBACK_BARS H1 bars before the trade's
-# own P1 (breakout) bar -- an unbounded lookback let a handful of very old
-# levels (formed months earlier) count as "confluence" alongside genuinely
-# recent structure. CONFLUENCE_COLOR is a blue distinct from both P2_COLOR
-# (light purple circle marker) and M5_COLOR (the M5 pane's own rays) so the
-# c1/c2/... markers/rays are never confused with either on the H1 chart.
+# before it, with a confirmed (non-failed) breakout of their own. No lookback
+# bound on how far back a confluent level may have formed -- a prior
+# CONFLUENCE_LOOKBACK_BARS=100-bar cutoff silently excluded genuinely live,
+# still-standing structure formed further back (e.g. two H1 levels formed
+# ~2 months apart that both broke out AND retested on the exact same bars --
+# clearly real, current confluence -- were never linked because neither was
+# formed within 100 bars of that shared breakout). Same lesson as
+# render_stop_target_report's own earlier M5_MAX_SPAN_DAYS bug: a level's
+# relevance is about whether it's still live, not how long ago it formed, so
+# clamp only to the contract segment (find_confluent_levels already does,
+# implicitly, since the ledger itself never spans more than one contract's
+# data) -- never to a fixed lookback. CONFLUENCE_COLOR is a blue distinct
+# from both P2_COLOR (light purple circle marker) and M5_COLOR (the M5
+# pane's own rays) so the c1/c2/... markers/rays are never confused with
+# either on the H1 chart.
 CONFLUENCE_N_POINTS = 2.5
-CONFLUENCE_LOOKBACK_BARS = 100
 CONFLUENCE_COLOR = "#3b82f6"
 
 # How far past a candle-rule signal to look for the market order's fill.
@@ -1526,17 +1533,9 @@ def _build_records(h1_df, pos_by_ts, strong, trades, indices, stop, target,
     for j, i in enumerate(indices):
         trade, resolved = sub_trades[j], resolved_list[j]
         row_d = strong.iloc[i]
-        # Bound how far back "confluence" may reach: only H1 levels formed
-        # within CONFLUENCE_LOOKBACK_BARS bars before THIS trade's own P1
-        # (breakout) bar. pos_by_ts/h1_df are the same naive-UTC-indexed
-        # H1 series build_trade_chart's own P0/P1/P2 markers use.
-        breakout_pos = pos_by_ts[row_d["breakout_time"]]
-        lookback_pos = max(0, breakout_pos - CONFLUENCE_LOOKBACK_BARS)
-        min_formation_time = h1_df.index[lookback_pos]
         confluent = LC.find_confluent_levels(
             ledger, row_d["type"], float(row_d["price"]), row_d["formation_time"],
-            row_d["retest_time"], CONFLUENCE_N_POINTS,
-            min_formation_time=min_formation_time)
+            row_d["retest_time"], CONFLUENCE_N_POINTS)
         # Narrower same-side reading (see same_side_live_confluence): same
         # type as this trade, still un-retested as of this trade's own P1.
         same_side = LC.same_side_live_confluence(confluent, row_d["type"], row_d["breakout_time"])

@@ -23,10 +23,16 @@ Definition (per row-26 example of stop2_target8_trades_report.html: LHPB
        - open_unbroken: never even broken out.
   4. Among everything that passes, the MOST RECENTLY FORMED one is "the"
      confluent level (the strategy pairs with *recent* nearby structure).
-  5. "Confluence" only reaches back CONFLUENCE_LOOKBACK_BARS H1 bars before
-     the trade's own P1 (breakout) bar -- levels formed earlier than that
-     don't count, however close in price, so a handful of very old levels
-     can't masquerade as "recent" structure.
+  5. This script's own `--lookback-bars` bounds how far back (in H1 bars
+     before the trade's own P1 breakout bar) a candidate may have formed --
+     purely a knob for this exploration script. The actual reports
+     (render_stop_target_report.py / render_ss_confl_finetune_report.py) do
+     NOT bound this at all: an earlier CONFLUENCE_LOOKBACK_BARS=100 cutoff
+     there was found to wrongly exclude genuinely live, still-standing
+     confluence formed further back (two levels formed ~2 months apart that
+     both broke out AND retested on the exact same bars), so it was removed
+     in favor of relying purely on `find_confluent_levels`' own liveness
+     checks (confirmed breakout, not yet retested).
 
 A narrower "same-side" reading (same_side_live_confluence) restricts this to
 levels of the SAME type as the subject (an LHPB retest only counts nearby
@@ -79,9 +85,11 @@ def main():
                         help="row index (0-based, matches the HTML report's # column)")
     parser.add_argument("--n", type=float, default=SR.CONFLUENCE_N_POINTS,
                         help=f"zone half-width in points (default {SR.CONFLUENCE_N_POINTS})")
-    parser.add_argument("--lookback-bars", type=int, default=SR.CONFLUENCE_LOOKBACK_BARS,
+    parser.add_argument("--lookback-bars", type=int, default=100,
                         help="max H1 bars before this trade's own P1 (breakout) bar a "
-                             f"candidate may have formed in (default {SR.CONFLUENCE_LOOKBACK_BARS})")
+                             "candidate may have formed in (default 100; the reports "
+                             "themselves no longer bound this at all -- see "
+                             "render_stop_target_report.py's CONFLUENCE_N_POINTS comment)")
     args = parser.parse_args()
 
     # Same selection the plain (non-full-year) stop/target reports use --

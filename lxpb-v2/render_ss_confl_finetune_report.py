@@ -112,9 +112,12 @@ side-by-side comparison of "fine-tuned" vs "as originally reported".
 Design choices worth flagging explicitly (this script tests one reading of
 an ambiguous strategy idea -- these are the specific calls made, revisit if
 they don't match the intended strategy):
-  - The M5 confluence-zone search for entry fine-tuning shares its
-    min_formation_time lookback bound with the H1 search (same absolute
-    cutoff timestamp, not a separately-tuned M5 lookback).
+  - No lookback bound on how far back a confluent H1/M5 level may have
+    formed relative to the trade's own P1 (breakout) bar -- confluence is
+    judged purely on liveness (confirmed breakout, not yet retested), same
+    as render_stop_target_report.py (see its CONFLUENCE_N_POINTS comment
+    for why an earlier fixed 100-bar cutoff was removed: it excluded
+    genuinely live structure formed further back).
   - An unfilled fine-tuned entry is excluded from stats rather than falling
     back to the baseline price -- see point 2 above.
 
@@ -169,31 +172,27 @@ def select_candidates(ss_confl_min, start=None, end=None, limit=A._DEFAULT):
     down to rows whose same-side H1 confluence count meets `ss_confl_min`.
     Returns (h1_df, pos_by_ts, strong, candidates) where `candidates` is a
     list of dicts (row index `i`, the row itself, its H1 confluent/same-side
-    frames, and the min_formation_time lookback bound used to compute them
-    -- shared with the M5 side so "how far back confluence may reach" means
-    the same absolute cutoff on both timeframes)."""
+    frames). No lookback bound on how far back a confluent level may have
+    formed -- see render_stop_target_report.py's CONFLUENCE_N_POINTS comment
+    for why an earlier fixed-bar cutoff was removed."""
     h1_df, pos_by_ts, strong, _trades = SR._select_rows(start, end, limit)
     ledger_h1 = LC.h1_levels()
     candidates = []
     for i in range(len(strong)):
         row_d = strong.iloc[i]
-        breakout_pos = pos_by_ts[row_d["breakout_time"]]
-        lookback_pos = max(0, breakout_pos - SR.CONFLUENCE_LOOKBACK_BARS)
-        min_formation_time = h1_df.index[lookback_pos]
         confluent_h1 = LC.find_confluent_levels(
             ledger_h1, row_d["type"], float(row_d["price"]), row_d["formation_time"],
-            row_d["retest_time"], SR.CONFLUENCE_N_POINTS, min_formation_time=min_formation_time)
+            row_d["retest_time"], SR.CONFLUENCE_N_POINTS)
         same_side_h1 = LC.same_side_live_confluence(confluent_h1, row_d["type"], row_d["breakout_time"])
         if len(same_side_h1) < ss_confl_min:
             continue
         candidates.append({
             "i": i, "row": row_d, "confluent_h1": confluent_h1, "same_side_h1": same_side_h1,
-            "min_formation_time": min_formation_time,
         })
     return h1_df, pos_by_ts, strong, candidates
 
 
-def m5_confluence_for_row(row_d, min_formation_time):
+def m5_confluence_for_row(row_d):
     """Same query as select_candidates' H1 side, run on the M5 ledger for
     whichever contract was front-month at this trade's retest. Returns
     (m5_ledger, confluent_m5, same_side_m5); m5_ledger/confluent_m5/
@@ -204,7 +203,7 @@ def m5_confluence_for_row(row_d, min_formation_time):
         return (m5_ledger if m5_ledger is not None else empty), empty, empty
     confluent_m5 = LC.find_confluent_levels(
         m5_ledger, row_d["type"], float(row_d["price"]), row_d["formation_time"],
-        row_d["retest_time"], M5_CONFLUENCE_N_POINTS, min_formation_time=min_formation_time)
+        row_d["retest_time"], M5_CONFLUENCE_N_POINTS)
     same_side_m5 = LC.same_side_live_confluence(confluent_m5, row_d["type"], row_d["breakout_time"])
     return m5_ledger, confluent_m5, same_side_m5
 
@@ -351,7 +350,7 @@ def cluster_confluence(cluster):
             if k not in own_keys:
                 seen_same_h1.setdefault(k, float(r["price"]))
 
-        ledger, confluent_m5, same_side_m5 = m5_confluence_for_row(row_d, cand["min_formation_time"])
+        ledger, confluent_m5, same_side_m5 = m5_confluence_for_row(row_d)
         if m5_ledger is None and ledger is not None and not ledger.empty:
             m5_ledger = ledger
         for _, r in confluent_m5.iterrows():

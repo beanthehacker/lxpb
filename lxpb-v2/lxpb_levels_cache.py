@@ -724,11 +724,15 @@ def find_confluent_levels(ledger, level_type, price, formation_time, cutoff_time
     A candidate qualifies if it was:
       - formed strictly before `cutoff_time` (the subject trade's own retest
         -- the decision point; nothing after it may be used), AND
-      - formed at or after `min_formation_time` when given (the subject
-        trade's own P1 bar minus CONFLUENCE_LOOKBACK_BARS H1 bars, in
-        render_stop_target_report.py) -- bounds how far back "confluence"
-        may reach so a handful of very old levels don't count as recent
-        supporting structure; omit for no lower bound, AND
+      - formed at or after `min_formation_time` when given -- bounds how far
+        back "confluence" may reach; omit (default) for no lower bound. The
+        reports (render_stop_target_report.py /
+        render_ss_confl_finetune_report.py) both omit it -- an earlier
+        CONFLUENCE_LOOKBACK_BARS=100-bar bound there wrongly excluded
+        genuinely live, still-standing structure formed further back (see
+        render_stop_target_report.py's CONFLUENCE_N_POINTS comment). Kept
+        as an optional param for exploration scripts (e.g.
+        analyze_confluent_levels.py's own --lookback-bars) that want one, AND
       - given a CONFIRMED breakout at or before `cutoff_time`: breakout_time
         not null and <= cutoff_time.
 
