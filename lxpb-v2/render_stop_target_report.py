@@ -715,7 +715,7 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target,
                 "lineStyle": 0 if still_open else 2,
                 "label": (f"{label} {lvl.type} {lvl.price:.2f}  &middot;  formed "
                           f"{R._to_pt_str(lvl.formation_time)}  &middot;  {lvl.fate}"
-                          f"  &middot;  {lvl.dist:.2f}pt from entry"),
+                          f"  &middot;  {abs(float(lvl.price) - price):.2f}pt from entry"),
             })
 
     outcome = resolved["outcome"]
@@ -752,6 +752,16 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target,
         {"time": R._to_epoch_utc(exit_marker_time),
          "position": exit_pos_label, "color": exit_color, "shape": exit_shape, "text": exit_text},
     ] + skip_markers + confluence_markers
+    original_price = float(row.get("entry_price", price))
+    separate_h1_level = (abs(level_price - original_price) > 1e-9 or
+                         pd.Timestamp(ray_form) != pd.Timestamp(row["formation_time"]))
+    if separate_h1_level:
+        markers.append({
+            "time": R._to_epoch_utc(h1_df.index[ray_form_pos]),
+            "position": "aboveBar" if is_long else "belowBar",
+            "color": R.LEVEL_COLOR, "shape": "circle",
+            "text": f"H1 entry level {level_price:.2f}",
+        })
     markers.sort(key=lambda m: m["time"])
 
     target_price = price + target if is_long else price - target
@@ -790,10 +800,21 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target,
     own_pts = [{"time": R._to_epoch_utc(t), "value": level_price} for t in wt[own_mask]]
     own_ray = {
         "points": own_pts, "color": R.LEVEL_COLOR, "lineWidth": 2, "lineStyle": 0,
+        "priceLabel": True, "title": "H1 entry level",
         "label": (f"H1 {level_type} {level_price:.2f}  &middot;  formed "
                   f"{R._to_pt_str(ray_form)}  &middot;  live to "
                   f"{R._to_pt_str(ray_end)}"),
     }
+    p0_rays = []
+    if separate_h1_level:
+        p0_mask = (wt >= row["formation_time"]) & (wt <= row["retest_time"])
+        p0_rays.append({
+            "points": [{"time": R._to_epoch_utc(t), "value": original_price} for t in wt[p0_mask]],
+            "color": R.P0_COLOR, "lineWidth": 1, "lineStyle": 2,
+            "label": (f"P0 H1 {level_type} {original_price:.2f}  &middot;  formed "
+                      f"{R._to_pt_str(row['formation_time'])}  &middot;  retest "
+                      f"{R._to_pt_str(row['retest_time'])}"),
+        })
 
     title = (f"{level_type} {price:.2f}  |  formed {R._to_pt_str(row['formation_time'])}  "
              f"broke {R._to_pt_str(row['breakout_time'])}  retest {R._to_pt_str(row['retest_time'])}  "
@@ -806,7 +827,7 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target,
         title += f"  [{total_skipped} bars compressed out of view]"
 
     return {"title": title, "candles": candles, "markers": markers,
-            "priceLines": price_lines, "rays": [own_ray] + confluence_rays, "precision": 2}
+            "priceLines": price_lines, "rays": [own_ray] + p0_rays + confluence_rays, "precision": 2}
 
 
 M5_LOOKBACK_DAYS = 3         # minimum M5 history shown before the retest
@@ -828,7 +849,7 @@ _m5_bars = LC.m5_bars_for_contract
 
 
 
-def build_m5_chart(row, resolved, stop, target):
+def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=None):
     """5-minute companion pane for build_trade_chart's H1 chart.
 
     Runs the SAME LXPB state machine (lxpb.detect_lxpb_h1 is timeframe
@@ -837,6 +858,11 @@ def build_m5_chart(row, resolved, stop, target):
     LXPB levels alongside the H1 level being traded. Both the bars and the
     levels come from lxpb_levels_cache, which persists the whole lifecycle of
     every level so this pane never has to replay the machine per trade.
+
+    Fine-tuned reports pass the actual H1 reference in `level_price` and
+    the exact selected M5 ledger row in `entry_level`, if M5 supplied the
+    planned entry. Its P0-to-death ray is highlighted separately from the
+    blue eligible levels and the actual (possibly pegged) fill price.
 
     A qualifying M5 level must be all four of:
       * the SAME type as the H1 level (an H1 LLPB retest only cares about M5
@@ -909,18 +935,14 @@ def build_m5_chart(row, resolved, stop, target):
     # show an unrelated window with a bogus entry marker.
     if all_bars.index[0] > retest_time or all_bars.index[-1] < retest_time:
         return None
-    a = int(all_bars.index.searchsorted(lo, side="left"))
-    b = int(all_bars.index.searchsorted(hi, side="left"))
-    bars = all_bars.iloc[a:b]
-    if bars.empty:
-        return None
     # True when the H1 breakout happened in an EARLIER contract, so no bar in
     # this segment can satisfy the formation filter -- reported honestly in
     # the title rather than as a bare "no level qualified".
-    breakout_out_of_reach = bars.index[0] > breakout_time + pd.Timedelta(hours=1)
+    breakout_out_of_reach = all_bars.index[0] > breakout_time + pd.Timedelta(hours=1)
 
     level_type = row["type"]
     price = float(row["price"])
+    h1_price = price if level_price is None else float(level_price)
     is_long = level_type == "LHPB"
     target_price = price + target if is_long else price - target
     stop_price = price - stop if is_long else price + stop
@@ -942,20 +964,18 @@ def build_m5_chart(row, resolved, stop, target):
     # `formed_by` enforces "formed during the H1 breakout bar or earlier" --
     # H1 bars are hourly, so that bar covers [breakout_time, +1h).
     as_of = pd.Timestamp(touch_time) if touch_time is not None else retest_time
-    entry_bar_pos = int(bars.index.searchsorted(as_of, side="right")) - 1
-    form_cutoff = breakout_time + pd.Timedelta(hours=1)
+    entry_bar_pos = int(all_bars.index.searchsorted(as_of, side="right")) - 1
+    form_cutoff = breakout_time + pd.Timedelta(hours=1) - pd.Timedelta(nanoseconds=1)
     near_levels = []
     if entry_bar_pos > 0:
         ledger = LC.m5_levels(seg_idx)
         if ledger is not None and not ledger.empty:
             live = LC.levels_live_as_of(
-                ledger, bars.index[entry_bar_pos - 1], level_type=level_type,
+                ledger, all_bars.index[entry_bar_pos - 1], level_type=level_type,
                 near_price=price, near_pts=M5_NEAR_PTS, formed_by=form_cutoff)
             seen = set()
             for _, lv in live.iterrows():
-                # levels_live_as_of returns nearest-first, so on a price tie the
-                # survivor is the closest one to the H1 level.
-                key = round(float(lv["price"]), 2)
+                key = (round(float(lv["price"]), 2), pd.Timestamp(lv["formation_time"]))
                 if key in seen:
                     continue
                 seen.add(key)
@@ -964,6 +984,36 @@ def build_m5_chart(row, resolved, stop, target):
                                     "formation_time": pd.Timestamp(lv["formation_time"]),
                                     "dist": float(lv["dist"])})
 
+    n_live_levels = len(near_levels)
+    if entry_level is not None:
+        formed = pd.to_datetime(entry_level["formation_time"], utc=True)
+        death = entry_level["death_time"]
+        if (entry_level["type"] != level_type or formed >= retest_time or
+                (pd.notna(death) and pd.to_datetime(death, utc=True) < retest_time)):
+            raise ValueError("M5 entry level must be same-side and unconsumed before H1 retest")
+        selected = next((lv for lv in near_levels
+                         if lv["price"] == float(entry_level["price"]) and
+                         lv["formation_time"] == formed), None)
+        if selected is None:
+            selected = {"price": float(entry_level["price"]), "type": level_type,
+                        "stage": "broken", "formation_time": formed,
+                        "dist": abs(float(entry_level["price"]) - price)}
+            near_levels.append(selected)
+        selected["entry"] = True
+        selected["end_time"] = pd.to_datetime(death, utc=True) if pd.notna(death) else None
+
+    # The selected level's real P0 must be in view, even when it predates
+    # the default context. All other eligible blue rays keep their P0 too.
+    if near_levels:
+        earliest = min(lv["formation_time"] for lv in near_levels)
+        lo = min(lo, earliest - pd.Timedelta(minutes=5 * M5_CTX_BEFORE_FORMATION))
+        if seg_start is not None:
+            lo = max(lo, seg_start)
+    a = int(all_bars.index.searchsorted(lo, side="left"))
+    b = int(all_bars.index.searchsorted(hi, side="left"))
+    bars = all_bars.iloc[a:b]
+    if bars.empty:
+        return None
     idx = bars.index
     n_bars = len(idx)
     retest_pos = max(0, int(idx.searchsorted(retest_time, side="right")) - 1)
@@ -1012,7 +1062,18 @@ def build_m5_chart(row, resolved, stop, target):
     entry_bar = idx[max(0, int(idx.searchsorted(entry_marker_time, side="right")) - 1)]
     markers = [{"time": R._to_epoch_utc(entry_bar),
                 "position": "aboveBar" if is_long else "belowBar",
-                "color": R.P2_COLOR, "shape": "circle", "text": "P2"}]
+                "color": R.ENTRY_COLOR if level_price is not None else R.P2_COLOR,
+                "shape": "circle",
+                "text": ((f"ENTRY {price:.2f}" if touch_time is not None
+                          else f"PLANNED {price:.2f}") if level_price is not None else "P2")}]
+    for lv in near_levels:
+        if lv.get("entry"):
+            markers.append({
+                "time": R._to_epoch_utc(idx[lv["form_pos"]]),
+                "position": "aboveBar" if is_long else "belowBar",
+                "color": R.LEVEL_COLOR, "shape": "circle",
+                "text": f"M5 entry level {lv['price']:.2f}",
+            })
     outcome = resolved["outcome"]
     if outcome == "target":
         markers.append({"time": R._to_epoch_utc(idx[exit_pos]),
@@ -1048,25 +1109,32 @@ def build_m5_chart(row, resolved, stop, target):
         pts = [{"time": R._to_epoch_utc(t), "value": lv["price"]} for t in wt[mask]]
         if not pts:
             continue
+        is_entry = lv.get("entry", False)
         rays.append({
-            "points": pts, "color": M5_COLOR, "lineWidth": 1,
+            "points": pts, "color": R.LEVEL_COLOR if is_entry else M5_COLOR,
+            "lineWidth": 2 if is_entry else 1,
             "lineStyle": 0 if lv["stage"] == "broken" else 2,
-            "label": (f"M5 {lv['type']} {lv['price']:.2f}  &middot;  formed "
+            "priceLabel": is_entry, "title": "M5 planned entry" if is_entry else "",
+            "label": (f"M5 {lv['type']} {lv['price']:.2f}"
+                      f"{' (planned entry)' if is_entry else ''}  &middot;  formed "
                       f"{R._to_pt_str(lv['formation_time'])}  &middot;  {lv['stage']}"
-                      f"  &middot;  {lv['dist']:.2f}pt from H1 level"),
+                      f"  &middot;  {lv['dist']:.2f}pt from entry"),
         })
 
     price_lines = [
-        {"price": price, "color": R.LEVEL_COLOR, "lineWidth": 2, "lineStyle": 0,
-         "title": f"H1 {level_type} {price:.2f} (entry)"},
+        {"price": h1_price, "color": R.LEVEL_COLOR, "lineWidth": 2, "lineStyle": 0,
+         "title": f"H1 {level_type} {h1_price:.2f}" + (" (entry)" if price == h1_price else "")},
         {"price": target_price, "color": EXIT_WIN_COLOR, "lineWidth": 1, "lineStyle": 2,
          "title": f"target {target_price:.2f} (+{_fmt_pts(target)}pt)"},
         {"price": stop_price, "color": EXIT_LOSS_COLOR, "lineWidth": 1, "lineStyle": 2,
          "title": f"stop {stop_price:.2f} (-{_fmt_pts(stop)}pt)"},
     ]
+    if price != h1_price:
+        price_lines.append({"price": price, "color": R.ENTRY_COLOR, "lineWidth": 1,
+                            "lineStyle": 0, "title": f"entry {price:.2f}"})
 
-    if near_levels:
-        lvl_txt = (f"{len(rays)} live M5 {level_type} ray(s) within "
+    if n_live_levels:
+        lvl_txt = (f"{n_live_levels} live M5 {level_type} ray(s) within "
                    f"{M5_NEAR_PTS:.0f}pt formed by H1 breakout "
                    f"(solid = broken, dashed = unbroken; hover for details)")
     elif breakout_out_of_reach:
@@ -1077,6 +1145,8 @@ def build_m5_chart(row, resolved, stop, target):
                    f"formed by H1 breakout")
     title = (f"M5  |  {lvl_txt}  |  {R._to_pt_str(window.index[0])} \u2192 "
              f"{R._to_pt_str(window.index[-1])}")
+    if entry_level is not None:
+        title += f"  |  M5 planned entry {float(entry_level['price']):.2f}"
     if total_skipped:
         title += f"  [{total_skipped} bars compressed out of view]"
     return {"title": title, "candles": candles, "markers": markers,
@@ -1197,7 +1267,8 @@ function _renderPane(elId, titleId, cd) {
     const rs = chart.addLineSeries({
       color: r.color, lineWidth: r.lineWidth || 1,
       lineStyle: (r.lineStyle == null ? 0 : r.lineStyle),
-      priceLineVisible: false, lastValueVisible: false,
+      priceLineVisible: false, lastValueVisible: !!r.priceLabel,
+      title: r.title || '',
       crosshairMarkerVisible: false, pointMarkersVisible: false,
     });
     rs.setData(r.points);
@@ -2188,4 +2259,3 @@ if __name__ == "__main__":
            merged=merged, workers=args.workers, storage_key=skey, title_suffix=suffix,
            candle_exit=args.candle_exit,
            candle_exit_skip_entry=args.candle_exit_skip_entry)
-

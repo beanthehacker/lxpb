@@ -23,6 +23,9 @@ breakout bar -- see lxpb_levels_cache.same_side_live_confluence), then:
      LOWEST for an LHPB (long -- retest approaches from above, so a resting
      buy further down is strictly better). When the subject's own H1 price
      is already the extreme, this is a no-op (alt entry == baseline entry).
+     Entry candidates must still be live immediately before the cluster's
+     first H1 retest, not merely at its earlier H1 breakout. M5 candidates
+     must also have formed by that H1 breakout bar, as in the M5 pane.
 
   2. VERIFY THE FILL. A confluence member's own OWN breakout being confirmed
      by the subject's retest does NOT mean today's specific retest move
@@ -41,6 +44,9 @@ breakout bar -- see lxpb_levels_cache.same_side_live_confluence), then:
      excluded
      from the fine-tuned population's stats (a resting order that never
      fills is not a trade, not a loss).
+     With pegging enabled, a replacement activates on the next tick record.
+     If it crosses the opposing quote, it executes there rather than
+     continuing to wait for a passive fill and chasing another tick.
 
   3. FINE-TUNE THE EXIT. Instead of a fixed point target, the target is the
      CLOSEST-in-price opposite-type M5 LXPB level, on the favourable side of
@@ -48,8 +54,8 @@ breakout bar -- see lxpb_levels_cache.same_side_live_confluence), then:
      is SHARED with at least one other M5 level of the same (opposite)
      type, i.e. >=2 M5 levels of that type broke out on the exact same M5
      bar (a stronger structural confirmation than a lone breakout --
-     concretely: an LLPB/short's target candidates are M5 LHPB levels above
-     entry; an LHPB/long's target candidates are M5 LLPB levels below
+     concretely: an LLPB/short's target candidates are M5 LHPB levels below
+     entry; an LHPB/long's target candidates are M5 LLPB levels above
      entry; among those sharing a breakout bar with another same-type
      level, pick whichever price is NEAREST to the entry -- since price can
      only reach a target by moving continuously in the trade's favour, the
@@ -61,8 +67,9 @@ breakout bar -- see lxpb_levels_cache.same_side_live_confluence), then:
      can never be picked, however close its price (no look-ahead -- only
      structure that already existed AND was still standing when the trade
      opened can be used as a target). If no qualifying M5 level
-     exists, or the nearest one is closer than `MIN_DYNAMIC_TARGET_PTS` to
-     the entry (no room), this falls back to a fixed `--fallback-target`
+     exists within `MAX_DYNAMIC_TARGET_PTS` (20 points), or the nearest one
+     is closer than `MIN_DYNAMIC_TARGET_PTS` to the entry (no room), this
+     falls back to a fixed `--fallback-target`
      point target (default 8.0, matching stop2_target8_trades_report.html)
      and is flagged as such in the report so fallback rows can be told
      apart from genuine M5-target rows.
@@ -118,6 +125,9 @@ they don't match the intended strategy):
     as render_stop_target_report.py (see its CONFLUENCE_N_POINTS comment
     for why an earlier fixed 100-bar cutoff was removed: it excluded
     genuinely live structure formed further back).
+  - H1 c1..cN overlays show only same-side H1 support unconsumed immediately
+    before the trade's P2, including other merged H1 members. M5 structure
+    stays on the M5 pane; the broader Confl. table count is unchanged.
   - An unfilled fine-tuned entry is excluded from stats rather than falling
     back to the baseline price -- see point 2 above.
 
@@ -149,6 +159,7 @@ DEFAULT_BASELINE_TARGET = 8.0
 MAX_ALT_FILL_HOURS_DEFAULT = 3.0
 MIN_DYNAMIC_TARGET_PTS = 1.0   # sanity floor: an opposite M5 level nearer than this to
                                # the fine-tuned entry isn't a usable target (no room)
+MAX_DYNAMIC_TARGET_PTS = 20.0  # no qualifying M5 target in this band -> fixed 8pt fallback
 M5_CONFLUENCE_N_POINTS = 5.0   # WIDER than SR.CONFLUENCE_N_POINTS (2.5, H1-to-H1): M5
                                # levels are finer-grained/denser than H1 ones, so a
                                # narrower same radius as H1 confluence misses genuinely
@@ -314,13 +325,51 @@ def cluster_anchor(cluster):
     return min(cluster, key=sort_key)
 
 
+def _live_before_retest(levels, row, formed_by=None):
+    if levels.empty:
+        return levels.copy()
+    levels = levels.copy()
+    # Rebuilding a frame from ledger rows loses the timezone when every
+    # value in a lifecycle column is NaT.
+    for column in ("formation_time", "breakout_time", "death_time"):
+        levels[column] = pd.to_datetime(levels[column], utc=True)
+    as_of = pd.Timestamp(row["retest_time"]) - pd.Timedelta(nanoseconds=1)
+    return LC.levels_live_as_of(
+        levels, as_of, level_type=row["type"], formed_by=formed_by)
+
+
+def h1_chart_confluence(cluster, level_price, level_formation_time):
+    """Same-side H1 support still live immediately before the trade's P2.
+
+    Include supporting members of a merged cluster, but not the H1 level
+    already drawn in yellow or the separately drawn original P0. M5 levels
+    belong on the M5 pane. Query just
+    before P2 so levels retested on this same bar still show their
+    confluence, while levels consumed on an earlier bar are excluded.
+    """
+    confluent = pd.concat([c["same_side_h1"] for c in cluster], ignore_index=True)
+    if confluent.empty:
+        return confluent
+    row = cluster_anchor(cluster)["row"]
+    confluent = _live_before_retest(confluent, row)
+    confluent = confluent.drop_duplicates(["type", "price", "formation_time"])
+    is_own = pd.Series(False, index=confluent.index)
+    for price, formed in [(level_price, level_formation_time),
+                          (row["price"], row["formation_time"])]:
+        own_key = _level_key(row["type"], price, formed)
+        is_own |= ((confluent["type"] == own_key[0]) &
+                   (confluent["price"].round(2) == own_key[1]) &
+                   (confluent["formation_time"] == own_key[2]))
+    return confluent.loc[~is_own].reset_index(drop=True)
+
+
 def cluster_confluence(cluster):
     """Union every member's own H1/M5 confluence search (each still centered
     on that member's own price -- a confluence zone is only meaningful
     relative to a level) into one combined pool, then pick the fine-tuned
     entry as the extreme of the WHOLE pool -- not a single member's own
     local window. Entries matching one of the cluster's OWN member levels
-    are excluded from the Confl./SS Confl. counts and the broader chart-ray
+    are excluded from the Confl./SS Confl. counts and the broader analysis
     pools (they are the trade itself, not external supporting structure),
     but still compete for the extreme-price pick like any other member.
 
@@ -334,8 +383,8 @@ def cluster_confluence(cluster):
     formation-to-retest span; alt_price/alt_formation_time/alt_end_time
     remain what the trade actually enters at, shown as a separate "entry"
     line when it differs), confl_h1_n/ss_confl_n (external-confluence
-    counts), confluent_h1/confluent_m5 (deduped broader pools for chart
-    rays), and m5_ledger (one member's full M5 ledger -- same contract for
+    counts), confluent_h1/confluent_m5 (deduped broader analysis pools),
+    and m5_ledger (one member's full M5 ledger -- same contract for
     the whole cluster -- for dynamic_target's own opposite-type search).
 
     alt_formation_time/h1_formation_time are always that specific level's
@@ -345,19 +394,23 @@ def cluster_confluence(cluster):
     own retest_time as the latest time we can vouch the level was actually
     live and usable as this trade's resting price -- never later, since
     nothing past this cluster's own retest is part of the trade."""
-    level_type = cluster[0]["row"]["type"]
-    cluster_retest_time = cluster_anchor(cluster)["row"]["retest_time"]
+    anchor_row = cluster_anchor(cluster)["row"]
+    level_type = anchor_row["type"]
+    cluster_retest_time = anchor_row["retest_time"]
 
     own_keys = set()
     own_prices, own_starts, own_ends = [], [], []
     for cand in cluster:
         row_d = cand["row"]
         own_keys.add(_level_key(row_d["type"], row_d["price"], row_d["formation_time"]))
+        if (row_d["formation_time"] >= cluster_retest_time or
+                row_d["breakout_time"] > cluster_retest_time):
+            continue
         own_prices.append(float(row_d["price"]))
         own_starts.append(row_d["formation_time"])
         own_ends.append(row_d["retest_time"])
 
-    seen_h1, seen_m5 = {}, {}            # broader pools (any type) -> ledger row, for chart rays
+    seen_h1, seen_m5 = {}, {}            # broader pools (any type) -> ledger row
     seen_same_h1, seen_same_m5 = {}, {}  # narrower same-type-live pools -> ledger row, for Confl. counts
     m5_ledger = None
 
@@ -402,8 +455,18 @@ def cluster_confluence(cluster):
             return cluster_retest_time
         return min(_naive(death), cluster_retest_time)
 
-    same_h1_list = list(seen_same_h1.values())
-    same_m5_list = list(seen_same_m5.values())
+    # P1-live supports are useful for the SS filter, but a resting entry
+    # cannot be based on a level consumed before this trade's P2.
+    live_h1 = _live_before_retest(pd.DataFrame(list(seen_same_h1.values())), anchor_row)
+    live_m5 = _live_before_retest(
+        pd.DataFrame(list(seen_same_m5.values())), anchor_row,
+        formed_by=(pd.Timestamp(anchor_row["breakout_time"]) + pd.Timedelta(hours=1)
+                   - pd.Timedelta(nanoseconds=1)))
+    cutoff = pd.to_datetime(cluster_retest_time, utc=True)
+    same_h1_list = [r for _, r in live_h1.iterrows()
+                    if pd.notna(r["breakout_time"]) and r["breakout_time"] < cutoff]
+    same_m5_list = [r for _, r in live_m5.iterrows()
+                    if pd.notna(r["breakout_time"]) and r["breakout_time"] < cutoff]
     prices = (own_prices + [float(r["price"]) for r in same_h1_list]
                          + [float(r["price"]) for r in same_m5_list])
     sources = (["own"] * len(own_prices) + ["h1"] * len(same_h1_list) + ["m5"] * len(same_m5_list))
@@ -434,9 +497,11 @@ def cluster_confluence(cluster):
     return {
         "alt_price": prices[idx], "alt_source": sources[idx], "group_n": len(prices),
         "alt_formation_time": starts[idx], "alt_end_time": ends[idx],
+        "entry_m5_level": (same_m5_list[idx - len(own_prices) - len(same_h1_list)].to_dict()
+                           if sources[idx] == "m5" else None),
         "h1_price": h1_prices[h1_idx], "h1_source": h1_sources[h1_idx],
         "h1_formation_time": h1_starts[h1_idx], "h1_end_time": h1_ends[h1_idx],
-        "confl_h1_n": len(seen_h1), "ss_confl_n": len(same_h1_list),
+        "confl_h1_n": len(seen_h1), "ss_confl_n": len(seen_same_h1),
         "confluent_h1": confluent_h1, "confluent_m5": confluent_m5,
         "m5_ledger": m5_ledger if m5_ledger is not None else pd.DataFrame(),
     }
@@ -446,57 +511,74 @@ def cluster_confluence(cluster):
 # Fill / touch-time search (real ticks, forward-only, bounded)
 # --------------------------------------------------------------------------
 
+def _scan_alt_fill(ticks, raw_alt, is_long, pegged=False, peg_step=None, peg_cap=None):
+    """Chronological raw-tick fill scan. Replacements activate on the next
+    record, never on the record that caused the cancel/replace.
+
+    Sierra single-trade records carry ask/bid in High/Low and the actual
+    traded price in Close. A repriced order crossing the opposite quote
+    is marketable: it fills at that quote without waiting for a passive
+    aggressor-side print. Otherwise it rests at its limit. Queue position
+    and cancel/replace latency beyond this next-record rule are not modeled.
+    """
+    current = raw_alt
+    replace_pending = False
+    if pegged:
+        peg_step = PEG_STEP_DEFAULT if peg_step is None else peg_step
+        peg_cap = PEG_CAP_DEFAULT if peg_cap is None else peg_cap
+        if (not np.isfinite(peg_step) or peg_step <= 0 or
+                not np.isfinite(peg_cap) or peg_cap < 0):
+            raise ValueError("Peg step must be positive and peg cap nonnegative")
+        for value in (peg_step, peg_cap):
+            if not np.isclose(value / R.TICK_SIZE_DEFAULT,
+                              round(value / R.TICK_SIZE_DEFAULT)):
+                raise ValueError("Peg step and cap must be whole ES ticks")
+        if (ticks["Trades"] > 1).any():
+            raise ValueError("Pegged fills require single-trade bid/ask records, not aggregated bars")
+        worst = raw_alt + peg_cap if is_long else raw_alt - peg_cap
+    if not ticks.index.is_monotonic_increasing:
+        ticks = ticks.sort_index(kind="stable")
+    for r in ticks.itertuples():
+        if replace_pending:
+            quote = float(r.High if is_long else r.Low)
+            if not np.isfinite(quote) or r.Low > r.High:
+                raise ValueError(f"Invalid bid/ask quote at {r.Index}")
+            marketable = current >= quote if is_long else current <= quote
+            if marketable:
+                return r.Index, quote
+            replace_pending = False
+        right_side = (r.BidVolume > 0) if is_long else (r.AskVolume > 0)
+        traded_through = (r.Close <= current) if is_long else (r.Close >= current)
+        if right_side and traded_through:
+            return r.Index, current
+        touched = r.Low <= current <= r.High
+        if pegged and touched and not right_side and current != worst:
+            current = (min(current + peg_step, worst) if is_long
+                       else max(current - peg_step, worst))
+            replace_pending = True
+    return None, None
+
+
 def find_alt_fill(row_d, alt_price, is_long, level_type, max_hours,
                    pegged=False, peg_step=None, peg_cap=None):
-    """First tick (forward from the subject's own H1 retest hour, bounded to
-    `max_hours`) where the correct-aggressor-side print touches or gaps
-    through the resting price -- see module docstring point 2. Returns
-    (touch_time, fill_price) -- (None, None) if never filled within the
-    window (an honest "unfilled", unlike the naive touch-time helpers
-    elsewhere in this repo which fall back to a fake hour-start touch).
+    """First fill within the forward-only H1 retest search window.
 
-    If `pegged` is False (default), the resting price is fixed at
-    `alt_price` for the whole scan (a plain passive limit order) and
-    `fill_price == alt_price` always.
-
-    If `pegged` is True, simulates a peg-to-market / chasing limit order:
-    the resting price starts at `alt_price` and, every time a tick trades
-    AT the current resting price but on the WRONG side (i.e. the level is
-    genuinely being printed through, just not by a counterparty willing to
-    trade against our resting order), the order is cancelled and re-quoted
-    `peg_step` closer to the market -- never worse than `peg_cap` total
-    away from the original `alt_price`. This mirrors what a trader would
-    do manually (or via Sierra Chart ACSIL cancel/replace automation --
-    Sierra Chart has NO native peg-to-market order type for CME futures,
-    see module docstring) when the level is trading but their exact resting
-    price keeps getting missed by the correct side. Once the walk reaches
-    `peg_cap`, it just sits there as a plain limit for the remainder of the
-    window. `fill_price` reflects the ACTUAL (possibly chased/worse) price
-    reached, not necessarily the original `alt_price`."""
-    retest_time = pd.Timestamp(row_d["retest_time"], tz="UTC")
+    Passive limits require a correct-side trade at/through their price.
+    Pegged replacements may instead execute against the opposite quote;
+    see _scan_alt_fill. No fill is (None, None), never a fabricated touch.
+    """
+    if is_long != (level_type == "LHPB"):
+        raise ValueError("Entry direction does not match the LXPB level type")
+    retest_time = pd.to_datetime(row_d["retest_time"], utc=True)
     hi = retest_time + pd.Timedelta(hours=max_hours)
     ticks = R._ticks_for_window(retest_time, hi)
     if ticks is None or ticks.empty:
         return None, None
     offset, _sym = R._offset_for_ts(retest_time)
-    raw_alt = alt_price - offset
-    win = ticks.loc[ticks.index >= retest_time]
-
-    current = raw_alt
-    if pegged:
-        peg_step = PEG_STEP_DEFAULT if peg_step is None else peg_step
-        peg_cap = PEG_CAP_DEFAULT if peg_cap is None else peg_cap
-        worst = raw_alt - peg_cap if level_type == "LLPB" else raw_alt + peg_cap
-    for ts, r in win.iterrows():
-        right_side = (r.BidVolume > 0) if is_long else (r.AskVolume > 0)
-        touched = r.Low <= current <= r.High
-        gap_over = (r.High < current) if level_type == "LHPB" else (r.Low > current)
-        if (touched or gap_over) and right_side:
-            return ts, current + offset
-        if pegged and touched and current != worst:
-            current = (max(current - peg_step, worst) if level_type == "LLPB"
-                       else min(current + peg_step, worst))
-    return None, None
+    win = ticks.loc[(ticks.index >= retest_time) & (ticks.index < hi)]
+    touch, raw_fill = _scan_alt_fill(
+        win, alt_price - offset, is_long, pegged, peg_step, peg_cap)
+    return (touch, raw_fill + offset) if raw_fill is not None else (None, None)
 
 
 
@@ -602,8 +684,9 @@ def dynamic_target(m5_ledger, level_type, alt_price, is_long, touch_time_alt):
     action before OR after the fill, unlike a "first touched" scan which
     can pick a farther level over a nearer one if price happened to punch
     straight through the nearer one and only re-tag it later on a bounce).
-    Returns (target_price, ledger_row) or (None, None) if none qualifies
-    (caller falls back to a fixed point target)."""
+    Only candidates 1..20 points from the actual fill qualify (both
+    endpoints included). Returns (target_price, ledger_row) or (None, None)
+    if none qualifies; the default fixed fallback is 8 points."""
     if m5_ledger is None or m5_ledger.empty:
         return None, None
     opposite_type = "LLPB" if level_type == "LHPB" else "LHPB"
@@ -620,7 +703,8 @@ def dynamic_target(m5_ledger, level_type, alt_price, is_long, touch_time_alt):
     cand = same_type[same_type["breakout_time"].isin(shared_bars)]
     cand = cand[cand["death_time"].isna() | (cand["death_time"] > touch_time_alt)]
     cand = cand[(cand["price"] > alt_price) if is_long else (cand["price"] < alt_price)]
-    cand = cand[(cand["price"] - alt_price).abs() >= MIN_DYNAMIC_TARGET_PTS]
+    distance = (cand["price"] - alt_price).abs()
+    cand = cand[(distance >= MIN_DYNAMIC_TARGET_PTS) & (distance <= MAX_DYNAMIC_TARGET_PTS)]
     if cand.empty:
         return None, None
     dist = (cand["price"] - alt_price).abs()
@@ -653,12 +737,13 @@ def process_cluster(cluster, args):
         "cluster_size": len(cluster), "cluster_members": member_prices,
         "own_price": own_price, "alt_price": alt_price, "alt_source": alt_source,
         "alt_formation_time": conf["alt_formation_time"], "alt_end_time": conf["alt_end_time"],
+        "entry_m5_level": conf["entry_m5_level"],
         "h1_price": conf["h1_price"], "h1_source": conf["h1_source"],
         "h1_formation_time": conf["h1_formation_time"], "h1_end_time": conf["h1_end_time"],
         "improved": abs(alt_price - own_price) > 1e-9,
         "confluent_h1": conf["confluent_h1"], "confluent_m5": conf["confluent_m5"],
-        "confluent_combined": pd.concat([conf["confluent_h1"], conf["confluent_m5"]], ignore_index=True)
-                              if not conf["confluent_m5"].empty else conf["confluent_h1"],
+        "chart_confluent_h1": h1_chart_confluence(
+            cluster, conf["h1_price"], conf["h1_formation_time"]),
         "filled": False,
     }
 
@@ -669,7 +754,10 @@ def process_cluster(cluster, args):
         result["fail_reason"] = "unfilled_within_window"
         return result
     result["fill_price"] = fill_price
-    result["chased_pts"] = abs(fill_price - alt_price)
+    chase = fill_price - alt_price if is_long else alt_price - fill_price
+    result["chased_pts"] = max(0.0, chase)
+    result["price_improvement_pts"] = max(0.0, -chase)
+    result["improved"] = fill_price < own_price if is_long else fill_price > own_price
 
     bars = build_minute_bars(touch_time_alt)
     if bars is None or bars.empty:
@@ -812,7 +900,7 @@ def build_chart_stack_for_row(h1_df, pos_by_ts, res):
     row_for_chart = row_d.copy()
     row_for_chart["price"] = alt_price
     chart_h1 = SR.build_trade_chart(h1_df, pos_by_ts, row_for_chart, None, resolved,
-                                    stop_pts, target_pts, confluent=res["confluent_combined"],
+                                    stop_pts, target_pts, confluent=res["chart_confluent_h1"],
                                     level_price=res["h1_price"],
                                     ray_formation_time=res["h1_formation_time"],
                                     ray_end_time=res["h1_end_time"])
@@ -821,7 +909,12 @@ def build_chart_stack_for_row(h1_df, pos_by_ts, res):
     if res.get("chased_pts", 0.0) > 1e-9:
         chart_h1["title"] += (f"  |  pegged fill: chased {res['chased_pts']:.2f}pt "
                               f"off {res['alt_price']:.2f} to {alt_price:.2f}")
-    chart_m5 = SR.build_m5_chart(row_for_chart, resolved, stop_pts, target_pts)
+    elif res.get("price_improvement_pts", 0.0) > 1e-9:
+        chart_h1["title"] += (f"  |  quote price improvement: "
+                              f"{res['alt_price']:.2f} to {alt_price:.2f}")
+    chart_m5 = SR.build_m5_chart(
+        row_for_chart, resolved, stop_pts, target_pts,
+        level_price=res["h1_price"], entry_level=res["entry_m5_level"])
 
     # build_1s_trio_chart reads "entry_price"/"fta"/"stop_loss" (not
     # "price") for its own entry/target/stop price lines -- override those
@@ -839,6 +932,14 @@ def build_chart_stack_for_row(h1_df, pos_by_ts, res):
     if trio_chart is not None:
         SR._relabel_fta_as_target(trio_chart["trio"])
         SR._relabel_fta_as_target(trio_chart["oneMin"])
+        if abs(res["alt_price"] - alt_price) > 1e-9:
+            for pane in (trio_chart["trio"], trio_chart["oneMin"]):
+                if pane is not None:
+                    pane["priceLines"].append({
+                        "price": res["alt_price"], "color": R.LEVEL_COLOR,
+                        "lineWidth": 1, "lineStyle": 2,
+                        "title": f"planned entry {res['alt_price']:.2f}",
+                    })
         chart_stack = {"h1": chart_h1, "m5": chart_m5,
                        "trio": trio_chart["trio"], "oneMin": trio_chart["oneMin"]}
         fp = {"narrow": trio_chart.get("footprintNarrowHtml"),
@@ -874,7 +975,7 @@ def build_unfilled_chart_stack(h1_df, pos_by_ts, res, args):
     row_for_chart = row_d.copy()
     row_for_chart["price"] = alt_price
     chart_h1 = SR.build_trade_chart(h1_df, pos_by_ts, row_for_chart, None, resolved_stub,
-                                    args.stop, args.fallback_target, confluent=res["confluent_combined"],
+                                    args.stop, args.fallback_target, confluent=res["chart_confluent_h1"],
                                     level_price=res["h1_price"],
                                     ray_formation_time=res["h1_formation_time"],
                                     ray_end_time=res["h1_end_time"])
@@ -885,7 +986,9 @@ def build_unfilled_chart_stack(h1_df, pos_by_ts, res, args):
                           f"({res['group_n']} in group)  |  UNFILLED -- "
                           f"{res.get('fail_reason', '')}  (stop/target lines are nominal, "
                           f"never actually computed since there was no fill)")
-    chart_m5 = SR.build_m5_chart(row_for_chart, resolved_stub, args.stop, args.fallback_target)
+    chart_m5 = SR.build_m5_chart(
+        row_for_chart, resolved_stub, args.stop, args.fallback_target,
+        level_price=res["h1_price"], entry_level=res["entry_m5_level"])
 
     fill_window = build_fill_window_chart(row_d, alt_price, level_type,
                                           args.max_alt_fill_hours, res.get("fail_reason"))
@@ -1045,11 +1148,16 @@ def render(args):
         target_src_cls = "src-tag m5" if res["target_source"] == "m5_opposite" else "src-tag"
         chase_pts = res.get("chased_pts", 0.0)
         chase_flag = (f'<span class="src-tag chase" title="Pegged/chasing limit: original '
-                      f'quote {res["alt_price"]:.2f} went unfilled at the right side, so the '
-                      f'order re-quoted {chase_pts:.2f}pt toward the market to '
+                      f'quote {res["alt_price"]:.2f} did not fill passively; '
+                      f'the repriced order filled {chase_pts:.2f}pt closer to market at '
                       f'{res["fill_price"]:.2f}.">chased {chase_pts:.2f}pt '
                       f'&rarr; {res["fill_price"]:.2f}</span>'
                       if chase_pts > 1e-9 else "")
+        if res.get("price_improvement_pts", 0.0) > 1e-9:
+            chase_flag = (f'<span class="src-tag chase" title="Repriced limit received '
+                          f'a better opposing quote on arrival.">filled '
+                          f'{res["fill_price"]:.2f} '
+                          f'({res["price_improvement_pts"]:.2f}pt better)</span>')
         entry_px_str = f"{res['fill_price']:.2f}"
 
         # Stable per-row key for the Reviewed/Replayed/Notes localStorage
@@ -1120,7 +1228,10 @@ def render(args):
         f"Entry is a pegged/chasing limit order (re-quotes {args.peg_step:.2f}pt closer to "
         f"market, up to {args.peg_cap:.2f}pt total, on every wrong-side touch of the resting "
         f'price -- see the &quot;chased&quot; badge when this differs from the original '
-        f"fine-tuned price)." if args.pegged_entry else
+        f"fine-tuned price). A replacement takes effect on the next tick record and fills "
+        f"against the opposing bid/ask if marketable; otherwise it rests at its new limit. "
+        f"Queue position and additional cancel/replace latency are not modeled."
+        if args.pegged_entry else
         "Entry is a plain static limit order (no chasing).")
     summary_html = f"""
 <div class="summary">
@@ -1149,7 +1260,9 @@ def render(args):
   </div>
 </div>
 <p class="lead">Fine-tuned entry = most extreme price (highest for LLPB/short, lowest for
-LHPB/long) among the subject's own H1 level and its same-side H1+M5 confluent levels (Own
+LHPB/long) among the subject's own H1 level and its same-side H1+M5 confluent levels still
+unconsumed immediately before this trade's H1 retest (M5 search radius remains
+{M5_CONFLUENCE_N_POINTS:.1f}pt; M5 levels must have formed by the H1 breakout bar). (Own
 Entry vs Entry columns; the src tag shows which member supplied the extreme: own/h1/m5),
 verified filled on real ticks (forward-only, &le;{args.max_alt_fill_hours}h -- an entry never
 reached in that window is UNFILLED and excluded from every stat here, not counted as a loss).
@@ -1157,7 +1270,8 @@ reached in that window is UNFILLED and excluded from every stat here, not counte
 Target = the CLOSEST-in-price opposite-type M5 level on the favourable side, restricted to
 candidates whose own M5 breakout bar is SHARED with at least one other same-type M5 level (&ge;2
 M5 levels breaking out on the exact same bar), among those with a confirmed breakout by fill
-time that are STILL LIVE (not yet consumed by their own retest) as of that fill time, else a
+time that are STILL LIVE (not yet consumed by their own retest) as of that fill time and
+within {MAX_DYNAMIC_TARGET_PTS:.0f} points of the actual fill, else a
 fixed {args.fallback_target:.1f}pt
 fallback (Target Src column). Stop is always a fixed
 {args.stop:.1f}pt from the fine-tuned entry -- only entry and target are fine-tuned here. Baseline
