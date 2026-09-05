@@ -167,15 +167,18 @@ pd.set_option("display.max_columns", 20)
 # Selection: same "strong breakout" trades, filtered to SS Confl >= threshold
 # --------------------------------------------------------------------------
 
-def select_candidates(ss_confl_min, start=None, end=None, limit=A._DEFAULT):
+def select_candidates(ss_confl_min, start=None, end=None, limit=A._DEFAULT, merged=False):
     """Same H1 selection as render_stop_target_report._select_rows, filtered
     down to rows whose same-side H1 confluence count meets `ss_confl_min`.
     Returns (h1_df, pos_by_ts, strong, candidates) where `candidates` is a
     list of dicts (row index `i`, the row itself, its H1 confluent/same-side
     frames). No lookback bound on how far back a confluent level may have
     formed -- see render_stop_target_report.py's CONFLUENCE_N_POINTS comment
-    for why an earlier fixed-bar cutoff was removed."""
-    h1_df, pos_by_ts, strong, _trades = SR._select_rows(start, end, limit)
+    for why an earlier fixed-bar cutoff was removed. `merged` (see
+    render_stop_target_report.py's own --merged/--full-year) merges every
+    TradingView H1 export instead of using only the single default one --
+    needed for a span that runs past that export's last bar."""
+    h1_df, pos_by_ts, strong, _trades = SR._select_rows(start, end, limit, merged=merged)
     ledger_h1 = LC.h1_levels()
     candidates = []
     for i in range(len(strong)):
@@ -825,9 +828,13 @@ N_COLS = 24  # keep in sync with `head` below and every colspan in this section
 
 
 def render(args):
+    # args.limit is already the correctly-resolved tri-state by the time it
+    # gets here (A._DEFAULT sentinel / concrete int / None-for-no-cap) -- see
+    # __main__ below. Do NOT re-derive it from `args.limit is None` here: for
+    # --full-year that value IS a real "no cap" None, and re-converting it
+    # back to the sentinel would silently reinstate the default-300 cap.
     h1_df, pos_by_ts, strong, candidates = select_candidates(
-        args.ss_confl_min, args.start, args.end,
-        (A._DEFAULT if args.limit is None else args.limit))
+        args.ss_confl_min, args.start, args.end, args.limit, merged=args.merged)
     print(f"{len(strong)} strong-breakout trades selected; "
           f"{len(candidates)} have SS Confl >= {args.ss_confl_min}", flush=True)
     if args.max_rows is not None:
@@ -1161,12 +1168,15 @@ docstring for full detail and design-choice caveats).</p>
             f"<th>Reviewed</th><th>Valid</th><th>Replayed</th>"
             f"<th class=\"left\">Notes</th><th class=\"expand-th\">\u25b6</th>")
 
+    title_suffix = getattr(args, "title_suffix", None) or ""
+    storage_key = (f"lxpb_ss_confl{args.ss_confl_min}_finetune_review_v1"
+                   + ("_fy2026" if getattr(args, "full_year", False) else ""))
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<title>SS Confl fine-tune report</title>
+<title>SS Confl fine-tune report{title_suffix}</title>
 {CSS}
 </head><body>
-<h1>SS Confl. &ge; {args.ss_confl_min} fine-tuned entry/exit report</h1>
+<h1>SS Confl. &ge; {args.ss_confl_min} fine-tuned entry/exit report{title_suffix}</h1>
 {summary_html}
 {filter_panel}
 <div class="table-wrap"><table id="lvl-table">
@@ -1176,7 +1186,7 @@ docstring for full detail and design-choice caveats).</p>
 </tbody>
 </table></div>
 {JS.replace("__CHARTS_JSON__", json.dumps(charts))
-   .replace("__STORAGE_KEY__", f"lxpb_ss_confl{args.ss_confl_min}_finetune_review_v1")}
+   .replace("__STORAGE_KEY__", storage_key)}
 </body></html>
 """
     with open(args.output, "w", encoding="utf-8") as f:
@@ -1219,12 +1229,29 @@ if __name__ == "__main__":
     parser.add_argument("--end", default=None)
     parser.add_argument("--limit", default=None,
                         help="max rows, newest-first (int, or 'none'/omit for the default 300)")
+    parser.add_argument("--merged", action="store_true",
+                        help="merge every TradingView H1 export (newest wins) instead of "
+                             "using only the single default one -- needed for spans that "
+                             "run past the default export's last bar")
+    parser.add_argument("--full-year", action="store_true",
+                        help="shorthand for --start 2026-01-01 --end 2026-12-31 --limit none --merged")
     parser.add_argument("--max-rows", type=int, default=None,
                         help="process only the first N SS-Confl-qualifying rows (smoke test)")
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
+    limit = A._DEFAULT  # sentinel: "not specified" -> load_strong_breakout_rows' own default (300)
     if args.limit is not None:
-        args.limit = None if str(args.limit).lower() in ("none", "0", "all") else int(args.limit)
-    args.output = args.output or os.path.join(
-        _HERE, f"ss_confl{args.ss_confl_min}_finetune_report.html")
+        limit = None if str(args.limit).lower() in ("none", "0", "all") else int(args.limit)
+    args.title_suffix = None
+    if args.full_year:
+        args.start = args.start or "2026-01-01"
+        args.end = args.end or "2026-12-31"
+        limit = None  # explicit no-cap, NOT the sentinel -- see render()'s comment
+        args.merged = True
+        args.title_suffix = " (2026 full year)"
+    args.limit = limit
+    default_name = f"ss_confl{args.ss_confl_min}_finetune_report.html"
+    if args.full_year:
+        default_name = f"ss_confl{args.ss_confl_min}_finetune_report_2026_full_year.html"
+    args.output = args.output or os.path.join(_HERE, default_name)
     render(args)

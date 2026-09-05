@@ -702,13 +702,25 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target,
     target_price = price + target if is_long else price - target
     stop_price = price - stop if is_long else price + stop
     price_lines = [
-        {"price": price, "color": R.LEVEL_COLOR, "lineWidth": 2, "lineStyle": 0,
-         "title": f"{level_type} {price:.2f} (entry)"},
         {"price": target_price, "color": EXIT_WIN_COLOR, "lineWidth": 1, "lineStyle": 2,
          "title": f"target {target_price:.2f} (+{_fmt_pts(target)}pt)"},
         {"price": stop_price, "color": EXIT_LOSS_COLOR, "lineWidth": 1, "lineStyle": 2,
          "title": f"stop {stop_price:.2f} (-{_fmt_pts(stop)}pt)"},
     ]
+
+    # The subject's OWN level, unlike stop/target (live-order lines that make
+    # sense chart-wide), is an LXPB structure with a real lifespan -- like the
+    # confluence rays above, it should run only from its own P0 (formation)
+    # to its own P2 (retest), not as a full-chart-width priceLine. Clipped to
+    # bars that survived this window's compression, same as confluence_rays.
+    own_mask = (wt >= row["formation_time"]) & (wt <= row["retest_time"])
+    own_pts = [{"time": R._to_epoch_utc(t), "value": price} for t in wt[own_mask]]
+    own_ray = {
+        "points": own_pts, "color": R.LEVEL_COLOR, "lineWidth": 2, "lineStyle": 0,
+        "label": (f"{level_type} {price:.2f} (entry)  &middot;  formed "
+                  f"{R._to_pt_str(row['formation_time'])}  &middot;  retest "
+                  f"{R._to_pt_str(row['retest_time'])}"),
+    }
 
     title = (f"{level_type} {price:.2f}  |  formed {R._to_pt_str(row['formation_time'])}  "
              f"broke {R._to_pt_str(row['breakout_time'])}  retest {R._to_pt_str(row['retest_time'])}  "
@@ -721,7 +733,7 @@ def build_trade_chart(h1_df, pos_by_ts, row, trade, resolved, stop, target,
         title += f"  [{total_skipped} bars compressed out of view]"
 
     return {"title": title, "candles": candles, "markers": markers,
-            "priceLines": price_lines, "rays": confluence_rays, "precision": 2}
+            "priceLines": price_lines, "rays": [own_ray] + confluence_rays, "precision": 2}
 
 
 M5_LOOKBACK_DAYS = 3         # minimum M5 history shown before the retest
