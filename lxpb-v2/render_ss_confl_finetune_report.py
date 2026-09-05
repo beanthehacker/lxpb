@@ -56,8 +56,11 @@ breakout bar -- see lxpb_levels_cache.same_side_live_confluence), then:
      nearest qualifying level is necessarily the one reached first, with no
      need to scan forward through price action to determine that), among
      M5 levels with a CONFIRMED breakout at or before the fine-tuned fill
-     time (no look-ahead -- only structure that already existed when the
-     trade opened can be used as a target). If no qualifying M5 level
+     time that are STILL LIVE (not yet consumed by their own retest) as of
+     that fill time -- an already-retested M5 level is dead structure and
+     can never be picked, however close its price (no look-ahead -- only
+     structure that already existed AND was still standing when the trade
+     opened can be used as a target). If no qualifying M5 level
      exists, or the nearest one is closer than `MIN_DYNAMIC_TARGET_PTS` to
      the entry (no room), this falls back to a fixed `--fallback-target`
      point target (default 8.0, matching stop2_target8_trades_report.html)
@@ -510,14 +513,21 @@ def build_fill_window_chart(row_d, alt_price, level_type, max_hours, fail_reason
 
 def dynamic_target(m5_ledger, level_type, alt_price, is_long, touch_time_alt):
     """The CLOSEST-in-price opposite-type M5 level to the entry, restricted
-    to candidates whose OWN M5 breakout bar (P1) is SHARED with at least
-    one other M5 level of the same (opposite) type -- i.e. >=2 M5
-    <opposite_type> levels broke out on that EXACT M5 bar, a stronger
-    structural confirmation than a lone breakout. A confirmed breakout at
-    or before `touch_time_alt` is required (no look-ahead on the
-    candidate's own formation) -- since a "shared P1 bar" pair always
-    shares the identical breakout_time, this can be checked before or
-    after the sharing test with the same result.
+    to candidates that are:
+      - confirmed broken out at or before `touch_time_alt` (no look-ahead
+        on the candidate's own formation),
+      - STILL LIVE (not yet consumed/retested) as of `touch_time_alt` --
+        i.e. `death_time` is null or after the entry -- so a level that has
+        already completed its own retest before this trade even opened
+        (dead structure) can never be picked as a "live" target, and
+      - sharing its OWN M5 breakout bar (P1) with at least one other M5
+        level of the same (opposite) type -- i.e. >=2 M5 <opposite_type>
+        levels broke out on that EXACT M5 bar, a stronger structural
+        confirmation than a lone breakout. The "shared P1 bar" grouping is
+        computed over ALL confirmed-breakout opposite-type levels (before
+        the liveness filter) since that grouping describes the strength of
+        the historical breakout event itself, not whether either member
+        has since been consumed.
 
     Selection is by price proximity, NOT by which bar happens to touch it
     first: since price only reaches the target by moving continuously in
@@ -544,6 +554,7 @@ def dynamic_target(m5_ledger, level_type, alt_price, is_long, touch_time_alt):
     if shared_bars.empty:
         return None, None
     cand = same_type[same_type["breakout_time"].isin(shared_bars)]
+    cand = cand[cand["death_time"].isna() | (cand["death_time"] > touch_time_alt)]
     cand = cand[(cand["price"] > alt_price) if is_long else (cand["price"] < alt_price)]
     cand = cand[(cand["price"] - alt_price).abs() >= MIN_DYNAMIC_TARGET_PTS]
     if cand.empty:
@@ -1069,7 +1080,8 @@ reached in that window is UNFILLED and excluded from every stat here, not counte
 Target = the CLOSEST-in-price opposite-type M5 level on the favourable side, restricted to
 candidates whose own M5 breakout bar is SHARED with at least one other same-type M5 level (&ge;2
 M5 levels breaking out on the exact same bar), among those with a confirmed breakout by fill
-time, else a fixed {args.fallback_target:.1f}pt
+time that are STILL LIVE (not yet consumed by their own retest) as of that fill time, else a
+fixed {args.fallback_target:.1f}pt
 fallback (Target Src column). Stop is always a fixed
 {args.stop:.1f}pt from the fine-tuned entry -- only entry and target are fine-tuned here. Baseline
 = same subject trade at its ORIGINAL H1 price, stop={args.baseline_stop:.1f}/

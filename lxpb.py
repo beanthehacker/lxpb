@@ -176,7 +176,12 @@ def advance_one_bar(state: dict, bar) -> None:
     # Phase 2: check zero-touch levels for breakouts. Unified rule:
     #   bar entirely beyond level on after-side → gap breakout
     #   bar range contains level + close on after-side → standard breakout
-    #   bar range contains level but close didn't pass → discard
+    #   bar range contains level, close didn't pass, but the touch was an
+    #     EXACT tag (bar's own high/low == price, not an overshoot) → not a
+    #     real failed-breakout attempt (inconclusive), keep pending
+    #   bar range contains level, close didn't pass, and the bar clearly
+    #     overshot the level (high > price for LHPB / low < price for LLPB)
+    #     then rejected → genuine failed breakout, discard
     #   bar entirely on before-side → no interaction, keep
     keep = []
     for lv in state["touch_lv0"]:
@@ -193,6 +198,11 @@ def advance_one_bar(state: dict, bar) -> None:
             else:
                 # Range contains the level.
                 broke = bar.close > price
+                if not broke and bar.high == price:
+                    # Exact tag (no overshoot) — inconclusive, not a real
+                    # failed breakout. Stays pending.
+                    keep.append(lv)
+                    continue
         else:  # LLPB
             if bar.low > price:
                 keep.append(lv)
@@ -202,6 +212,9 @@ def advance_one_bar(state: dict, bar) -> None:
                 broke = True
             else:
                 broke = bar.close < price
+                if not broke and bar.low == price:
+                    keep.append(lv)
+                    continue
         if broke:
             state["touch_lv1"].append({
                 **lv,
