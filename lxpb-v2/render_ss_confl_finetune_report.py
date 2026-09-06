@@ -47,35 +47,29 @@ breakout bar -- see lxpb_levels_cache.same_side_live_confluence), then:
      If it crosses the opposing quote, it executes there rather than
      continuing to wait for a passive fill and chasing another tick.
 
-  3. FINE-TUNE THE EXIT. Instead of a fixed point target, the target is the
-     CLOSEST-in-price opposite-type M5 LXPB level, on the favourable side of
-     the fine-tuned entry, among candidates whose OWN M5 breakout bar (P1)
-     is SHARED with at least one other M5 level of the same (opposite)
-     type, i.e. >=2 M5 levels of that type broke out on the exact same M5
-     bar (a stronger structural confirmation than a lone breakout --
-     concretely: an LLPB/short's target candidates are M5 LHPB levels below
-     entry; an LHPB/long's target candidates are M5 LLPB levels above
-     entry; among those sharing a breakout bar with another same-type
-     level, pick whichever price is NEAREST to the entry -- since price can
-     only reach a target by moving continuously in the trade's favour, the
-     nearest qualifying level is necessarily the one reached first, with no
-     need to scan forward through price action to determine that), among
-     M5 levels with a CONFIRMED breakout at or before the fine-tuned fill
-     time that are STILL LIVE (not yet consumed by their own retest) as of
-     that fill time -- an already-retested M5 level is dead structure and
-     can never be picked, however close its price (no look-ahead -- only
-     structure that already existed AND was still standing when the trade
-     opened can be used as a target). If no qualifying M5 level
-     exists within `MAX_DYNAMIC_TARGET_PTS` (20 points), or the nearest one
-     is closer than `MIN_DYNAMIC_TARGET_PTS` to the entry (no room), this
-     falls back to a fixed `--fallback-target`
-     point target (default 8.0, matching stop2_target8_trades_report.html)
-     and is flagged as such in the report so fallback rows can be told
-     apart from genuine M5-target rows.
+  3. FINE-TUNE THE EXITS. The target is the MOST RECENTLY FORMED (P0)
+     opposite-type M5 level on the favourable side of the actual fill:
+     LHPB below an LLPB short, LLPB above an LHPB long. Its own breakout
+     candle (P1) must have broken at least TWO distinct same-type P0 levels.
+     Historical peers count toward this shared-P1 filter even if they have
+     since been consumed, but the selected target itself must still be live.
+     Only candidates 1..20 points from the fill qualify (inclusive). Select
+     the newest eligible P0, NOT the nearest price or the newest P1. If
+     none qualifies, use `--fallback-target` (default 8 points).
 
-  Stop stays a fixed `--stop` point distance (default 2.0) from the
-  fine-tuned entry -- this report only tests fine-tuning the entry and the
-  target, not the stop.
+     The stop uses LIVE same-side M5 levels within +/-10 points of the
+     actual fine-tuned fill. For an LLPB short, select the HIGHEST high
+     among those levels' breakout candles and stop one tick above it.
+     For an LHPB long, select the LOWEST breakout-candle low and stop one
+     tick below it. The radius applies to the LEVEL prices, not the
+     candle extremes or the eventual stop distance. If no protective
+     candle stop qualifies, use `--fallback-stop` (default 4 points;
+     `--stop` is retained as an alias). Both exit sources are displayed.
+
+     Both searches use the M5 ledger state immediately before the fill's
+     M5 bar: only completed candles can confirm a breakout or consumption.
+     No current-bar high/low or later lifecycle event can leak into the
+     bracket. There is no fixed formation lookback.
 
   4. DE-DUPLICATE MUTUALLY-CONFLUENT LEVELS INTO ONE TRADE. Several distinct
      H1 levels of the same type can be mutually same-side-confluent with
@@ -135,7 +129,7 @@ they don't match the intended strategy):
 
 Usage:
     python render_ss_confl_finetune_report.py
-    python render_ss_confl_finetune_report.py --ss-confl-min 2 --stop 2 --fallback-target 8
+    python render_ss_confl_finetune_report.py --ss-confl-min 2 --fallback-stop 4 --fallback-target 8
     python render_ss_confl_finetune_report.py --h1-confluence-points 2.5  # previous H1 zone
     python render_ss_confl_finetune_report.py --max-rows 5   # quick smoke test
 """
@@ -155,7 +149,7 @@ import lxpb_levels_cache as LC            # noqa: E402
 import render_stop_target_report as SR    # noqa: E402
 
 SS_CONFL_MIN_DEFAULT = 1
-DEFAULT_STOP = 2.0
+DEFAULT_STOP = 4.0  # fallback only; a qualifying M5 breakout candle supplies the stop
 DEFAULT_FALLBACK_TARGET = 8.0
 DEFAULT_BASELINE_STOP = 2.0
 DEFAULT_BASELINE_TARGET = 8.0
@@ -163,6 +157,7 @@ MAX_ALT_FILL_HOURS_DEFAULT = 3.0
 MIN_DYNAMIC_TARGET_PTS = 1.0   # sanity floor: an opposite M5 level nearer than this to
                                # the fine-tuned entry isn't a usable target (no room)
 MAX_DYNAMIC_TARGET_PTS = 20.0  # no qualifying M5 target in this band -> fixed 8pt fallback
+DYNAMIC_STOP_RADIUS_PTS = 10.0
 H1_CONFLUENCE_N_POINTS = 5.25  # smallest link joining the Jan-20 7014.25/7009.00 H1 groups
 M5_CONFLUENCE_N_POINTS = 5.0
 PEG_STEP_DEFAULT = R.TICK_SIZE_DEFAULT  # 0.25pt -- one ES tick per re-quote
@@ -389,7 +384,7 @@ def cluster_confluence(cluster):
     line when it differs), confl_h1_n/ss_confl_n (external-confluence
     counts), confluent_h1/confluent_m5 (deduped broader analysis pools),
     and m5_ledger (one member's full M5 ledger -- same contract for
-    the whole cluster -- for dynamic_target's own opposite-type search).
+    the whole cluster -- for the target and stop searches).
 
     alt_formation_time/h1_formation_time are always that specific level's
     own formation bar. alt_end_time/h1_end_time are that level's own
@@ -661,59 +656,66 @@ def build_fill_window_chart(row_d, alt_price, level_type, max_hours, fail_reason
     return {"title": title, "candles": candles, "markers": [], "priceLines": price_lines, "precision": 2}
 
 
-def dynamic_target(m5_ledger, level_type, alt_price, is_long, touch_time_alt):
-    """The CLOSEST-in-price opposite-type M5 level to the entry, restricted
-    to candidates that are:
-      - confirmed broken out at or before `touch_time_alt` (no look-ahead
-        on the candidate's own formation),
-      - STILL LIVE (not yet consumed/retested) as of `touch_time_alt` --
-        i.e. `death_time` is null or after the entry -- so a level that has
-        already completed its own retest before this trade even opened
-        (dead structure) can never be picked as a "live" target, and
-      - sharing its OWN M5 breakout bar (P1) with at least one other M5
-        level of the same (opposite) type -- i.e. >=2 M5 <opposite_type>
-        levels broke out on that EXACT M5 bar, a stronger structural
-        confirmation than a lone breakout. The "shared P1 bar" grouping is
-        computed over ALL confirmed-breakout opposite-type levels (before
-        the liveness filter) since that grouping describes the strength of
-        the historical breakout event itself, not whether either member
-        has since been consumed.
+def _live_m5_before_entry(m5_ledger, level_type, touch_time, min_breakout_levels=1):
+    """Live, confirmed structure from completed M5 bars only.
 
-    Selection is by price proximity, NOT by which bar happens to touch it
-    first: since price only reaches the target by moving continuously in
-    the trade's favorable direction, the qualifying level nearest to the
-    entry price is necessarily the one reached FIRST once price does move
-    that way -- so this needs no forward scan of M5 bars at all, and is
-    fully determinable at the moment of entry (no dependence on price
-    action before OR after the fill, unlike a "first touched" scan which
-    can pick a farther level over a nearer one if price happened to punch
-    straight through the nearer one and only re-tag it later on a bounce).
-    Only candidates 1..20 points from the actual fill qualify (both
-    endpoints included). Returns (target_price, ledger_row) or (None, None)
-    if none qualifies; the default fixed fallback is 8 points."""
+    Ledger event times label bar STARTS, so querying at the exact tick
+    would expose the rest of its unfinished M5 candle. Shared-P1 counts
+    describe the historical breakout and are computed before filtering
+    out peers that have since died.
+    """
     if m5_ledger is None or m5_ledger.empty:
-        return None, None
+        return pd.DataFrame()
+    as_of = pd.to_datetime(touch_time, utc=True).floor("5min") - pd.Timedelta(nanoseconds=1)
+    confirmed = m5_ledger[(m5_ledger["type"] == level_type) &
+                          (m5_ledger["breakout_time"] <= as_of)]
+    if min_breakout_levels > 1:
+        counts = confirmed.groupby("breakout_time")["formation_time"].transform("nunique")
+        confirmed = confirmed[counts >= min_breakout_levels]
+    return LC.levels_live_as_of(confirmed, as_of)
+
+
+def dynamic_target(m5_ledger, level_type, alt_price, is_long, touch_time_alt):
+    """Newest live opposite P0, with >=2 P0s sharing its completed P1.
+
+    Candidates must be 1..20 points in the fill's favourable direction.
+    Returns (price, ledger_row), or (None, None) for the fixed fallback.
+    """
     opposite_type = "LLPB" if level_type == "LHPB" else "LHPB"
-    same_type = m5_ledger[(m5_ledger["type"] == opposite_type) & m5_ledger["breakout_time"].notna()]
-    if same_type.empty:
+    cand = _live_m5_before_entry(m5_ledger, opposite_type, touch_time_alt,
+                                 min_breakout_levels=2)
+    if cand.empty:
         return None, None
-    same_type = same_type[same_type["breakout_time"] <= touch_time_alt]
-    if same_type.empty:
-        return None, None
-    shared_counts = same_type.groupby("breakout_time").size()
-    shared_bars = shared_counts[shared_counts >= 2].index
-    if shared_bars.empty:
-        return None, None
-    cand = same_type[same_type["breakout_time"].isin(shared_bars)]
-    cand = cand[cand["death_time"].isna() | (cand["death_time"] > touch_time_alt)]
-    cand = cand[(cand["price"] > alt_price) if is_long else (cand["price"] < alt_price)]
-    distance = (cand["price"] - alt_price).abs()
+    distance = (cand["price"] - alt_price) if is_long else (alt_price - cand["price"])
     cand = cand[(distance >= MIN_DYNAMIC_TARGET_PTS) & (distance <= MAX_DYNAMIC_TARGET_PTS)]
     if cand.empty:
         return None, None
-    dist = (cand["price"] - alt_price).abs()
-    best_row = cand.loc[dist.idxmin()]
+    best_row = cand.loc[cand["formation_time"].idxmax()]
     return float(best_row["price"]), best_row
+
+
+def dynamic_stop(m5_ledger, level_type, alt_price, is_long, touch_time_alt):
+    """Protective extreme of live same-side P1 candles, plus one ES tick.
+
+    The inclusive +/-10pt radius is measured from the actual fill to each
+    level, not to its P1 candle's high/low. No shared-P1 filter is required.
+    Returns (stop_price, ledger_row), or (None, None) for the fixed fallback.
+    """
+    cand = _live_m5_before_entry(m5_ledger, level_type, touch_time_alt)
+    if cand.empty:
+        return None, None
+    cand = cand[(cand["price"] - alt_price).abs() <= DYNAMIC_STOP_RADIUS_PTS]
+    if cand.empty:
+        return None, None
+    extreme = "breakout_low" if is_long else "breakout_high"
+    if not np.isfinite(cand[extreme]).all():
+        raise ValueError(f"Non-finite M5 {extreme} for a confirmed stop candidate")
+    stops = cand[extreme] + (-R.TICK_SIZE_DEFAULT if is_long else R.TICK_SIZE_DEFAULT)
+    cand = cand[(stops < alt_price) if is_long else (stops > alt_price)]
+    if cand.empty:
+        return None, None
+    best_idx = cand[extreme].idxmin() if is_long else cand[extreme].idxmax()
+    return float(stops.loc[best_idx]), cand.loc[best_idx]
 
 
 # --------------------------------------------------------------------------
@@ -771,8 +773,8 @@ def process_cluster(cluster, args):
     # Everything downstream (target search, bracket, PnL/R) is relative to
     # the price ACTUALLY paid (fill_price), not the originally-quoted
     # alt_price -- identical when pegging is off (fill_price == alt_price).
-    target_price, _target_row = dynamic_target(conf["m5_ledger"], level_type, fill_price, is_long,
-                                               touch_time_alt)
+    target_price, target_row = dynamic_target(conf["m5_ledger"], level_type, fill_price, is_long,
+                                              touch_time_alt)
     if target_price is None:
         target_pts = args.fallback_target
         target_price_disp = fill_price + target_pts if is_long else fill_price - target_pts
@@ -781,7 +783,14 @@ def process_cluster(cluster, args):
         target_pts = abs(target_price - fill_price)
         target_price_disp = target_price
         target_source = "m5_opposite"
-    stop_pts = args.stop
+    stop_price, stop_row = dynamic_stop(conf["m5_ledger"], level_type, fill_price, is_long,
+                                        touch_time_alt)
+    if stop_price is None:
+        stop_price = fill_price - args.stop if is_long else fill_price + args.stop
+        stop_source = "fallback_fixed"
+    else:
+        stop_source = "m5_breakout"
+    stop_pts = abs(stop_price - fill_price)
 
     trade = {"type": level_type, "entry": fill_price, "is_long": is_long,
              "retest_time": row_d["retest_time"], "stop_dist": stop_pts, "target_dist": target_pts}
@@ -794,11 +803,13 @@ def process_cluster(cluster, args):
     result.update({
         "filled": True, "touch_time_alt": touch_time_alt,
         "target_price": target_price_disp, "target_pts": target_pts, "target_source": target_source,
-        "stop_pts": stop_pts, "resolved": resolved,
+        "target_m5_level": target_row.to_dict() if target_row is not None else None,
+        "stop_pts": stop_pts, "stop_price": stop_price, "stop_source": stop_source,
+        "stop_m5_level": stop_row.to_dict() if stop_row is not None else None,
+        "resolved": resolved,
         "favorable_pts": resolved.get("favorable_pts"), "adverse_pts": resolved.get("adverse_pts"),
         "giveback_pts": resolved.get("giveback_pts"),
         "entry_gapped": resolved.get("entry_gapped", False),
-        "stop_price": (fill_price - stop_pts) if is_long else (fill_price + stop_pts),
     })
 
     base_touch = baseline_touch_time(row_d, is_long)
@@ -825,7 +836,7 @@ def process_cluster(cluster, args):
 # that rendering. Extra columns beyond the base layout are this strategy's
 # own: Confl. (external H1 count), Merged H1 levels (member prices),
 # H1 Entry vs fine-tuned Entry (with a source tag h1/m5/own), Target
-# Src (m5_opposite vs fallback_fixed), R (reward:risk on offer at entry)
+# Src (m5_opposite vs fallback_fixed), a Stop source badge, R (reward:risk on offer at entry)
 # and PnL (realized points). Baseline (same subject trade at its original
 # H1 price/stop2/target8) is still computed for the summary stats boxes
 # but is no longer shown as its own table column.
@@ -909,7 +920,8 @@ def build_chart_stack_for_row(h1_df, pos_by_ts, res):
                                     ray_formation_time=res["h1_formation_time"],
                                     ray_end_time=res["h1_end_time"])
     chart_h1["title"] += (f"  |  entry fine-tuned via {res['alt_source']} "
-                          f"({res['group_n']} in group)  |  target: {res['target_source']}")
+                          f"({res['group_n']} in group)  |  target: {res['target_source']}"
+                          f"  |  stop: {res['stop_source']}")
     if res.get("chased_pts", 0.0) > 1e-9:
         chart_h1["title"] += (f"  |  pegged fill: chased {res['chased_pts']:.2f}pt "
                               f"off {res['alt_price']:.2f} to {alt_price:.2f}")
@@ -919,6 +931,9 @@ def build_chart_stack_for_row(h1_df, pos_by_ts, res):
     chart_m5 = SR.build_m5_chart(
         row_for_chart, resolved, stop_pts, target_pts,
         level_price=res["h1_price"], entry_level=res["entry_m5_level"])
+    if chart_m5 is not None:
+        chart_m5["title"] += (f"  |  target: {res['target_source']}"
+                              f"  |  stop: {res['stop_source']}")
     execution_charts, fp = build_execution_charts(res)
     return {"h1": chart_h1, "m5": chart_m5, **execution_charts}, fp
 
@@ -972,9 +987,9 @@ def build_unfilled_chart_stack(h1_df, pos_by_ts, res, args):
     than just read "UNFILLED". Reuses the H1/M5 panes with a stub resolved
     dict (outcome/exit/touch all None -- both build_trade_chart and
     build_m5_chart already handle a None exit_time/touch_time by falling
-    back to retest_time) and args.stop/args.fallback_target as nominal
-    reference lines (the real stop/target were never computed since there
-    was no fill to search a dynamic target from). The 1s trio/1min pane is
+    back to retest_time) and the fallback stop/target as nominal reference
+    lines (the real bracket was never computed since there was no fill to
+    search dynamic exits from). The 1s trio/1min pane is
     replaced by build_fill_window_chart, a 1-minute pane spanning the WHOLE
     fill-search window (not the usual +/-45s/+/-20min around a real touch,
     which doesn't exist here) so the reviewer can see exactly what price
@@ -1016,6 +1031,9 @@ N_COLS = 24  # keep in sync with `head` below and every colspan in this section
 
 
 def render(args):
+    if (not np.isfinite(args.stop) or args.stop <= 0 or
+            not np.isfinite(args.fallback_target) or args.fallback_target <= 0):
+        raise ValueError("Fallback stop and target distances must be finite and positive")
     # args.limit is already the correctly-resolved tri-state by the time it
     # gets here (A._DEFAULT sentinel / concrete int / None-for-no-cap) -- see
     # __main__ below. Do NOT re-derive it from `args.limit is None` here: for
@@ -1055,22 +1073,32 @@ def render(args):
     base_stats = _stats_block(filled, "baseline_resolved", "r")
     improved_n = sum(1 for r in filled if r["improved"])
 
-    win_mae_values = [r["adverse_pts"] for r in filled
-                      if r["resolved"]["outcome"] == "target" and r.get("adverse_pts") is not None]
-    loss_mfe_values = [r["favorable_pts"] for r in filled
-                       if r["resolved"]["outcome"] == "stop" and r.get("favorable_pts") is not None]
+    win_mae_rows = [r for r in filled
+                   if r["resolved"]["outcome"] == "target" and r.get("adverse_pts") is not None]
+    loss_mfe_rows = [r for r in filled
+                    if r["resolved"]["outcome"] == "stop" and r.get("favorable_pts") is not None]
+    win_mae_values = [r["adverse_pts"] for r in win_mae_rows]
+    loss_mfe_values = [r["favorable_pts"] for r in loss_mfe_rows]
     max_win_mae = max(win_mae_values) if win_mae_values else 0.0
     max_loss_mfe = max(loss_mfe_values) if loss_mfe_values else 0.0
     gapped_entries = sum(1 for r in filled if r.get("entry_gapped"))
-    pctile_html = SR.excursion_percentile_html([
-        ("MFE &mdash; losing trades", "ran this far in favour before hitting stop", loss_mfe_values),
-        ("MAE &mdash; winning trades", "heat taken before reaching target", win_mae_values),
+    dynamic_stops = sum(1 for r in filled if r["stop_source"] == "m5_breakout")
+    excursion_groups = [
+        ("MFE &mdash; losing trades", "ran this far in favour before hitting stop",
+         "favorable_pts", loss_mfe_rows),
+        ("MAE &mdash; winning trades", "heat taken before reaching target",
+         "adverse_pts", win_mae_rows),
         ("Max DD &mdash; all trades", "handed back from the best price the open position reached",
-         [r["giveback_pts"] for r in filled if r.get("giveback_pts") is not None]),
+         "giveback_pts", [r for r in filled if r.get("giveback_pts") is not None]),
         ("Max DD &mdash; winning trades", "handed back before the winner reached target",
-         [r["giveback_pts"] for r in filled
+         "giveback_pts", [r for r in filled
           if r["resolved"]["outcome"] == "target" and r.get("giveback_pts") is not None]),
-    ], args.stop)
+    ]
+    pctile_html = SR.excursion_percentile_html(
+        [(label, note, [r[field] for r in population])
+         for label, note, field, population in excursion_groups],
+        stop=None, group_stops=[[r["stop_pts"] for r in population]
+                                for _, _, _, population in excursion_groups])
 
     charts = []
     rows_html = []
@@ -1165,6 +1193,24 @@ def render(args):
                     'and exit -- price gapped through the level, so this fill was not '
                     'actually available.">\u26a0</span>' if res.get("entry_gapped") else "")
         target_src_cls = "src-tag m5" if res["target_source"] == "m5_opposite" else "src-tag"
+        target_level = res["target_m5_level"]
+        target_title = (
+            f"Newest eligible M5 {target_level['type']} P0: "
+            f"{R._to_pt_str(target_level['formation_time'])}; shared P1: "
+            f"{R._to_pt_str(target_level['breakout_time'])}"
+            if target_level is not None else
+            f"No qualifying live shared-P1 M5 target; fixed {res['target_pts']:.2f}pt fallback")
+        stop_src_cls = "src-tag m5" if res["stop_source"] == "m5_breakout" else "src-tag"
+        stop_level = res["stop_m5_level"]
+        extreme = "breakout_low" if res["is_long"] else "breakout_high"
+        stop_title = (
+            f"Live M5 {stop_level['type']} {stop_level['price']:.2f}, "
+            f"P0 {R._to_pt_str(stop_level['formation_time'])}; "
+            f"P1 {R._to_pt_str(stop_level['breakout_time'])}, "
+            f"{extreme} {stop_level[extreme]:.2f}; one tick "
+            f"{'below' if res['is_long'] else 'above'}"
+            if stop_level is not None else
+            f"No qualifying protective M5 breakout candle; fixed {res['stop_pts']:.2f}pt fallback")
         chase_pts = res.get("chased_pts", 0.0)
         chase_flag = (f'<span class="src-tag chase" title="Pegged/chasing limit: original '
                       f'quote {res["alt_price"]:.2f} did not fill passively; '
@@ -1208,9 +1254,9 @@ def render(args):
   <td>{h1_entry_cell}</td>
   <td>{res['alt_price']:.2f}{gap_flag}<span class="{src_cls}">{res['alt_source']}{improved_flag}</span>{chase_flag}</td>
   <td class="left">{entry_touch_str}</td>
-  <td>{res['stop_price']:.2f}</td>
+  <td title="{stop_title}">{res['stop_price']:.2f}<span class="{stop_src_cls}">{res['stop_source']}</span></td>
   <td>{res['target_price']:.2f}</td>
-  <td><span class="{target_src_cls}">{res['target_source']}</span></td>
+  <td><span class="{target_src_cls}" title="{target_title}">{res['target_source']}</span></td>
   <td>{rr_str}</td>
   <td class="{outcome_cls}">{outcome_label}</td>
   <td class="left">{exit_str}</td><td>{exit_px_str}</td>
@@ -1269,6 +1315,8 @@ def render(args):
   <div class="box"><strong>{base_stats['total_r']:.1f}</strong>baseline total R</div>
   <div class="box"><strong>{max_win_mae:.2f}</strong>max MAE (win)</div>
   <div class="box"><strong>{max_loss_mfe:.2f}</strong>max MFE (loss)</div>
+  <div class="box"><strong>{dynamic_stops}</strong>M5 breakout-candle stops</div>
+  <div class="box"><strong>{len(filled) - dynamic_stops}</strong>fixed {SR._fmt_pts(args.stop)}pt fallback stops</div>
   <div class="box"><strong>{gapped_entries}</strong>gapped entry</div>
   <div class="box"><strong id="sum-shown">{len(filled)}</strong>shown</div>
   <div class="box"><strong id="sum-reviewed">0</strong>reviewed</div>
@@ -1292,14 +1340,18 @@ Entry vs Entry columns; the src tag shows which member supplied the extreme: own
 verified filled on real ticks (forward-only, &le;{args.max_alt_fill_hours}h -- an entry never
 reached in that window is UNFILLED and excluded from every stat here, not counted as a loss).
 {peg_lead_sentence}
-Target = the CLOSEST-in-price opposite-type M5 level on the favourable side, restricted to
-candidates whose own M5 breakout bar is SHARED with at least one other same-type M5 level (&ge;2
-M5 levels breaking out on the exact same bar), among those with a confirmed breakout by fill
-time that are STILL LIVE (not yet consumed by their own retest) as of that fill time and
-within {MAX_DYNAMIC_TARGET_PTS:.0f} points of the actual fill, else a
-fixed {args.fallback_target:.1f}pt
-fallback (Target Src column). Stop is always a fixed
-{args.stop:.1f}pt from the fine-tuned entry -- only entry and target are fine-tuned here. Baseline
+Target = the MOST RECENTLY FORMED (P0) live opposite-type M5 level on the favourable side,
+not the closest price or the newest breakout. Its P1 candle must have broken at least
+two distinct same-type P0 levels (historical peers count even if since consumed).
+Candidates must be {MIN_DYNAMIC_TARGET_PTS:g}&ndash;{MAX_DYNAMIC_TARGET_PTS:g} points from
+the actual fill, inclusive; otherwise use the fixed {args.fallback_target:g}pt fallback
+(Target Src column). Stop = one tick above the HIGHEST breakout-candle high for LLPB shorts,
+or one tick below the LOWEST breakout-candle low for LHPB longs, among live same-side M5
+levels within &plusmn;{DYNAMIC_STOP_RADIUS_PTS:g} points of the actual fill. The radius
+limits level prices, not the stop distance. No qualifying protective candle means a
+fixed {args.stop:g}pt fallback (Stop badge). Both searches use only completed M5 candles
+and the live ledger state immediately before the fill's M5 bar, with no fixed lookback.
+Hover the source badges for the selected P0/P1 details. R uses each trade's own stop distance. Baseline
 = same subject trade at its ORIGINAL H1 price, stop={args.baseline_stop:.1f}/
 target={args.baseline_target:.1f} (matches stop{SR._fmt_pts(args.baseline_stop)}_target
 {SR._fmt_pts(args.baseline_target)}_trades_report.html). Charts/markers/price-lines/tooltips,
@@ -1355,9 +1407,12 @@ docstring for full detail and design-choice caveats).</p>
             f"<th title=\"The level's original H1 entry price, before fine-tuning to the "
             f"confluence group's extreme price\">H1 Entry</th><th>Entry</th>"
             f"<th class=\"left\">Entry (touch) time</th>"
-            f"<th>Stop</th><th>Target</th><th>Target Src</th>"
+            f"<th title=\"Live same-side M5 breakout-candle extreme plus one tick; "
+            f"+/-{DYNAMIC_STOP_RADIUS_PTS:g}pt level search, {args.stop:g}pt fallback\">Stop</th>"
+            f"<th title=\"Newest eligible opposite M5 P0 sharing P1 with another P0\">Target</th>"
+            f"<th>Target Src</th>"
             f"<th title=\"Reward:risk on offer for THIS trade's own bracket at entry "
-            f"(target pts / stop pts) -- fixed once entry/target are picked, independent "
+            f"(target pts / stop pts) -- fixed once entry/stop/target are picked, independent "
             f"of whether the trade goes on to win or lose\">R</th>"
             f"<th>Outcome</th><th class=\"left\">Exit time</th><th>Exit px</th>"
             f"<th title=\"Realized profit/loss in points (signed): +target pts on a win, "
@@ -1401,13 +1456,16 @@ docstring for full detail and design-choice caveats).</p>
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="SS Confl >= N fine-tuned entry (confluence-group extreme price) / "
-                     "exit (closest-price, shared-P1-bar opposite M5 level) strategy report")
+                     "target (newest opposite M5 P0 with shared P1) / "
+                     "stop (same-side M5 breakout-candle extreme) strategy report")
     parser.add_argument("--ss-confl-min", type=int, default=SS_CONFL_MIN_DEFAULT)
     parser.add_argument("--h1-confluence-points", type=float, default=H1_CONFLUENCE_N_POINTS,
                         help="H1 price radius for SS qualification, clustering and entry "
                              f"selection (default {H1_CONFLUENCE_N_POINTS}pt). "
                              f"M5 entry search stays at {M5_CONFLUENCE_N_POINTS}pt.")
-    parser.add_argument("--stop", type=float, default=DEFAULT_STOP)
+    parser.add_argument("--fallback-stop", "--stop", dest="stop", type=float, default=DEFAULT_STOP,
+                        help="Fixed stop distance only when no protective live M5 "
+                             f"breakout-candle stop qualifies (default {DEFAULT_STOP}pt).")
     parser.add_argument("--fallback-target", type=float, default=DEFAULT_FALLBACK_TARGET)
     parser.add_argument("--baseline-stop", type=float, default=DEFAULT_BASELINE_STOP)
     parser.add_argument("--baseline-target", type=float, default=DEFAULT_BASELINE_TARGET)

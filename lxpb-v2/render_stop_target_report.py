@@ -139,7 +139,7 @@ EXCURSION_CSS = """.pctile-wrap { margin:14px 0 18px; }
               margin:8px 0 0; }"""
 
 
-def excursion_percentile_html(groups, stop):
+def excursion_percentile_html(groups, stop, *, group_stops=None):
     """Percentile tables for the MAE/MFE excursion columns.
 
     `groups` is an ordered list of (label, note, values_in_points). Kept as a
@@ -148,25 +148,44 @@ def excursion_percentile_html(groups, stop):
     a report that has already been rendered, without re-resolving 500 trades
     off the tick data just to add a summary table.
 
-    Every population is also shown in R (points / stop), since that is the
-    unit the rest of the report reasons in."""
+    Every population is also shown in R (points / stop). For dynamic stops,
+    pass `stop=None` and `group_stops`: one sequence of per-trade risk
+    distances aligned with each group's values. Normalize each trade
+    BEFORE computing the R distribution, not the points percentiles after.
+    """
+    if group_stops is not None and len(group_stops) != len(groups):
+        raise ValueError("Each excursion group needs its own aligned stop distances")
     if not any(vals for _, _, vals in groups):
         return ""
     head = "".join(f"<th>p{q}</th>" for q in EXCURSION_PCTILES)
     body = []
-    for label, note, vals in groups:
+    for i, (label, note, vals) in enumerate(groups):
         if not vals:
             continue
         a = np.asarray(vals, dtype=float)
         pcts = [float(np.percentile(a, q)) for q in EXCURSION_PCTILES]
+        if group_stops is None:
+            r_pcts = [v / stop for v in pcts]
+            r_mean, r_max = a.mean() / stop, a.max() / stop
+        else:
+            risks = np.asarray(group_stops[i], dtype=float)
+            if risks.shape != a.shape or not np.isfinite(risks).all() or (risks <= 0).any():
+                raise ValueError("Excursion stop distances must be aligned, finite and positive")
+            in_r = a / risks
+            r_pcts = [float(np.percentile(in_r, q)) for q in EXCURSION_PCTILES]
+            r_mean, r_max = in_r.mean(), in_r.max()
         body.append(
             f'<tr><td class="left">{label}<span class="pctile-note">{note}</span></td>'
             f'<td>{a.size}</td>'
             + "".join(f"<td>{v:.2f}</td>" for v in pcts)
             + f'<td>{a.mean():.2f}</td><td>{a.max():.2f}</td></tr>'
             + f'<tr class="pctile-r"><td class="left">&nbsp;&nbsp;same, in R</td><td></td>'
-            + "".join(f"<td>{v / stop:.2f}</td>" for v in pcts)
-            + f'<td>{a.mean() / stop:.2f}</td><td>{a.max() / stop:.2f}</td></tr>')
+            + "".join(f"<td>{v:.2f}</td>" for v in r_pcts)
+            + f'<td>{r_mean:.2f}</td><td>{r_max:.2f}</td></tr>')
+    risk_note = (
+        '<p class="pctile-cap">Each trade is divided by its own initial stop distance '
+        'before calculating the R percentiles, mean and maximum.</p>'
+        if group_stops is not None else "")
     return f"""
 <div class="pctile-wrap">
 <h2>Excursion percentiles</h2>
@@ -174,6 +193,7 @@ def excursion_percentile_html(groups, stop):
 <thead><tr><th class="left">Population</th><th>n</th>{head}<th>mean</th><th>max</th></tr></thead>
 <tbody>{"".join(body)}</tbody>
 </table>
+{risk_note}
 <p class="pctile-cap">Read a percentile as a share of <em>that population</em>, not as a win rate.
 p75 = 5.75pt means 75% of losing trades ran LESS than 5.75pt in the position's favour before
 stopping out, so only the top 25% of them would have been rescued by a 5.75pt target &mdash; the

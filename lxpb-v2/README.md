@@ -413,9 +413,34 @@ load around the exact filled-entry timestamp, even when the order fills
 after the original H1 retest hour. Unfilled orders instead show the full
 entry-search window; they do not have execution-centered charts or footprints.
 
+The **target** is the most recently formed **P0**, not the nearest price or
+the latest P1: a live opposite-type M5 level on the favourable side of the
+actual fill (LHPB below an LLPB short, LLPB above an LHPB long), 1-20 points
+away inclusive. Its breakout candle must have broken at least **two distinct
+same-type P0 levels**. Historical peers still count if subsequently consumed,
+but the target itself must remain live. With no eligible target, the fixed
+fallback remains 8 points (`--fallback-target`).
+
+The **stop** comes from live same-side M5 levels whose prices are within
+**+/-10 points of the actual fine-tuned fill**. For an LLPB short, use the
+highest high of their breakout candles **plus one tick (0.25)**; for an LHPB
+long, use the lowest low **minus one tick**. This search does not require a
+shared breakout candle. The radius applies to level prices, not candle
+extremes or stop width. If no protective candle stop qualifies, use a
+**4-point fallback** (`--fallback-stop`; `--stop` remains an alias).
+
+Both exit searches use the ledger state immediately before the fill's M5
+bar, so breakout candles must already be complete and current-bar OHLC or
+later lifecycle events cannot influence the bracket. Neither search has a
+fixed formation lookback. Source badges identify dynamic and fallback
+exits; hover for the selected P0/P1 details. Reward:risk, realized R and
+excursion percentiles in R all use each trade's own stop distance. The
+fixed 2/8 baseline is unchanged.
+
 ```powershell
 python render_ss_confl_finetune_report.py --ss-confl-min 1
 python render_ss_confl_finetune_report.py --ss-confl-min 2 --full-year
+python render_ss_confl_finetune_report.py --fallback-stop 4 --fallback-target 8
 python render_ss_confl_finetune_report.py --h1-confluence-points 2.5 --output previous_zone_report.html
 ```
 

@@ -21,7 +21,7 @@ Three phases, all of which must pass before trusting `lxpb_levels_cache`:
     python verify_levels_cache.py --quick      # skip the slow rebuilds
     python verify_levels_cache.py --skip-report
     python verify_levels_cache.py --h1-confluence-only  # synthetic chart cases, no tick loading
-    python verify_levels_cache.py --finetune-only       # zones, charts, entries, orders, table
+    python verify_levels_cache.py --finetune-only       # zones, charts, orders, exits, R, table
     python verify_levels_cache.py --report-only         # the two real-data M5 chart cases
 
 Phases 1-2 pass `rebuild=True` on purpose: they must test the *builder*, not
@@ -230,6 +230,7 @@ def check_h1_confluence_charts():
             "alt_price": entry, "fill_price": entry, "alt_source": "m5",
             "group_n": 5, "stop_pts": 2.0, "target_pts": 8.0,
             "target_source": "fallback_fixed", "chart_confluent_h1": got,
+            "stop_source": "fallback_fixed",
             "entry_m5_level": m5.iloc[0].to_dict(),
             "confluent_combined": pd.concat([levels, m5], ignore_index=True),
             "h1_price": 100.0, "h1_formation_time": row["formation_time"],
@@ -353,10 +354,219 @@ def check_finetune_orders():
         target_levels.loc[0, "price"] = 100.0 + sign * 20.0
         price, _ = F.dynamic_target(target_levels, side, 100.0, is_long, p2)
         assert price == 100.0 + sign * 20.0
-        target_levels.loc[0, "death_time"] = p2
+        target_levels.loc[0, "death_time"] = p2 - pd.Timedelta(minutes=5)
         assert F.dynamic_target(target_levels, side, 100.0, is_long, p2) == (None, None)
     assert F.DEFAULT_FALLBACK_TARGET == 8.0
     print("Fine-tune entries: P2 liveness, one-tick pegging, cap, offsets, 20pt target band OK")
+    return 0
+
+
+def check_finetune_exits():
+    import render_ss_confl_finetune_report as F
+
+    touch = pd.Timestamp("2026-07-01 10:02:30.123456", tz="UTC")
+    entry_bar = touch.floor("5min")
+    p1_old, p1_new = entry_bar - pd.Timedelta(hours=1), entry_bar - pd.Timedelta(minutes=10)
+    formed = pd.Timestamp("2026-06-01", tz="UTC")
+
+    def frame(records):
+        df = pd.DataFrame(records)
+        for col in ("formation_time", "breakout_time", "death_time"):
+            df[col] = pd.to_datetime(df[col], utc=True)
+        return df
+
+    for side in ("LLPB", "LHPB"):
+        is_long = side == "LHPB"
+        sign = 1 if is_long else -1
+        opposite = "LLPB" if is_long else "LHPB"
+
+        def level(distance, age, p1, type_=opposite, death=pd.NaT, extreme=3.0):
+            return {
+                "type": type_, "price": 100.0 + sign * distance,
+                "formation_time": formed + pd.Timedelta(days=age),
+                "breakout_time": p1, "death_time": death,
+                "breakout_high": 100.0 + extreme, "breakout_low": 100.0 - extreme,
+            }
+
+        targets = frame([
+            level(2, 1, p1_new),                          # nearest; newest P1
+            level(8, 5, p1_old),                          # newest eligible P0
+            level(12, 4, p1_old, death=p1_new),            # dead peer still confirms shared P1
+            level(3, 0, p1_new),
+            level(4, 6, p1_new + pd.Timedelta(minutes=5)), # lone P1 is ineligible
+            level(1.5, 7, entry_bar),                     # unfinished breakout
+            level(1.75, 8, entry_bar),
+        ])
+        original = targets.copy(deep=True)
+        for ts in (touch, touch.tz_localize(None), touch.tz_convert("America/Los_Angeles")):
+            price, selected = F.dynamic_target(targets, side, 100.0, is_long, ts)
+            assert price == 100.0 + sign * 8
+            assert selected["formation_time"] == targets.iloc[1]["formation_time"]
+        for distance in (1.0, 20.0, 0.75, 20.25, -8.0):
+            changed = targets.copy()
+            changed.loc[1, "price"] = 100.0 + sign * distance
+            expected = distance if 1 <= distance <= 20 else 2.0
+            assert F.dynamic_target(changed, side, 100.0, is_long, touch)[0] == 100 + sign * expected
+        for death, expected in ((p1_new, 2.0), (entry_bar, 8.0)):
+            changed = targets.copy()
+            changed.loc[1, "death_time"] = death
+            assert F.dynamic_target(changed, side, 100.0, is_long, touch)[0] == 100 + sign * expected
+        changed = targets.copy()
+        changed.loc[2, "type"] = side
+        assert F.dynamic_target(changed, side, 100.0, is_long, touch)[0] == 100 + sign * 2
+        duplicate = pd.concat([targets.iloc[[1]], targets.iloc[[1]]], ignore_index=True)
+        assert F.dynamic_target(duplicate, side, 100.0, is_long, touch) == (None, None)
+        partial = targets.iloc[[5, 6]]
+        assert F.dynamic_target(partial, side, 100.0, is_long,
+                                entry_bar + pd.Timedelta(minutes=5) - pd.Timedelta(nanoseconds=1)) == (None, None)
+        assert F.dynamic_target(partial, side, 100.0, is_long,
+                                entry_bar + pd.Timedelta(minutes=5))[0] == 100 + sign * 1.75
+        pd.testing.assert_frame_equal(targets, original)
+
+        stops = frame([
+            level(-1, 2, p1_old, side, extreme=3),
+            level(-2, 3, p1_new, side, extreme=7),
+            level(10, -100, p1_old, side, extreme=16),     # oldest P0, opposite radius edge
+            level(-10, 4, p1_new, side, extreme=14),
+            level(10.25, 5, p1_old, side, extreme=50),     # outside radius
+            level(0, 6, p1_old, side, death=p1_new, extreme=60),
+            level(0, 7, pd.NaT, side, extreme=70),
+            level(0, 8, entry_bar, side, extreme=80),
+            level(0, 9, p1_old, opposite, extreme=90),
+        ])
+        original = stops.copy(deep=True)
+        price, selected = F.dynamic_stop(stops, side, 100.0, is_long, touch)
+        assert price == 100.0 - sign * 16.25
+        assert selected["formation_time"] == stops.iloc[2]["formation_time"]
+        assert abs(price - 100.0) > F.DYNAMIC_STOP_RADIUS_PTS, "Radius must not cap stop width"
+        for index, distance in ((2, 16.25), (3, 14.25)):
+            assert F.dynamic_stop(stops.iloc[[index]], side, 100.0, is_long, touch)[0] == 100 - sign * distance
+        assert F.dynamic_stop(stops.iloc[4:], side, 100.0, is_long, touch) == (None, None)
+        consumed_this_bar = stops.iloc[[2]].assign(death_time=entry_bar)
+        assert F.dynamic_stop(consumed_this_bar, side, 100.0, is_long, touch)[0] == price
+        extreme_col = "breakout_low" if is_long else "breakout_high"
+        for unprotective in (100.0 + sign * 0.25, 100.0 + sign * 0.5):
+            changed = stops.iloc[[0]].copy()
+            changed[extreme_col] = unprotective
+            assert F.dynamic_stop(changed, side, 100.0, is_long, touch) == (None, None)
+        for invalid in (np.nan, np.inf, -np.inf):
+            changed = stops.iloc[[0]].copy()
+            changed[extreme_col] = invalid
+            try:
+                F.dynamic_stop(changed, side, 100.0, is_long, touch)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Invalid confirmed breakout extreme silently accepted")
+        for missing in (None, pd.DataFrame()):
+            assert F.dynamic_stop(missing, side, 100.0, is_long, touch) == (None, None)
+            assert F.dynamic_target(missing, side, 100.0, is_long, touch) == (None, None)
+        pd.testing.assert_frame_equal(stops, original)
+    assert F.DEFAULT_STOP == 4.0
+    print("Fine-tune exits: newest P0/shared P1, live completed bars, +/-10pt extremes and one tick OK")
+    return 0
+
+
+def check_finetune_brackets():
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    import render_ss_confl_finetune_report as F
+
+    touch = pd.Timestamp("2026-07-01 10:02:30.123456", tz="UTC")
+    args = SimpleNamespace(stop=F.DEFAULT_STOP, fallback_target=8.0, baseline_stop=2.0,
+                           baseline_target=8.0, max_alt_fill_hours=3.0,
+                           pegged_entry=True, peg_step=0.25, peg_cap=1.0)
+    empty = pd.DataFrame()
+    for side in ("LLPB", "LHPB"):
+        is_long = side == "LHPB"
+        sign = 1 if is_long else -1
+        fill = 100.0 + sign * 0.25
+        row = {"type": side, "price": 100.0, "entry_price": 100.0,
+               "formation_time": pd.Timestamp("2026-06-01"),
+               "breakout_time": pd.Timestamp("2026-06-10"),
+               "retest_time": touch.floor("h").tz_localize(None)}
+        cluster = [{"i": 0, "row": row, "confluent_h1": empty, "same_side_h1": empty}]
+        ledger = pd.DataFrame([
+            {"type": type_, "price": fill + sign * distance,
+             "formation_time": pd.Timestamp("2026-06-20", tz="UTC") + pd.Timedelta(days=i),
+             "breakout_time": touch.floor("5min") - pd.Timedelta(minutes=10),
+             "death_time": pd.NaT, "breakout_high": fill + 12, "breakout_low": fill - 12}
+            for i, (type_, distance) in enumerate([
+                ("LLPB" if is_long else "LHPB", 2),
+                ("LLPB" if is_long else "LHPB", 8),
+                (side, 10),  # within 10 of FILL, but 10.25 from the planned entry
+            ])
+        ])
+        ledger["death_time"] = pd.to_datetime(ledger["death_time"], utc=True)
+        offset = 12.75
+        bars = pd.DataFrame({"open": [fill - offset], "close": [fill - offset],
+                             "high": [fill - offset + 25], "low": [fill - offset - 25]},
+                            index=[touch.floor("min")])
+        bars.attrs["touch_time"] = touch
+        for use_dynamic in (True, False):
+            active = ledger if use_dynamic else empty
+            stop_pts = 12.25 if use_dynamic else 4.0
+            for outcome in ("target", "stop"):
+                def pin(_sym, _minute, _offset, entry, stop, target, long, not_before=None):
+                    assert not_before == touch
+                    move = target if outcome == "target" else -stop
+                    return outcome, touch + pd.Timedelta(seconds=1), entry + (move if long else -move)
+
+                with patch.object(F, "m5_confluence_for_row", return_value=(active, empty, empty)), \
+                     patch.object(F, "find_alt_fill", return_value=(touch, fill)), \
+                     patch.object(F, "build_minute_bars", return_value=bars), \
+                     patch.object(F, "baseline_touch_time", return_value=touch), \
+                     patch.object(F.R, "_offset_for_ts", return_value=(offset, "EPU26")), \
+                     patch.object(F.M, "_pin_exact_exit", side_effect=pin) as exact, \
+                     patch.object(F.SR, "_compute_excursion", return_value=(1.0, 0.5, True)), \
+                     patch.object(F.SR, "_compute_giveback", return_value=0.75), \
+                     patch.object(F.SR, "resolve_trades", wraps=F.SR.resolve_trades) as resolve:
+                    result = F.process_cluster(cluster, args)
+                assert result["filled"] and result["fill_price"] == fill
+                assert result["alt_price"] == 100 and result["chased_pts"] == 0.25
+                assert result["stop_pts"] == stop_pts
+                assert result["stop_price"] == fill - sign * stop_pts
+                assert result["target_price"] == fill + sign * 8
+                assert result["stop_source"] == ("m5_breakout" if use_dynamic else "fallback_fixed")
+                assert result["target_source"] == ("m5_opposite" if use_dynamic else "fallback_fixed")
+                assert (result["stop_m5_level"] is not None) == use_dynamic
+                assert (result["target_m5_level"] is not None) == use_dynamic
+                assert resolve.call_args_list[0].args[0][0]["stop_dist"] == stop_pts
+                assert resolve.call_args_list[1].args[0][0]["stop_dist"] == 2.0
+                assert exact.call_args_list[0].args[4:6] == (stop_pts, 8.0)
+                expected_r = 8.0 / stop_pts if outcome == "target" else -1.0
+                assert result["resolved"]["r"] == expected_r
+                assert result["resolved"]["exit_time"] > result["resolved"]["touch_time"]
+                assert result["resolved"]["exit_price"] == (
+                    result["target_price"] if outcome == "target" else result["stop_price"])
+    print("Fine-tune brackets: actual-fill radius, variable resolution/R, 4pt fallback, baseline 2/8 OK")
+    return 0
+
+
+def check_excursion_r():
+    import re
+    import render_stop_target_report as SR
+
+    groups = [("sample", "", [2.0, 8.0])]
+
+    def r_row(html):
+        return re.search(r'<tr class="pctile-r">.*?</tr>', html).group(0)
+
+    dynamic = SR.excursion_percentile_html(groups, None, group_stops=[[0.5, 8.0]])
+    got = re.findall(r"<td>([0-9.]+)</td>", r_row(dynamic))
+    expected = [f"{v:.2f}" for v in np.percentile([4.0, 1.0], SR.EXCURSION_PCTILES)] + ["2.50", "4.00"]
+    assert got == expected, (got, expected)
+    fixed = SR.excursion_percentile_html(groups, 2.0)
+    equivalent = SR.excursion_percentile_html(groups, None, group_stops=[[2.0, 2.0]])
+    assert r_row(fixed) == r_row(equivalent), "Fixed-stop report behavior must stay unchanged"
+    for invalid in ([], [[2.0]], [[0.0, 2.0]], [[-1.0, 2.0]], [[np.nan, 2.0]]):
+        try:
+            SR.excursion_percentile_html(groups, None, group_stops=invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Invalid excursion risks accepted: {invalid}")
+    print("Excursion R: per-trade normalization precedes percentiles; scalar stop behavior unchanged")
     return 0
 
 
@@ -525,7 +735,7 @@ def check_execution_chart_windows():
         load.assert_not_called()
 
     res = {"row": row, "fill_price": 112.75, "alt_price": 113.0, "is_long": False,
-           "stop_pts": 2.0, "target_pts": 1.5, "resolved": {"touch_time": late_fill}}
+           "stop_pts": 3.75, "target_pts": 1.5, "resolved": {"touch_time": late_fill}}
     with patch.object(R, "_ticks_for_window", side_effect=fetch), \
          patch.object(R, "_offset_for_ts", return_value=(12.75, "EPU26")), \
          patch.object(R, "build_footprint", return_value={}), \
@@ -533,6 +743,7 @@ def check_execution_chart_windows():
         panes, fp = F.build_execution_charts(res)
     for pane in panes.values():
         assert any(pl["title"] == "target 111.25" for pl in pane["priceLines"])
+        assert any(pl["title"] == "stop 116.50" for pl in pane["priceLines"])
         assert any(pl["title"] == "planned entry 113.00" for pl in pane["priceLines"])
     assert fp == {"narrow": "Narrow", "wide": "Wide"}
     assert row["fta"] == 110.75 and row["entry_price"] == 112.75
@@ -579,13 +790,14 @@ def check_finetune_table():
             "stop_pts": 2.0, "target_pts": 8.0,
             "stop_price": 997.0, "target_price": 1007.0,
             "target_source": "fallback_fixed", "touch_time_alt": p2,
+            "target_m5_level": None, "stop_source": "fallback_fixed", "stop_m5_level": None,
             "adverse_pts": 0.25, "giveback_pts": 1.0,
         })
 
     candidates = [c for cluster in clusters for c in cluster]
     args = SimpleNamespace(
         ss_confl_min=1, start=None, end=None, limit=None, merged=True, max_rows=None,
-        stop=2.0, fallback_target=8.0, baseline_stop=2.0, baseline_target=8.0,
+        stop=4.0, fallback_target=8.0, baseline_stop=2.0, baseline_target=8.0,
         pegged_entry=False, max_alt_fill_hours=3.0, full_year=True, output="unused.html")
     output = mock_open()
     with patch.object(F, "select_candidates", return_value=(
@@ -612,6 +824,8 @@ def check_finetune_table():
     assert 'data-ssconfl=' not in html and 'data-target="ssconfl"' not in html
     assert html.count('data-target="confl"') == 2
     assert "lxpb_ss_confl1_finetune_review_v1_fy2026" in html
+    assert "MOST RECENTLY FORMED (P0)" in html and "fixed 4pt fallback" in html
+    assert "Each trade is divided by its own initial stop distance" in html
     print("Fine-tune table: merged/single H1 prices, both sides, filled/unfilled rows OK")
     return 0
 
@@ -670,6 +884,9 @@ if any(flag in sys.argv for flag in ("--h1-confluence-only", "--finetune-only", 
     if "--finetune-only" in sys.argv:
         bad += check_finetune_zones()
         bad += check_finetune_orders()
+        bad += check_finetune_exits()
+        bad += check_finetune_brackets()
+        bad += check_excursion_r()
         bad += check_execution_chart_windows()
         bad += check_m5_entry_charts()
         bad += check_finetune_table()
@@ -703,6 +920,9 @@ if not SKIP_REPORT:
     bad += check_h1_confluence_charts()
     bad += check_finetune_zones()
     bad += check_finetune_orders()
+    bad += check_finetune_exits()
+    bad += check_finetune_brackets()
+    bad += check_excursion_r()
     bad += check_execution_chart_windows()
     bad += check_m5_entry_charts()
     bad += check_finetune_table()
