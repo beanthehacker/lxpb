@@ -21,7 +21,7 @@ Three phases, all of which must pass before trusting `lxpb_levels_cache`:
     python verify_levels_cache.py --quick      # skip the slow rebuilds
     python verify_levels_cache.py --skip-report
     python verify_levels_cache.py --h1-confluence-only  # synthetic chart cases, no tick loading
-    python verify_levels_cache.py --finetune-only       # charts, live entries, pegging, target cap
+    python verify_levels_cache.py --finetune-only       # zones, charts, entries, orders, table
     python verify_levels_cache.py --report-only         # the two real-data M5 chart cases
 
 Phases 1-2 pass `rebuild=True` on purpose: they must test the *builder*, not
@@ -360,6 +360,262 @@ def check_finetune_orders():
     return 0
 
 
+def check_finetune_zones():
+    from unittest.mock import patch
+    import render_ss_confl_finetune_report as F
+
+    p1 = pd.Timestamp("2026-01-20 06:00")
+    p2 = pd.Timestamp("2026-01-20 15:00")
+    formations = pd.to_datetime([
+        "2026-01-20 04:00", "2026-01-20 05:00",
+        "2026-01-19 15:00", "2026-01-20 00:00",
+        "2026-01-18 10:00", "2026-01-18 11:00",
+    ])
+    assert F.H1_CONFLUENCE_N_POINTS == 5.25
+    assert F.M5_CONFLUENCE_N_POINTS == 5.0
+    assert F.SR.CONFLUENCE_N_POINTS == 2.5, "Original stop/target reports keep their own radius"
+
+    for side in ("LLPB", "LHPB"):
+        sign = 1 if side == "LLPB" else -1
+        prices = [7008.0 + sign * distance for distance in (6.25, 6.5, 0.0, 1.0, 30.0, 31.0)]
+        strong = pd.DataFrame({
+            "type": side, "price": prices, "formation_time": formations,
+            "breakout_time": p1, "retest_time": p2,
+        })
+        ledger = strong.assign(death_time=p2, fate="retested")
+        for column in ("formation_time", "breakout_time", "death_time"):
+            ledger[column] = pd.to_datetime(ledger[column], utc=True)
+        opposite = ledger.iloc[[0]].assign(type="LHPB" if side == "LLPB" else "LLPB")
+        ledger = pd.concat([ledger, opposite], ignore_index=True)
+        selection = (pd.DataFrame(), {}, strong, [])
+        with patch.object(F.SR, "_select_rows", return_value=selection), \
+             patch.object(F.LC, "h1_levels", return_value=ledger):
+            _, _, _, previous = F.select_candidates(1, h1_confluence_points=2.5)
+            _, _, _, short = F.select_candidates(1, h1_confluence_points=5.0)
+            _, _, _, widened = F.select_candidates(1)
+            _, _, _, strict_previous = F.select_candidates(2, h1_confluence_points=2.5)
+            _, _, _, strict_widened = F.select_candidates(2)
+
+        def members(candidates):
+            return {frozenset(c["i"] for c in group) for group in F.cluster_candidates(candidates)}
+
+        separate = {frozenset((0, 1)), frozenset((2, 3)), frozenset((4, 5))}
+        assert members(previous) == members(short) == separate
+        assert members(widened) == {frozenset((0, 1, 2, 3)), frozenset((4, 5))}
+        assert strict_previous == []
+        assert {c["i"] for c in strict_widened} == {0, 3}
+        assert all((c["same_side_h1"]["type"] == side).all() for c in widened)
+
+        m5 = ledger.iloc[[0, 1]].copy()
+        m5["price"] = [7008.0 + sign * distance for distance in (9.25, 4.75)]
+        m5["formation_time"] = pd.to_datetime(["2026-01-20 05:55", "2026-01-20 00:35"], utc=True)
+        group = next(g for g in F.cluster_candidates(widened) if g[0]["i"] == 0)
+        with patch.object(F.LC, "m5_levels_for_ts", return_value=m5):
+            plan = F.cluster_confluence(group)
+            old_plans = [F.cluster_confluence(g) for g in F.cluster_candidates(previous)[:2]]
+        assert plan["h1_price"] == prices[1]
+        assert plan["alt_price"] == 7008.0 + sign * 9.25
+        assert plan["alt_source"] == "m5"
+        assert [p["alt_price"] for p in old_plans] == [7008.0 + sign * d for d in (9.25, 4.75)]
+
+        # Radius zero still recognizes a distinct level at the same price.
+        duplicate = ledger.iloc[[0]].assign(formation_time=ledger.iloc[0]["formation_time"]
+                                           + pd.Timedelta(minutes=15))
+        with patch.object(F.SR, "_select_rows", return_value=selection), \
+             patch.object(F.LC, "h1_levels", return_value=pd.concat([ledger, duplicate])):
+            _, _, _, exact = F.select_candidates(1, h1_confluence_points=0.0)
+        assert [c["i"] for c in exact] == [0]
+
+    with patch.object(F.SR, "_select_rows") as select:
+        for radius in (-0.25, np.nan, np.inf, -np.inf):
+            try:
+                F.select_candidates(1, h1_confluence_points=radius)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"Invalid H1 radius accepted: {radius}")
+        select.assert_not_called()
+    print("Fine-tune zones: inclusive 5.25pt H1 link, SS qualification, entry union and M5 5pt OK")
+    return 0
+
+
+def check_execution_chart_windows():
+    from unittest.mock import patch
+    import render_ss_confl_finetune_report as F
+
+    hour = pd.Timestamp("2026-08-19 12:00", tz="UTC")
+    late_fill = pd.Timestamp("2026-08-19 14:58:45.123456", tz="UTC")
+    row = {"type": "LLPB", "entry_price": 112.75, "fta": 110.75,
+           "stop_loss": 114.75, "retest_time": hour.tz_localize(None)}
+    ticks = pd.DataFrame(
+        {"Open": 100.0, "High": 100.25, "Low": 99.75, "Close": 100.0,
+         "Volume": 3, "Trades": 1, "BidVolume": 1, "AskVolume": 2},
+        index=pd.date_range(hour - pd.Timedelta(hours=2),
+                            hour + pd.Timedelta(hours=5), freq="s"))
+
+    def fetch(lo, hi):
+        return R._slice_sorted(ticks, lo, hi).copy()
+
+    cases = [
+        (late_fill, 45, 20),
+        (late_fill.tz_localize(None), 45, 20),
+        (late_fill.tz_convert("America/Los_Angeles"), 45, 20),
+        (hour + pd.Timedelta(minutes=64, seconds=17, microseconds=250000), 45, 20),
+        (hour - pd.Timedelta(minutes=90) + pd.Timedelta(microseconds=123456), 45, 20),
+        (late_fill, 1500, 1),
+        (hour + pd.Timedelta(minutes=5), 45, 20),
+    ]
+    for override, seconds, minutes in cases:
+        touch = pd.to_datetime(override, utc=True)
+        pad = pd.Timedelta(seconds=max(300, seconds + 60, (minutes + 2) * 60))
+        with patch.object(R, "_ticks_for_window", side_effect=fetch) as load, \
+             patch.object(R, "_offset_for_ts", return_value=(12.75, "EPU26")) as offset, \
+             patch.object(R, "_find_touch_time") as find, \
+             patch.object(R, "build_footprint", return_value={}) as footprint, \
+             patch.object(R, "_footprint_html", side_effect=lambda fp, price, label: label):
+            charts = R.build_1s_trio_chart(row, seconds, minutes, touch_time_override=override)
+        assert charts is not None, override
+        load.assert_called_once_with(touch - pad, touch + pad)
+        offset.assert_called_once_with(touch)
+        find.assert_not_called()
+        expected_1s = pd.date_range(
+            (touch - pd.Timedelta(seconds=seconds)).ceil("s"),
+            (touch + pd.Timedelta(seconds=seconds)).floor("s"), freq="s")
+        expected_1m = pd.date_range(
+            (touch - pd.Timedelta(minutes=minutes)).ceil("min"),
+            (touch + pd.Timedelta(minutes=minutes)).floor("min"), freq="min")
+        assert [b["time"] for b in charts["trio"]["candles"]] == [
+            int(t.timestamp()) for t in expected_1s]
+        assert [b["time"] for b in charts["oneMin"]["candles"]] == [
+            int(t.timestamp()) for t in expected_1m]
+        assert charts["trio"]["markers"][0]["time"] == int(touch.timestamp())
+        assert charts["oneMin"]["markers"][0]["time"] == int(touch.floor("min").timestamp())
+        assert all(b["close"] == 112.75 for b in charts["trio"]["candles"])
+        assert len(charts["trio"]["bid"]) == len(expected_1s)
+        assert len(charts["trio"]["ask"]) == len(expected_1s)
+        assert charts["footprintNarrowHtml"] == "Narrow" and charts["footprintWideHtml"] == "Wide"
+        assert [call.args for call in footprint.call_args_list] == [
+            (touch, 100.0, R.FOOTPRINT_PRE_SECONDS, post, 12.75)
+            for post in (R.FOOTPRINT_NARROW_POST_SECONDS, R.FOOTPRINT_WIDE_POST_SECONDS)]
+
+    with patch.object(R, "_ticks_for_window", side_effect=fetch) as load, \
+         patch.object(R, "_offset_for_ts", return_value=(12.75, "EPU26")) as offset, \
+         patch.object(R, "_find_touch_time", wraps=R._find_touch_time) as find:
+        charts = R.build_1s_trio_chart(row, include_footprint=False)
+    load.assert_called_once_with(hour - pd.Timedelta(minutes=22), hour + pd.Timedelta(minutes=82))
+    offset.assert_called_once_with(hour)
+    assert find.call_count == 1
+    assert find.call_args.args[1:] == (hour, hour + pd.Timedelta(hours=1), 100.0, "LLPB")
+    assert charts["trio"]["markers"][0]["time"] == int(hour.timestamp())
+    assert charts["touch_bid_volume"] == 1.0 and charts["touch_ask_volume"] == 2.0
+
+    for missing in (None, ticks.iloc[:0]):
+        with patch.object(R, "_ticks_for_window", return_value=missing), \
+             patch.object(R, "_offset_for_ts", return_value=(12.75, "EPU26")), \
+             patch.object(R, "build_footprint") as footprint:
+            assert R.build_1s_trio_chart(row, touch_time_override=late_fill) is None
+        footprint.assert_not_called()
+    with patch.object(R, "_ticks_for_window") as load:
+        try:
+            R.build_1s_trio_chart(row, touch_time_override=pd.NaT)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("NaT fill override accepted")
+        load.assert_not_called()
+
+    res = {"row": row, "fill_price": 112.75, "alt_price": 113.0, "is_long": False,
+           "stop_pts": 2.0, "target_pts": 1.5, "resolved": {"touch_time": late_fill}}
+    with patch.object(R, "_ticks_for_window", side_effect=fetch), \
+         patch.object(R, "_offset_for_ts", return_value=(12.75, "EPU26")), \
+         patch.object(R, "build_footprint", return_value={}), \
+         patch.object(R, "_footprint_html", side_effect=lambda fp, price, label: label):
+        panes, fp = F.build_execution_charts(res)
+    for pane in panes.values():
+        assert any(pl["title"] == "target 111.25" for pl in pane["priceLines"])
+        assert any(pl["title"] == "planned entry 113.00" for pl in pane["priceLines"])
+    assert fp == {"narrow": "Narrow", "wide": "Wide"}
+    assert row["fta"] == 110.75 and row["entry_price"] == 112.75
+    print("Execution charts: exact fill-centered fetches, full context, offsets and footprints OK")
+    return 0
+
+
+def check_finetune_table():
+    import re
+    from contextlib import redirect_stdout
+    from io import StringIO
+    from types import SimpleNamespace
+    from unittest.mock import mock_open, patch
+    import render_ss_confl_finetune_report as F
+
+    p0 = pd.Timestamp("2026-01-01 00:00")
+    p2 = pd.Timestamp("2026-01-02 00:00")
+    cases = [
+        ("LLPB", [101.25, 100.00], True),
+        ("LHPB", [200.00, 202.50], True),
+        ("LHPB", [300.00, 301.50], False),
+        ("LLPB", [400.00], True),
+        ("LHPB", [500.00], False),
+    ]
+    clusters, results = [], []
+    for i, (side, prices, filled) in enumerate(cases):
+        cluster = [
+            {"i": i * 10 + j, "row": {
+                "type": side, "price": price, "formation_time": p0 + pd.Timedelta(hours=j),
+                "retest_time": p2}}
+            for j, price in enumerate(prices)
+        ]
+        clusters.append(cluster)
+        results.append({
+            "i": cluster[0]["i"], "row": cluster[0]["row"],
+            "level_type": side, "is_long": side == "LHPB",
+            "ss_confl": 0, "cluster_size": len(prices), "cluster_members": prices,
+            "own_price": prices[0], "alt_price": 999.0, "fill_price": 999.0,
+            "alt_source": "m5", "improved": True, "filled": filled,
+            "confluent_h1": pd.DataFrame({"price": [998.0]}),
+            "resolved": {"outcome": "target", "r": 4.0,
+                         "exit_time": p2 + pd.Timedelta(minutes=1), "exit_price": 1007.0},
+            "baseline_resolved": {"outcome": "stop", "r": -1.0},
+            "stop_pts": 2.0, "target_pts": 8.0,
+            "stop_price": 997.0, "target_price": 1007.0,
+            "target_source": "fallback_fixed", "touch_time_alt": p2,
+            "adverse_pts": 0.25, "giveback_pts": 1.0,
+        })
+
+    candidates = [c for cluster in clusters for c in cluster]
+    args = SimpleNamespace(
+        ss_confl_min=1, start=None, end=None, limit=None, merged=True, max_rows=None,
+        stop=2.0, fallback_target=8.0, baseline_stop=2.0, baseline_target=8.0,
+        pegged_entry=False, max_alt_fill_hours=3.0, full_year=True, output="unused.html")
+    output = mock_open()
+    with patch.object(F, "select_candidates", return_value=(
+            pd.DataFrame(), {}, pd.DataFrame([c["row"] for c in candidates]), candidates)), \
+         patch.object(F, "cluster_candidates", return_value=clusters), \
+         patch.object(F, "process_cluster", side_effect=results), \
+         patch.object(F, "build_chart_stack_for_row", return_value=({}, {})), \
+         patch.object(F, "build_unfilled_chart_stack", return_value=({}, {})), \
+         patch.object(F, "open", output, create=True), redirect_stdout(StringIO()):
+        F.render(args)
+    html = "".join(call.args[0] for call in output().write.call_args_list)
+    rows = re.findall(r'<tr class="lvl-row\b[^>]*>.*?</tr>', html, re.S)
+    assert len(rows) == len(cases)
+    for row, (_, prices, filled) in zip(rows, cases):
+        cells = re.findall(r'<td\b([^>]*)>(.*?)</td>', row, re.S)
+        assert cells[3][1] == "1", "External Confl. count must stay unchanged"
+        assert 'class="left merged-h1-levels"' in cells[4][0]
+        assert cells[4][1] == ", ".join(f"{p:.2f}" for p in prices)
+        assert "998.00" not in cells[4][1] and "999.00" not in cells[4][1]
+        assert ('class="lvl-row unfilled-row"' in row) == (not filled)
+        widths = [re.search(r'colspan="(\d+)"', attrs) for attrs, _ in cells]
+        assert sum(int(w.group(1)) if w else 1 for w in widths) == F.N_COLS
+    assert ">Merged H1 levels</th>" in html
+    assert 'data-ssconfl=' not in html and 'data-target="ssconfl"' not in html
+    assert html.count('data-target="confl"') == 2
+    assert "lxpb_ss_confl1_finetune_review_v1_fy2026" in html
+    print("Fine-tune table: merged/single H1 prices, both sides, filled/unfilled rows OK")
+    return 0
+
+
 def check_m5_entry_charts():
     from unittest.mock import patch
     import render_stop_target_report as SR
@@ -412,8 +668,11 @@ if any(flag in sys.argv for flag in ("--h1-confluence-only", "--finetune-only", 
     if "--h1-confluence-only" in sys.argv or "--finetune-only" in sys.argv:
         bad += check_h1_confluence_charts()
     if "--finetune-only" in sys.argv:
+        bad += check_finetune_zones()
         bad += check_finetune_orders()
+        bad += check_execution_chart_windows()
         bad += check_m5_entry_charts()
+        bad += check_finetune_table()
     if "--report-only" in sys.argv:
         bad += check_report_rows()
     sys.exit(bad)
@@ -442,8 +701,11 @@ if not SKIP_REPORT:
     bad += check_report_rows()
     print("\n=== H1 confluence chart regression ===")
     bad += check_h1_confluence_charts()
+    bad += check_finetune_zones()
     bad += check_finetune_orders()
+    bad += check_execution_chart_windows()
     bad += check_m5_entry_charts()
+    bad += check_finetune_table()
 
 print("\nRESULT:", "ALL EXACT" if bad == 0 else f"{bad} PROBLEM(S)")
 sys.exit(1 if bad else 0)

@@ -572,10 +572,9 @@ def build_1s_trio_chart(row, pad_seconds=PAD_SECONDS_DEFAULT,
                          include_footprint=True, touch_time_override=None):
     """Real-tick 1s candles + Bid/Ask volume trio, a standalone 1min context
     chart, and (opt-in) a tick-level volume-by-price footprint -- all
-    centered on the exact 1s instant price touched (or gapped past) this
-    row's level within its retest H1 bar. Returns None if no .scid tick
-    data is available for this row's retest_time (e.g. outside
-    B26.CONTRACTS' 2026 coverage).
+    centered on the exact touch/fill instant. Without an override, find
+    that instant within the row's retest H1 bar. Returns None if no .scid
+    tick data is available around the touch/fill.
 
     `touch_time_override`, if given, is used verbatim instead of this
     function's own naive "either side touched" _find_touch_time call --
@@ -583,32 +582,39 @@ def build_1s_trio_chart(row, pad_seconds=PAD_SECONDS_DEFAULT,
     a more precise, fill-realistic touch_time themselves (requiring the
     correct bid/ask aggressor side for a resting order to actually fill),
     so the chart's RETEST marker/window/footprint centering matches the
-    same instant already shown in that caller's own table/summary."""
+    same instant already shown in that caller's own table/summary. It also
+    anchors the tick fetch and contract offset: a fine-tuned order can
+    fill hours after the original H1 retest."""
     level_type = row["type"]
     adjusted_entry_price = float(row["entry_price"])
     hour_start = pd.Timestamp(row["retest_time"], tz="UTC")
     hour_end = hour_start + pd.Timedelta(hours=1)
     outer_pad = pd.Timedelta(seconds=max(300, pad_seconds + 60, (one_min_pad_minutes + 2) * 60))
 
-    offset, contract_sym = _offset_for_ts(hour_start)
+    touch_time = None
+    if touch_time_override is not None:
+        touch_time = pd.to_datetime(touch_time_override, utc=True)
+        if pd.isna(touch_time):
+            raise ValueError("touch_time_override must be a valid timestamp")
+        fetch_start, fetch_end = touch_time - outer_pad, touch_time + outer_pad
+    else:
+        fetch_start, fetch_end = hour_start - outer_pad, hour_end + outer_pad
+
+    offset, contract_sym = _offset_for_ts(touch_time if touch_time is not None else hour_start)
     entry_price = adjusted_entry_price - offset
     fta = row["fta"]
     stop_loss = row["stop_loss"]
     target_price = (float(fta) - offset) if fta is not None and fta == fta else None
     stop_price = (float(stop_loss) - offset) if stop_loss is not None and stop_loss == stop_loss else None
 
-    ticks = _ticks_for_window(hour_start - outer_pad, hour_end + outer_pad)
+    ticks = _ticks_for_window(fetch_start, fetch_end)
     if ticks is None or ticks.empty:
         return None
     bars = _resample_1s(ticks)
     if bars.empty:
         return None
 
-    if touch_time_override is not None:
-        touch_time = pd.Timestamp(touch_time_override)
-        if touch_time.tzinfo is None:
-            touch_time = touch_time.tz_localize("UTC")
-    else:
+    if touch_time is None:
         touch_time = _find_touch_time(bars, hour_start, hour_end, entry_price, level_type)
     lo = touch_time - pd.Timedelta(seconds=pad_seconds)
     hi = touch_time + pd.Timedelta(seconds=pad_seconds)

@@ -383,6 +383,46 @@ Byte-identical copies of `find_ATR.py`, `find_swings.py`, `find_hammer.py`,
 self-contained. Imported via `sys.path`, not as a package. See
 `patterns_pure/README.md` for provenance and the refresh command.
 
+## Same-side confluence fine-tuning (`render_ss_confl_finetune_report.py`)
+
+The SS1/SS2 reports filter strong H1 retests by same-side H1 confluence,
+merge connected qualifying levels into one trade, then select the highest
+eligible H1/M5 price for LLPB shorts or the lowest for LHPB longs.
+
+The **Merged H1 levels** column lists the distinct H1 member prices, highest
+first for LLPB shorts and lowest first for LHPB longs. A single-member trade
+lists its own H1 price. This replaces the post-merge external SS count and
+its numeric table filter; `--ss-confl-min` still qualifies candidates before
+merging. M5 entry levels and external H1 support are not cluster members.
+
+The H1 radius is **+/-5.25 points** by default. It applies throughout SS
+qualification, clustering and H1 entry selection, not just deduplication.
+The M5 entry search remains **+/-5 points** around each cluster member.
+The original stop/target reports retain their own +/-2.5-point H1 radius.
+
+The 5.25-point default is the smallest H1 link that joins the Jan-20
+full-year SS1 groups previously displayed as rows 54 and 56: their nearest
+members are 7014.25 and 7009.00. This is a structural threshold, not a
+profit-optimized one. Widening it admits additional candidates as well as
+merging existing ones. Connections are transitive, so a cluster's total
+price span can exceed the radius and its members can have different
+breakout/retest bars. Existing level-liveness and fill rules still apply.
+
+Execution charts (1s candles, bid/ask volume, 1-minute context and footprints)
+load around the exact filled-entry timestamp, even when the order fills
+after the original H1 retest hour. Unfilled orders instead show the full
+entry-search window; they do not have execution-centered charts or footprints.
+
+```powershell
+python render_ss_confl_finetune_report.py --ss-confl-min 1
+python render_ss_confl_finetune_report.py --ss-confl-min 2 --full-year
+python render_ss_confl_finetune_report.py --h1-confluence-points 2.5 --output previous_zone_report.html
+```
+
+Each report displays both radii and the resulting cluster count. Use
+`--h1-confluence-points` to reproduce or compare another H1 zone without
+changing the M5 entry search.
+
 ## LXPB level ledger cache (`lxpb_levels_cache.py`)
 
 `lxpb.detect_lxpb_h1(bars)` answers *"what does the machine hold at the end of

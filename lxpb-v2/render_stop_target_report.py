@@ -1594,6 +1594,7 @@ function applyReviewFilters() {
   const validOn = Array.from(document.querySelectorAll('.f-review-valid:checked')).map(c => c.value);
   const replayOn = Array.from(document.querySelectorAll('.f-review-replay:checked')).map(c => c.value);
   const notesOn = Array.from(document.querySelectorAll('.f-review-notes:checked')).map(c => c.value);
+  const numericTargets = Array.from(document.querySelectorAll('.f-num-op')).map(c => c.dataset.target);
   let shown = 0;
   document.querySelectorAll('.lvl-row').forEach(function(tr) {
     const isReviewed = tr.classList.contains('is-reviewed');
@@ -1604,9 +1605,8 @@ function applyReviewFilters() {
     const validOk = validOn.includes(isValid ? 'valid' : 'not_valid');
     const replayOk = replayOn.includes(isReplayed ? 'replayed' : 'not_replayed');
     const notesOk = notesOn.includes(hasNotes ? 'has_notes' : 'no_notes');
-    const conflOk = numFilterOk(tr, 'confl');
-    const ssconflOk = numFilterOk(tr, 'ssconfl');
-    const show = statusOk && validOk && replayOk && notesOk && conflOk && ssconflOk;
+    const numericOk = numericTargets.every(target => numFilterOk(tr, target));
+    const show = statusOk && validOk && replayOk && notesOk && numericOk;
     tr.classList.toggle('hidden', !show);
     if (show) shown++;
     if (!show) {

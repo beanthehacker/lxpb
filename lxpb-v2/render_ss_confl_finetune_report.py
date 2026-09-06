@@ -9,14 +9,13 @@ levels of the SAME type, still un-retested as of this trade's own P1
 breakout bar -- see lxpb_levels_cache.same_side_live_confluence), then:
 
   1. FINE-TUNE THE ENTRY. Build a "confluence group" = the subject's own H1
-     level + its same-side H1 confluent levels (within +/-2.5pt, same
-     radius as stop2_target8_trades_report.html's own Confl. column -- see
-     lxpb_levels_cache.find_confluent_levels) + any same-side M5 levels in
-     a WIDER +/-M5_CONFLUENCE_N_POINTS=5.0pt zone (M5 structure is much
-     denser/finer-grained than H1, so the same 2.5pt radius used for H1
-     would miss genuinely nearby M5 levels; found via the same
-     find_confluent_levels query, just run a second time on the M5 ledger
-     for the trade's own contract with the wider radius).
+     level + its same-side H1 confluent levels (within
+     +/-`--h1-confluence-points`, default 5.25pt) + any same-side M5
+     levels within +/-M5_CONFLUENCE_N_POINTS=5.0pt. Both use
+     lxpb_levels_cache.find_confluent_levels on their respective ledgers.
+     The H1 radius applies to SS qualification, clustering and entry
+     selection, not just deduplication. It is independent of the original
+     stop/target reports' 2.5pt radius; the M5 entry radius is unchanged.
      The fine-tuned entry is the MOST EXTREME price in that group: the
      HIGHEST for an LLPB (short -- retest approaches from below, so a
      resting sell further up is strictly a better price if it fills) and the
@@ -95,12 +94,15 @@ breakout bar -- see lxpb_levels_cache.same_side_live_confluence), then:
      +/-CONFLUENCE_N_POINTS window. This also fixes "near miss" cases where
      one member's own window was too narrow to reach a price a neighboring
      member's window could see, not just exact duplicates. Levels that are
-     one of the cluster's own members are excluded from the Confl./SS Confl.
-     counts (they are the trade itself, not external supporting structure)
-     but still compete for the extreme-price pick like any other candidate.
-     The table's H1 Entry cell shows a dotted-underline tag with a hover
-     tooltip listing every merged member's own price when a cluster has
-     more than one member.
+     one of the cluster's own members are excluded from the external
+     confluence counts (they are the trade itself, not external supporting
+     structure) but still compete for the extreme-price pick. The table's
+     Merged H1 levels column lists the distinct member prices, extreme-first,
+     rather than the remaining external same-side count. A single-member
+     trade lists its own H1 price. The H1 Entry tooltip also lists the merged
+     prices when a cluster has more than one member. The radius limits each
+     link, not the total cluster span: connected chains can span more than
+     that radius and can include different breakout/retest bars.
 
 Both legs reuse the exact tick-accurate resolution machinery the rest of
 this repo depends on (render_stop_target_report.resolve_trades /
@@ -134,6 +136,7 @@ they don't match the intended strategy):
 Usage:
     python render_ss_confl_finetune_report.py
     python render_ss_confl_finetune_report.py --ss-confl-min 2 --stop 2 --fallback-target 8
+    python render_ss_confl_finetune_report.py --h1-confluence-points 2.5  # previous H1 zone
     python render_ss_confl_finetune_report.py --max-rows 5   # quick smoke test
 """
 import os
@@ -160,10 +163,8 @@ MAX_ALT_FILL_HOURS_DEFAULT = 3.0
 MIN_DYNAMIC_TARGET_PTS = 1.0   # sanity floor: an opposite M5 level nearer than this to
                                # the fine-tuned entry isn't a usable target (no room)
 MAX_DYNAMIC_TARGET_PTS = 20.0  # no qualifying M5 target in this band -> fixed 8pt fallback
-M5_CONFLUENCE_N_POINTS = 5.0   # WIDER than SR.CONFLUENCE_N_POINTS (2.5, H1-to-H1): M5
-                               # levels are finer-grained/denser than H1 ones, so a
-                               # narrower same radius as H1 confluence misses genuinely
-                               # nearby M5 structure (see module docstring point 1).
+H1_CONFLUENCE_N_POINTS = 5.25  # smallest link joining the Jan-20 7014.25/7009.00 H1 groups
+M5_CONFLUENCE_N_POINTS = 5.0
 PEG_STEP_DEFAULT = R.TICK_SIZE_DEFAULT  # 0.25pt -- one ES tick per re-quote
 PEG_CAP_DEFAULT = 1.0                   # max total chase distance from the fine-tuned
                                         # alt_price before a peg just sits as a plain
@@ -178,17 +179,20 @@ pd.set_option("display.max_columns", 20)
 # Selection: same "strong breakout" trades, filtered to SS Confl >= threshold
 # --------------------------------------------------------------------------
 
-def select_candidates(ss_confl_min, start=None, end=None, limit=A._DEFAULT, merged=False):
+def select_candidates(ss_confl_min, start=None, end=None, limit=A._DEFAULT, merged=False,
+                      h1_confluence_points=H1_CONFLUENCE_N_POINTS):
     """Same H1 selection as render_stop_target_report._select_rows, filtered
     down to rows whose same-side H1 confluence count meets `ss_confl_min`.
     Returns (h1_df, pos_by_ts, strong, candidates) where `candidates` is a
     list of dicts (row index `i`, the row itself, its H1 confluent/same-side
-    frames). No lookback bound on how far back a confluent level may have
-    formed -- see render_stop_target_report.py's CONFLUENCE_N_POINTS comment
-    for why an earlier fixed-bar cutoff was removed. `merged` (see
-    render_stop_target_report.py's own --merged/--full-year) merges every
-    TradingView H1 export instead of using only the single default one --
-    needed for a span that runs past that export's last bar."""
+    frames). `h1_confluence_points` defines those frames for qualification,
+    clustering and entry selection alike. There is no formation lookback;
+    the earlier fixed-bar cutoff is documented in render_stop_target_report.py's
+    CONFLUENCE_N_POINTS comment. `merged` (see that report's --merged/--full-year)
+    merges every TradingView H1 export instead of using only the single
+    default one, for spans running past that export's last bar."""
+    if not np.isfinite(h1_confluence_points) or h1_confluence_points < 0:
+        raise ValueError("H1 confluence radius must be finite and non-negative")
     h1_df, pos_by_ts, strong, _trades = SR._select_rows(start, end, limit, merged=merged)
     ledger_h1 = LC.h1_levels()
     candidates = []
@@ -196,7 +200,7 @@ def select_candidates(ss_confl_min, start=None, end=None, limit=A._DEFAULT, merg
         row_d = strong.iloc[i]
         confluent_h1 = LC.find_confluent_levels(
             ledger_h1, row_d["type"], float(row_d["price"]), row_d["formation_time"],
-            row_d["retest_time"], SR.CONFLUENCE_N_POINTS)
+            row_d["retest_time"], h1_confluence_points)
         same_side_h1 = LC.same_side_live_confluence(confluent_h1, row_d["type"], row_d["breakout_time"])
         if len(same_side_h1) < ss_confl_min:
             continue
@@ -369,7 +373,7 @@ def cluster_confluence(cluster):
     relative to a level) into one combined pool, then pick the fine-tuned
     entry as the extreme of the WHOLE pool -- not a single member's own
     local window. Entries matching one of the cluster's OWN member levels
-    are excluded from the Confl./SS Confl. counts and the broader analysis
+    are excluded from the external confluence counts and the broader analysis
     pools (they are the trade itself, not external supporting structure),
     but still compete for the extreme-price pick like any other member.
 
@@ -726,8 +730,8 @@ def process_cluster(cluster, args):
     alt_price, alt_source, group_n = conf["alt_price"], conf["alt_source"], conf["group_n"]
     own_price = float(row_d["entry_price"])
     # Every cluster member's own H1 price, extreme-first, for the H1 Entry
-    # column's hover tooltip -- the anchor's own price is shown in the cell
-    # itself but a merged cluster came from more than one original level.
+    # tooltip and Merged H1 levels column -- the anchor's own price is shown
+    # in H1 Entry, but a merged cluster came from more than one original level.
     member_prices = sorted({float(c["row"]["entry_price"]) for c in cluster},
                            reverse=(level_type == "LLPB"))
 
@@ -819,8 +823,8 @@ def process_cluster(cluster, args):
 # reusing SR.CSS/SR.JS/SR.build_trade_chart/SR.build_m5_chart/
 # R.build_1s_trio_chart verbatim so this report never re-implements any of
 # that rendering. Extra columns beyond the base layout are this strategy's
-# own: Confl./SS Confl. (the confluence-group filter this report selects
-# on), H1 Entry vs fine-tuned Entry (with a source tag h1/m5/own), Target
+# own: Confl. (external H1 count), Merged H1 levels (member prices),
+# H1 Entry vs fine-tuned Entry (with a source tag h1/m5/own), Target
 # Src (m5_opposite vs fallback_fixed), R (reward:risk on offer at entry)
 # and PnL (realized points). Baseline (same subject trade at its original
 # H1 price/stop2/target8) is still computed for the summary stats boxes
@@ -845,6 +849,7 @@ tr.lvl-row.type-lhpb td.type-cell, tr.lvl-row.type-llpb td.type-cell {
    collapsed into one trade, see cluster_candidates/cluster_confluence) --
    dotted underline hints that hovering shows the merged members. */
 .cluster-tag { border-bottom:1px dotted var(--text-dim); cursor:help; }
+td.merged-h1-levels { max-width:220px; white-space:normal; }
 </style>
 """
 
@@ -853,7 +858,7 @@ tr.lvl-row.type-lhpb td.type-cell, tr.lvl-row.type-llpb td.type-cell {
 # export/import + the numeric/status filter panel are ALL reused verbatim
 # from render_stop_target_report.JS -- it already keys off the same
 # th1-/ch1-/tm5-/cm5-/tc-/cc-/tb-/cb-/ta-/ca-/t1m-/c1m- element ids and the
-# same data-confl/data-ssconfl row attributes this report's rows below emit,
+# data-confl row attributes and numeric filters present in this report,
 # so nothing here needs its own copy of that logic.
 JS = SR.JS
 
@@ -893,7 +898,6 @@ def build_chart_stack_for_row(h1_df, pos_by_ts, res):
     function's own per-row locals."""
     row_d = res["row"]
     alt_price = res["fill_price"]  # the price ACTUALLY paid (== alt_price unless pegged)
-    is_long = res["is_long"]
     resolved = res["resolved"]
     stop_pts, target_pts = res["stop_pts"], res["target_pts"]
 
@@ -915,6 +919,17 @@ def build_chart_stack_for_row(h1_df, pos_by_ts, res):
     chart_m5 = SR.build_m5_chart(
         row_for_chart, resolved, stop_pts, target_pts,
         level_price=res["h1_price"], entry_level=res["entry_m5_level"])
+    execution_charts, fp = build_execution_charts(res)
+    return {"h1": chart_h1, "m5": chart_m5, **execution_charts}, fp
+
+
+def build_execution_charts(res):
+    """Fill-centered panes and footprints, also reusable for chart-only refreshes."""
+    row_d = res["row"]
+    alt_price = res["fill_price"]
+    is_long = res["is_long"]
+    resolved = res["resolved"]
+    stop_pts, target_pts = res["stop_pts"], res["target_pts"]
 
     # build_1s_trio_chart reads "entry_price"/"fta"/"stop_loss" (not
     # "price") for its own entry/target/stop price lines -- override those
@@ -940,14 +955,13 @@ def build_chart_stack_for_row(h1_df, pos_by_ts, res):
                         "lineWidth": 1, "lineStyle": 2,
                         "title": f"planned entry {res['alt_price']:.2f}",
                     })
-        chart_stack = {"h1": chart_h1, "m5": chart_m5,
-                       "trio": trio_chart["trio"], "oneMin": trio_chart["oneMin"]}
+        chart_stack = {"trio": trio_chart["trio"], "oneMin": trio_chart["oneMin"]}
         fp = {"narrow": trio_chart.get("footprintNarrowHtml"),
               "wide": trio_chart.get("footprintWideHtml")}
     else:
-        chart_stack = {"h1": chart_h1, "m5": chart_m5, "trio": None, "oneMin": None}
-        fp = {"narrow": "<p class='note'>(no tick data in this window)</p>",
-              "wide": "<p class='note'>(no tick data in this window)</p>"}
+        chart_stack = {"trio": None, "oneMin": None}
+        fp = {"narrow": "<p class='note'>(no tick data around the actual fill)</p>",
+              "wide": "<p class='note'>(no tick data around the actual fill)</p>"}
     return chart_stack, fp
 
 
@@ -1007,10 +1021,15 @@ def render(args):
     # __main__ below. Do NOT re-derive it from `args.limit is None` here: for
     # --full-year that value IS a real "no cap" None, and re-converting it
     # back to the sentinel would silently reinstate the default-300 cap.
+    h1_confluence_points = getattr(args, "h1_confluence_points", H1_CONFLUENCE_N_POINTS)
     h1_df, pos_by_ts, strong, candidates = select_candidates(
-        args.ss_confl_min, args.start, args.end, args.limit, merged=args.merged)
+        args.ss_confl_min, args.start, args.end, args.limit, merged=args.merged,
+        h1_confluence_points=h1_confluence_points)
+    h1_radius = SR._fmt_pts(h1_confluence_points)
+    m5_radius = SR._fmt_pts(M5_CONFLUENCE_N_POINTS)
     print(f"{len(strong)} strong-breakout trades selected; "
-          f"{len(candidates)} have SS Confl >= {args.ss_confl_min}", flush=True)
+          f"{len(candidates)} have SS Confl >= {args.ss_confl_min} "
+          f"(H1 +/-{h1_radius}pt; M5 +/-{m5_radius}pt)", flush=True)
     if args.max_rows is not None:
         candidates = candidates[:args.max_rows]
         print(f"--max-rows: processing only the first {len(candidates)}", flush=True)
@@ -1061,8 +1080,8 @@ def render(args):
         type_cls = "type-lhpb" if res["is_long"] else "type-llpb"
         confl_h1_n = len(res["confluent_h1"])
         retest_str = R._to_pt_str(row_d["retest_time"])
+        members_str = ", ".join(f"{p:.2f}" for p in res["cluster_members"])
         if res.get("cluster_size", 1) > 1:
-            members_str = ", ".join(f"{p:.2f}" for p in res["cluster_members"])
             h1_entry_title = (f' title="{res["cluster_size"]} mutually-confluent H1 levels '
                               f'merged into this one trade: {members_str}"')
             h1_entry_cell = f'<span class="cluster-tag"{h1_entry_title}>{res["own_price"]:.2f}\u2020</span>'
@@ -1082,11 +1101,11 @@ def render(args):
             )
             rows_html.append(f"""
 <tr class="lvl-row unfilled-row" data-idx="{idx}"
-    data-confl="{confl_h1_n}" data-ssconfl="{res['ss_confl']}"
+    data-confl="{confl_h1_n}"
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
-  <td>{confl_h1_n}</td><td>{res['ss_confl']}</td>
+  <td>{confl_h1_n}</td><td class="left merged-h1-levels">{members_str}</td>
   <td>{h1_entry_cell}</td>
   <td colspan="17">UNFILLED &mdash; {res.get('fail_reason', '')}</td>
   <td class="expand-cell"><button class="expand-btn" data-idx="{idx}"
@@ -1181,11 +1200,11 @@ def render(args):
 
         rows_html.append(f"""
 <tr class="lvl-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
-    data-confl="{confl_h1_n}" data-ssconfl="{res['ss_confl']}"
+    data-confl="{confl_h1_n}"
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
-  <td>{confl_h1_n}</td><td>{res['ss_confl']}</td>
+  <td>{confl_h1_n}</td><td class="left merged-h1-levels">{members_str}</td>
   <td>{h1_entry_cell}</td>
   <td>{res['alt_price']:.2f}{gap_flag}<span class="{src_cls}">{res['alt_source']}{improved_flag}</span>{chase_flag}</td>
   <td class="left">{entry_touch_str}</td>
@@ -1237,6 +1256,9 @@ def render(args):
 <div class="summary">
   <div class="box"><strong>{len(strong)}</strong>strong-breakout trades</div>
   <div class="box"><strong>{len(candidates)}</strong>SS Confl &ge; {args.ss_confl_min}</div>
+  <div class="box"><strong>{len(clusters)}</strong>confluence clusters</div>
+  <div class="box"><strong>&plusmn;{h1_radius}pt</strong>H1 confluence radius</div>
+  <div class="box"><strong>&plusmn;{m5_radius}pt</strong>M5 entry radius</div>
   <div class="box"><strong>{len(unfilled)}</strong>fine-tuned entry unfilled</div>
   <div class="box"><strong>{improved_n}</strong>/{len(filled)} entry improved over baseline</div>
   <div class="box true"><strong>{ft_stats['win_rate']:.1f}%</strong>fine-tuned win rate ({ft_stats['n']})</div>
@@ -1261,8 +1283,11 @@ def render(args):
 </div>
 <p class="lead">Fine-tuned entry = most extreme price (highest for LLPB/short, lowest for
 LHPB/long) among the subject's own H1 level and its same-side H1+M5 confluent levels still
-unconsumed immediately before this trade's H1 retest (M5 search radius remains
-{M5_CONFLUENCE_N_POINTS:.1f}pt; M5 levels must have formed by the H1 breakout bar). (Own
+unconsumed immediately before this trade's H1 retest (H1 search radius
+&plusmn;{h1_radius}pt; M5 search radius &plusmn;{m5_radius}pt; M5 levels must have formed
+by the H1 breakout bar). The H1 radius controls SS qualification, clustering and
+entry selection. Clusters are transitive: the radius limits each link, not the
+total cluster span, and linked levels can have different breakout/retest bars. (Own
 Entry vs Entry columns; the src tag shows which member supplied the extreme: own/h1/m5),
 verified filled on real ticks (forward-only, &le;{args.max_alt_fill_hours}h -- an entry never
 reached in that window is UNFILLED and excluded from every stat here, not counted as a loss).
@@ -1299,18 +1324,6 @@ docstring for full detail and design-choice caveats).</p>
     <input type="number" class="f-num-val" data-target="confl" value="0" min="0" step="1">
   </div>
   <div class="filter-row">
-    <span class="filter-label">SS Confl.</span>
-    <select class="f-num-op" data-target="ssconfl">
-      <option value="any" selected>any</option>
-      <option value="gte">&ge;</option>
-      <option value="gt">&gt;</option>
-      <option value="eq">=</option>
-      <option value="lte">&le;</option>
-      <option value="lt">&lt;</option>
-    </select>
-    <input type="number" class="f-num-val" data-target="ssconfl" value="0" min="0" step="1">
-  </div>
-  <div class="filter-row">
     <span class="filter-label">Status</span>
     <label class="chip"><input type="checkbox" class="f-cb f-review-status" value="unreviewed" checked> Unreviewed</label>
     <label class="chip"><input type="checkbox" class="f-cb f-review-status" value="reviewed" checked> Reviewed</label>
@@ -1334,11 +1347,11 @@ docstring for full detail and design-choice caveats).</p>
 """
 
     head = (f"<th class=\"left\">#</th><th class=\"left\">Type</th><th class=\"left\">Retest (H1)</th>"
-            f"<th title=\"All H1 levels within {SR.CONFLUENCE_N_POINTS:.1f}pt (same construction as "
-            f"stop2_target8_trades_report.html's own Confl. column)\">Confl.</th>"
-            f"<th title=\"Same-side confluence: other H1 levels of the SAME type, still "
-            f"un-retested as of this trade's own P1 breakout bar -- what this report filters on\">"
-            f"SS Confl.</th>"
+            f"<th title=\"External H1 levels found within +/-{h1_radius}pt of each cluster "
+            f"member, excluding the cluster's own levels\">Confl.</th>"
+            f"<th class=\"left\" title=\"Distinct H1 prices merged into this trade, "
+            f"extreme-first: highest for LLPB, lowest for LHPB. "
+            f"Single-level trades show their own H1 price.\">Merged H1 levels</th>"
             f"<th title=\"The level's original H1 entry price, before fine-tuning to the "
             f"confluence group's extreme price\">H1 Entry</th><th>Entry</th>"
             f"<th class=\"left\">Entry (touch) time</th>"
@@ -1390,6 +1403,10 @@ if __name__ == "__main__":
         description="SS Confl >= N fine-tuned entry (confluence-group extreme price) / "
                      "exit (closest-price, shared-P1-bar opposite M5 level) strategy report")
     parser.add_argument("--ss-confl-min", type=int, default=SS_CONFL_MIN_DEFAULT)
+    parser.add_argument("--h1-confluence-points", type=float, default=H1_CONFLUENCE_N_POINTS,
+                        help="H1 price radius for SS qualification, clustering and entry "
+                             f"selection (default {H1_CONFLUENCE_N_POINTS}pt). "
+                             f"M5 entry search stays at {M5_CONFLUENCE_N_POINTS}pt.")
     parser.add_argument("--stop", type=float, default=DEFAULT_STOP)
     parser.add_argument("--fallback-target", type=float, default=DEFAULT_FALLBACK_TARGET)
     parser.add_argument("--baseline-stop", type=float, default=DEFAULT_BASELINE_STOP)
