@@ -232,9 +232,9 @@ def check_h1_confluence_charts():
             "target_source": "fallback_fixed", "chart_confluent_h1": got,
             "stop_source": "fallback_fixed",
             "entry_m5_level": m5.iloc[0].to_dict(),
-            "confluent_combined": pd.concat([levels, m5], ignore_index=True),
             "h1_price": 100.0, "h1_formation_time": row["formation_time"],
             "h1_end_time": row["retest_time"], "fail_reason": "unfilled_within_window",
+            "fill_window_start": p2, "fill_window_end": p2 + pd.Timedelta(hours=3),
             "resolved": {"outcome": "target", "r": 4.0,
                          "touch_time": p2, "exit_time": p2 + pd.Timedelta(hours=1)},
         }
@@ -251,6 +251,8 @@ def check_h1_confluence_charts():
             assert "3 confluent level(s)" in chart["title"], chart["title"]
             assert chart["rays"][0]["points"][0]["value"] == 100.0
             assert any(line["title"] == f"entry {entry:.2f}" for line in chart["priceLines"])
+            assert any(m["text"] == "Refined H1 retest / window start"
+                       and m["time"] == int(p2.timestamp()) for m in chart["markers"])
         separate = F.SR.build_trade_chart(
             bars, pos, dict(row, price=entry), None, res["resolved"], 2.0, 8.0,
             level_price=100.5, ray_formation_time=pd.Timestamp("2026-01-02"),
@@ -307,7 +309,7 @@ def check_finetune_orders():
             raise AssertionError(f"Invalid peg parameters accepted: {step}, {cap}")
     with patch.object(F.R, "_ticks_for_window", return_value=short), \
          patch.object(F.R, "_offset_for_ts", return_value=(10.0, "EPU26")):
-        assert F.find_alt_fill({"retest_time": times[0]}, 7788.5, False, "LLPB", 1,
+        assert F.find_alt_fill(times[0], 7788.5, False, "LLPB", 1,
                                pegged=True) == (times[1], 7788.25)
 
     p0, p1, p2 = (pd.Timestamp(t, tz="UTC") for t in
@@ -326,18 +328,19 @@ def check_finetune_orders():
     m5 = pd.DataFrame([level(102.0, p1 - pd.Timedelta(hours=1), p1 + pd.Timedelta(minutes=20)),
                        level(101.5, p1 - pd.Timedelta(minutes=5), p2),
                        level(104.0, p1 + pd.Timedelta(hours=1))])
-    cluster = [{"i": 0, "row": row, "confluent_h1": h1, "same_side_h1": h1}]
-    with patch.object(F, "m5_confluence_for_row", return_value=(m5, m5, m5)):
+    cluster = [{"i": 0, "row": row, "same_side_h1": h1}]
+    with patch.object(F, "m5_confluence_for_row", return_value=(m5, m5)):
         plan = F.cluster_confluence(cluster)
+    assert not {"confluent_h1", "confluent_m5", "confl_h1_n", "ss_confl_n"} & plan.keys()
     assert (plan["alt_price"], plan["alt_source"], plan["h1_price"]) == (101.5, "m5", 100.5)
     assert plan["entry_m5_level"]["formation_time"] == m5.iloc[1]["formation_time"]
     assert plan["group_n"] == 3
     stale = m5.iloc[[0, 2]]
-    with patch.object(F, "m5_confluence_for_row", return_value=(m5, stale, stale)):
+    with patch.object(F, "m5_confluence_for_row", return_value=(m5, stale)):
         plan = F.cluster_confluence(cluster)
     assert (plan["alt_price"], plan["alt_source"], plan["entry_m5_level"]) == (100.5, "h1", None)
     open_m5 = m5.iloc[[1]].assign(death_time=pd.NaT)
-    with patch.object(F, "m5_confluence_for_row", return_value=(m5, open_m5, open_m5)):
+    with patch.object(F, "m5_confluence_for_row", return_value=(m5, open_m5)):
         assert F.cluster_confluence(cluster)["alt_price"] == 101.5
 
     for side in ("LLPB", "LHPB"):
@@ -358,6 +361,165 @@ def check_finetune_orders():
         assert F.dynamic_target(target_levels, side, 100.0, is_long, p2) == (None, None)
     assert F.DEFAULT_FALLBACK_TARGET == 8.0
     print("Fine-tune entries: P2 liveness, one-tick pegging, cap, offsets, 20pt target band OK")
+    return 0
+
+
+def check_finetune_fill_windows():
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    import render_ss_confl_finetune_report as F
+
+    p0 = pd.Timestamp("2025-12-21", tz="UTC")
+    p1 = pd.Timestamp("2025-12-31 20:00", tz="UTC")
+    original = pd.Timestamp("2026-01-01 23:00", tz="UTC")
+    refined = original + pd.Timedelta(hours=3)
+    end = refined + pd.Timedelta(hours=3)
+    early = original + pd.Timedelta(minutes=20)
+    late = refined + pd.Timedelta(hours=2, minutes=14, seconds=36, microseconds=696001)
+    args = SimpleNamespace(
+        stop=4.0, fallback_target=8.0, baseline_stop=2.0, baseline_target=8.0,
+        max_alt_fill_hours=3.0, pegged_entry=False, peg_step=0.25, peg_cap=1.0)
+    empty = pd.DataFrame()
+    rolled_ledger = pd.DataFrame({"contract": ["later"]})
+    offset = 10.0
+
+    for side in ("LLPB", "LHPB"):
+        is_long = side == "LHPB"
+        sign = -1 if is_long else 1
+        entry = 100.0 + sign * 3
+
+        def ticks(times):
+            raw = entry - offset
+            return pd.DataFrame({
+                "Open": raw, "High": raw + (0.25 if is_long else 0),
+                "Low": raw - (0 if is_long else 0.25), "Close": raw,
+                "Trades": 1, "BidVolume": int(is_long), "AskVolume": int(not is_long),
+            }, index=pd.DatetimeIndex(times))
+
+        data = ticks([early, refined - pd.Timedelta(microseconds=1), late, end])
+        with patch.object(F.R, "_ticks_for_window", return_value=data) as fetch, \
+             patch.object(F.R, "_offset_for_ts", return_value=(offset, "EPH26")) as scale:
+            for start in (refined, refined.tz_localize(None),
+                          refined.tz_convert("America/Los_Angeles")):
+                assert F.find_alt_fill(start, entry, is_long, side, 3) == (late, entry)
+                fetch.assert_called_with(refined, end)
+                scale.assert_called_with(refined)
+            assert F.find_alt_fill(original, entry, is_long, side, 3) == (early, entry)
+
+        for stamp, expected in (
+                (refined - pd.Timedelta(microseconds=1), (None, None)),
+                (refined, (refined, entry)),
+                (end - pd.Timedelta(microseconds=1), (end - pd.Timedelta(microseconds=1), entry)),
+                (end, (None, None))):
+            with patch.object(F.R, "_ticks_for_window", return_value=ticks([stamp])), \
+                 patch.object(F.R, "_offset_for_ts", return_value=(offset, "EPH26")):
+                assert F.find_alt_fill(refined, entry, is_long, side, 3) == expected
+
+        for source in ("member", "external"):
+            row = {
+                "type": side, "price": 100.0, "entry_price": 100.0,
+                "formation_time": p0.tz_localize(None),
+                "breakout_time": p1.tz_localize(None), "retest_time": original.tz_localize(None),
+            }
+            refined_row = dict(
+                row, price=100.0 + sign * 2, entry_price=100.0 + sign * 2,
+                formation_time=(p0 + pd.Timedelta(days=1)).tz_localize(None),
+                retest_time=refined.tz_localize(None))
+            external = pd.DataFrame([dict(
+                refined_row, formation_time=p0 + pd.Timedelta(days=1),
+                breakout_time=p1, retest_time=refined, death_time=refined, fate="retested")])
+            cluster = [{"i": 0, "row": row,
+                        "same_side_h1": external if source == "external" else empty}]
+            if source == "member":
+                cluster.append({"i": 1, "row": refined_row, "same_side_h1": empty})
+            m5 = pd.DataFrame([{
+                "type": side, "price": entry, "formation_time": p1 - pd.Timedelta(minutes=5),
+                "breakout_time": p1, "death_time": late.floor("5min"), "fate": "retested",
+            }])
+            with patch.object(F, "m5_confluence_for_row", return_value=(m5, m5)):
+                plan = F.cluster_confluence(cluster)
+            assert plan["h1_retest_time"] == refined.tz_localize(None)
+            assert plan["h1_end_time"] == refined.tz_localize(None)
+            assert plan["alt_end_time"] == row["retest_time"], "Clipped display endpoints are not triggers"
+            assert plan["h1_price"] == refined_row["price"] and plan["alt_price"] == entry
+
+            for rolled in (False, True):
+                base_touch = original + pd.Timedelta(minutes=1)
+                resolved = {"outcome": "target", "r": 2.0, "touch_time": late,
+                            "exit_time": late + pd.Timedelta(minutes=1)}
+                base_resolved = dict(resolved, r=4.0, touch_time=base_touch)
+                with patch.object(F, "m5_confluence_for_row", return_value=(m5, m5)), \
+                     patch.object(F.R, "_ticks_for_window", return_value=data), \
+                     patch.object(F.R, "_offset_for_ts", return_value=(offset, "EPH26")), \
+                     patch.object(F.R, "_contract_index_for",
+                                  side_effect=lambda ts: int(rolled and ts >= refined)), \
+                     patch.object(F.LC, "m5_levels", return_value=rolled_ledger) as load_ledger, \
+                     patch.object(F, "dynamic_target", return_value=(None, None)) as target, \
+                     patch.object(F, "dynamic_stop", return_value=(None, None)) as stop, \
+                     patch.object(F, "build_minute_bars", return_value=pd.DataFrame({"open": [entry]})) as bars, \
+                     patch.object(F, "baseline_touch_time", return_value=base_touch) as baseline, \
+                     patch.object(F.SR, "resolve_trades",
+                                  side_effect=[[resolved], [base_resolved]]) as resolve:
+                    result = F.process_cluster(cluster, args)
+                assert result["filled"] and result["touch_time_alt"] == late
+                assert result["fill_window_start"] == refined and result["fill_window_end"] == end
+                assert result["fill_price"] == entry
+                assert row["retest_time"] == original.tz_localize(None)
+                assert F.cluster_anchor(cluster)["i"] == 0
+                assert bars.call_args_list[0].args == (late,)
+                assert bars.call_args_list[1].args == (base_touch,)
+                baseline.assert_called_once_with(row, is_long)
+                fine_trade = resolve.call_args_list[0].args[0][0]
+                base_trade = resolve.call_args_list[1].args[0][0]
+                assert fine_trade["retest_time"] == late.tz_localize(None)
+                assert base_trade["retest_time"] == row["retest_time"]
+                assert base_trade["entry"] == 100 and base_trade["stop_dist"] == 2
+                exit_ledger = rolled_ledger if rolled else m5
+                assert target.call_args.args[0] is exit_ledger and stop.call_args.args[0] is exit_ledger
+                if rolled:
+                    load_ledger.assert_called_once_with(1)
+                else:
+                    load_ledger.assert_not_called()
+
+        pending = [dict(cluster[0], same_side_h1=external.assign(
+            death_time=pd.NaT, retest_time=pd.NaT, fate="open_awaiting_retest"))]
+        with patch.object(F, "m5_confluence_for_row", return_value=(m5, m5)), \
+             patch.object(F, "find_alt_fill") as search, \
+             patch.object(F, "baseline_touch_time") as baseline:
+            result = F.process_cluster(pending, args)
+        assert not result["filled"] and result["fail_reason"] == "refined_h1_not_retested"
+        assert result["fill_window_start"] is None and result["fill_window_end"] is None
+        assert result["h1_price"] == refined_row["price"], "Do not choose a different H1 using hindsight"
+        search.assert_not_called()
+        baseline.assert_not_called()
+        with patch.object(F.SR, "build_trade_chart", return_value={
+                "title": "H1", "candles": [], "markers": []}), \
+             patch.object(F.SR, "build_m5_chart", return_value=None), \
+             patch.object(F, "build_fill_window_chart") as chart_window:
+            charts, _ = F.build_unfilled_chart_stack(pd.DataFrame(), {}, result, args)
+        chart_window.assert_not_called()
+        assert charts["oneMin"] is None and "fill window not started" in charts["h1"]["title"]
+
+        chart_end = end + pd.Timedelta(minutes=30)
+        chart_ticks = ticks([original, refined, late, end + pd.Timedelta(minutes=20), chart_end])
+        with patch.object(F.R, "_ticks_for_window", return_value=chart_ticks) as fetch, \
+             patch.object(F.R, "_offset_for_ts", return_value=(offset, "EPH26")):
+            chart = F.build_fill_window_chart(refined, entry, side, 3, "unfilled_within_window")
+        fetch.assert_called_once_with(refined, chart_end)
+        assert chart["candles"][0]["time"] == int(refined.timestamp())
+        assert chart["candles"][-1]["time"] == int((end + pd.Timedelta(minutes=20)).timestamp())
+        assert all(c["close"] == entry for c in chart["candles"])
+        assert "refined H1 retest" in chart["title"] and R._to_pt_str(refined) in chart["title"]
+
+    for start, hours in ((None, 3), (pd.NaT, 3), (refined, 0), (refined, -1),
+                         (refined, np.nan), (refined, np.inf)):
+        try:
+            F.find_alt_fill(start, 100.0, False, "LLPB", hours)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Invalid fill window accepted: {start}, {hours}")
+    print("Fine-tune windows: refined H1 candle, full half-open interval, missing triggers, baseline and roll OK")
     return 0
 
 
@@ -485,7 +647,7 @@ def check_finetune_brackets():
                "formation_time": pd.Timestamp("2026-06-01"),
                "breakout_time": pd.Timestamp("2026-06-10"),
                "retest_time": touch.floor("h").tz_localize(None)}
-        cluster = [{"i": 0, "row": row, "confluent_h1": empty, "same_side_h1": empty}]
+        cluster = [{"i": 0, "row": row, "same_side_h1": empty}]
         ledger = pd.DataFrame([
             {"type": type_, "price": fill + sign * distance,
              "formation_time": pd.Timestamp("2026-06-20", tz="UTC") + pd.Timedelta(days=i),
@@ -512,7 +674,7 @@ def check_finetune_brackets():
                     move = target if outcome == "target" else -stop
                     return outcome, touch + pd.Timedelta(seconds=1), entry + (move if long else -move)
 
-                with patch.object(F, "m5_confluence_for_row", return_value=(active, empty, empty)), \
+                with patch.object(F, "m5_confluence_for_row", return_value=(active, empty)), \
                      patch.object(F, "find_alt_fill", return_value=(touch, fill)), \
                      patch.object(F, "build_minute_bars", return_value=bars), \
                      patch.object(F, "baseline_touch_time", return_value=touch), \
@@ -597,6 +759,40 @@ def check_finetune_zones():
             ledger[column] = pd.to_datetime(ledger[column], utc=True)
         opposite = ledger.iloc[[0]].assign(type="LHPB" if side == "LLPB" else "LLPB")
         ledger = pd.concat([ledger, opposite], ignore_index=True)
+        first = ledger.iloc[[0]]
+        query_ledger = pd.concat([
+            ledger,
+            first.assign(formation_time=first["formation_time"] + pd.Timedelta(minutes=10),
+                         death_time=p1.tz_localize("UTC")),
+            first.assign(formation_time=first["formation_time"] + pd.Timedelta(minutes=20),
+                         breakout_time=pd.NaT),
+            first.assign(formation_time=first["formation_time"] + pd.Timedelta(minutes=30),
+                         death_time=pd.NaT),
+            first.assign(formation_time=p2.tz_localize("UTC"),
+                         breakout_time=p2.tz_localize("UTC") + pd.Timedelta(hours=1),
+                         death_time=pd.NaT),
+        ], ignore_index=True)
+        row = strong.iloc[0]
+        for radius in (F.H1_CONFLUENCE_N_POINTS, F.M5_CONFLUENCE_N_POINTS):
+            historical = LC.find_confluent_levels(
+                query_ledger, side, row["price"], row["formation_time"], p2, radius)
+            expected = LC.same_side_live_confluence(historical, side, p1)
+            with patch.object(F.LC, "find_confluent_levels",
+                              wraps=F.LC.find_confluent_levels) as query:
+                actual = F._same_side_confluence(query_ledger, row, radius)
+            pd.testing.assert_frame_equal(actual, expected)
+            searched = query.call_args.args[0]
+            assert (searched["type"] == side).all()
+            assert (searched["death_time"].isna() |
+                    (searched["death_time"] > p1.tz_localize("UTC"))).all()
+        with patch.object(F.LC, "m5_levels_for_ts", return_value=query_ledger):
+            full_ledger, support = F.m5_confluence_for_row(row)
+        assert full_ledger is query_ledger, "Exit searches must retain opposite/historical M5 levels"
+        pd.testing.assert_frame_equal(support, expected)
+        for missing in (None, pd.DataFrame()):
+            with patch.object(F.LC, "m5_levels_for_ts", return_value=missing):
+                full_ledger, support = F.m5_confluence_for_row(row)
+            assert full_ledger.empty and support.empty
         selection = (pd.DataFrame(), {}, strong, [])
         with patch.object(F.SR, "_select_rows", return_value=selection), \
              patch.object(F.LC, "h1_levels", return_value=ledger):
@@ -615,6 +811,7 @@ def check_finetune_zones():
         assert strict_previous == []
         assert {c["i"] for c in strict_widened} == {0, 3}
         assert all((c["same_side_h1"]["type"] == side).all() for c in widened)
+        assert all("confluent_h1" not in c for c in widened)
 
         m5 = ledger.iloc[[0, 1]].copy()
         m5["price"] = [7008.0 + sign * distance for distance in (9.25, 4.75)]
@@ -780,16 +977,18 @@ def check_finetune_table():
         results.append({
             "i": cluster[0]["i"], "row": cluster[0]["row"],
             "level_type": side, "is_long": side == "LHPB",
-            "ss_confl": 0, "cluster_size": len(prices), "cluster_members": prices,
+            "cluster_size": len(prices), "cluster_members": prices,
             "own_price": prices[0], "alt_price": 999.0, "fill_price": 999.0,
+            "h1_price": prices[0],
+            "fill_window_start": p2 + pd.Timedelta(hours=3) if i != 4 else None,
+            "fill_window_end": p2 + pd.Timedelta(hours=6) if i != 4 else None,
             "alt_source": "m5", "improved": True, "filled": filled,
-            "confluent_h1": pd.DataFrame({"price": [998.0]}),
             "resolved": {"outcome": "target", "r": 4.0,
-                         "exit_time": p2 + pd.Timedelta(minutes=1), "exit_price": 1007.0},
+                         "exit_time": p2 + pd.Timedelta(hours=3, minutes=2), "exit_price": 1007.0},
             "baseline_resolved": {"outcome": "stop", "r": -1.0},
             "stop_pts": 2.0, "target_pts": 8.0,
             "stop_price": 997.0, "target_price": 1007.0,
-            "target_source": "fallback_fixed", "touch_time_alt": p2,
+            "target_source": "fallback_fixed", "touch_time_alt": p2 + pd.Timedelta(hours=3, minutes=1),
             "target_m5_level": None, "stop_source": "fallback_fixed", "stop_m5_level": None,
             "adverse_pts": 0.25, "giveback_pts": 1.0,
         })
@@ -811,18 +1010,28 @@ def check_finetune_table():
     html = "".join(call.args[0] for call in output().write.call_args_list)
     rows = re.findall(r'<tr class="lvl-row\b[^>]*>.*?</tr>', html, re.S)
     assert len(rows) == len(cases)
-    for row, (_, prices, filled) in zip(rows, cases):
+    for row, (_, prices, filled), result in zip(rows, cases, results):
         cells = re.findall(r'<td\b([^>]*)>(.*?)</td>', row, re.S)
-        assert cells[3][1] == "1", "External Confl. count must stay unchanged"
-        assert 'class="left merged-h1-levels"' in cells[4][0]
-        assert cells[4][1] == ", ".join(f"{p:.2f}" for p in prices)
-        assert "998.00" not in cells[4][1] and "999.00" not in cells[4][1]
+        assert 'class="left merged-h1-levels"' in cells[3][0]
+        assert cells[3][1] == ", ".join(f"{p:.2f}" for p in prices)
+        expected_retest = (R._to_pt_str(result["fill_window_start"])
+                           if result["fill_window_start"] is not None else "-")
+        assert cells[2][1] == expected_retest
+        assert "original H1 retest" in cells[2][0]
+        if result["fill_window_end"] is not None:
+            assert R._to_pt_str(result["fill_window_end"]) in cells[2][0]
+        else:
+            assert "fill window not started" in cells[2][0]
+        assert "999.00" not in cells[3][1]
         assert ('class="lvl-row unfilled-row"' in row) == (not filled)
         widths = [re.search(r'colspan="(\d+)"', attrs) for attrs, _ in cells]
         assert sum(int(w.group(1)) if w else 1 for w in widths) == F.N_COLS
     assert ">Merged H1 levels</th>" in html
+    assert ">Refined H1 retest</th>" in html
+    assert F.N_COLS == 23
+    assert ">Confl.</th>" not in html and 'data-confl=' not in html
     assert 'data-ssconfl=' not in html and 'data-target="ssconfl"' not in html
-    assert html.count('data-target="confl"') == 2
+    assert 'data-target="confl"' not in html and 'class="f-num-op"' not in html
     assert "lxpb_ss_confl1_finetune_review_v1_fy2026" in html
     assert "MOST RECENTLY FORMED (P0)" in html and "fixed 4pt fallback" in html
     assert "Each trade is divided by its own initial stop distance" in html
@@ -873,6 +1082,19 @@ def check_m5_entry_charts():
         assert any(m["text"] == f"M5 entry level {planned:.2f}" for m in chart["markers"])
         assert any(pl["title"] == f"H1 {side} 100.00" for pl in chart["priceLines"])
         assert any(pl["title"] == f"entry {fill:.2f}" for pl in chart["priceLines"])
+        window_start = p2 + pd.Timedelta(hours=3)
+        window_end = window_start + pd.Timedelta(hours=3)
+        unresolved = {"outcome": "no_data", "touch_time": None, "exit_time": None}
+        with patch.object(SR, "_m5_bars", return_value=bars), \
+             patch.object(SR.LC, "m5_levels", return_value=ledger):
+            unfilled = SR.build_m5_chart(
+                row, unresolved, 4.0, 8.0, level_price=100.0,
+                entry_level=ledger.iloc[0].to_dict(), fill_window=(window_start, window_end))
+        assert any(m["text"] == f"PLANNED {fill:.2f}" and m["time"] == int(window_start.timestamp())
+                   for m in unfilled["markers"])
+        assert unfilled["candles"][-1]["time"] >= int(window_end.timestamp())
+        assert not any(m["text"].startswith(("ENTRY ", "WIN ", "LOSS ")) for m in unfilled["markers"])
+        assert row["retest_time"] == p2.tz_localize(None)
     print("M5 entry charts: exact planned P0, fill price and all eligible blue levels OK")
     return 0
 
@@ -884,6 +1106,7 @@ if any(flag in sys.argv for flag in ("--h1-confluence-only", "--finetune-only", 
     if "--finetune-only" in sys.argv:
         bad += check_finetune_zones()
         bad += check_finetune_orders()
+        bad += check_finetune_fill_windows()
         bad += check_finetune_exits()
         bad += check_finetune_brackets()
         bad += check_excursion_r()

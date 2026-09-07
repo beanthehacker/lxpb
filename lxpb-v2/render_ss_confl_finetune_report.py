@@ -29,9 +29,9 @@ breakout bar -- see lxpb_levels_cache.same_side_live_confluence), then:
   2. VERIFY THE FILL. A confluence member's own OWN breakout being confirmed
      by the subject's retest does NOT mean today's specific retest move
      actually swept far enough into the zone to reach the extreme price too.
-     `_find_alt_fill` re-scans real 1s ticks, forward-only from the
-     subject's own H1 retest hour (never backward -- a resting order can
-     only be filled once price arrives, so this cannot look ahead), for the
+     `find_alt_fill` re-scans real ticks, forward-only from the REFINED
+     H1 level's own retest candle START, not the original cluster anchor's
+     retest or the refined level's exact intrabar touch, for the
      first tick where the CORRECT aggressor side (bid-side for a long's
      resting buy, ask-side for a short's resting sell -- same fill-realism
      convention as analyze_breakout_exits_1min._find_trade_touch_time)
@@ -39,8 +39,8 @@ breakout bar -- see lxpb_levels_cache.same_side_live_confluence), then:
      `--max-alt-fill-hours` (default 3h -- the M5 confluence zone itself is
      only +/-M5_CONFLUENCE_N_POINTS=5.0pt wide, so a much longer search
      would just be reaching for an unrelated later move). If it is never
-     touched in that window the fine-tuned order is marked UNFILLED and
-     excluded
+     touched in that window, or the chosen H1 level has not yet been
+     retested/consumed, the fine-tuned order is marked UNFILLED and excluded
      from the fine-tuned population's stats (a resting order that never
      fills is not a trade, not a loss).
      With pegging enabled, a replacement activates on the next tick record.
@@ -88,9 +88,9 @@ breakout bar -- see lxpb_levels_cache.same_side_live_confluence), then:
      +/-CONFLUENCE_N_POINTS window. This also fixes "near miss" cases where
      one member's own window was too narrow to reach a price a neighboring
      member's window could see, not just exact duplicates. Levels that are
-     one of the cluster's own members are excluded from the external
-     confluence counts (they are the trade itself, not external supporting
-     structure) but still compete for the extreme-price pick. The table's
+     one of the cluster's own members contribute once to the entry pool,
+     rather than being added again through another member's confluence
+     search. The table's
      Merged H1 levels column lists the distinct member prices, extreme-first,
      rather than the remaining external same-side count. A single-member
      trade lists its own H1 price. The H1 Entry tooltip also lists the merged
@@ -123,7 +123,7 @@ they don't match the intended strategy):
     genuinely live structure formed further back).
   - H1 c1..cN overlays show only same-side H1 support unconsumed immediately
     before the trade's P2, including other merged H1 members. M5 structure
-    stays on the M5 pane; the broader Confl. table count is unchanged.
+    stays on the M5 pane.
   - An unfilled fine-tuned entry is excluded from stats rather than falling
     back to the baseline price -- see point 2 above.
 
@@ -174,13 +174,21 @@ pd.set_option("display.max_columns", 20)
 # Selection: same "strong breakout" trades, filtered to SS Confl >= threshold
 # --------------------------------------------------------------------------
 
+def _same_side_confluence(ledger, row, n_points):
+    """Apply the existing same-side/P1 filter before the nearby-level query."""
+    same_side = LC.same_side_live_confluence(ledger, row["type"], row["breakout_time"])
+    return LC.find_confluent_levels(
+        same_side, row["type"], float(row["price"]), row["formation_time"],
+        row["retest_time"], n_points)
+
+
 def select_candidates(ss_confl_min, start=None, end=None, limit=A._DEFAULT, merged=False,
                       h1_confluence_points=H1_CONFLUENCE_N_POINTS):
     """Same H1 selection as render_stop_target_report._select_rows, filtered
     down to rows whose same-side H1 confluence count meets `ss_confl_min`.
     Returns (h1_df, pos_by_ts, strong, candidates) where `candidates` is a
-    list of dicts (row index `i`, the row itself, its H1 confluent/same-side
-    frames). `h1_confluence_points` defines those frames for qualification,
+    list of dicts (row index `i`, the row itself, its same-side H1
+    support). `h1_confluence_points` defines that support for qualification,
     clustering and entry selection alike. There is no formation lookback;
     the earlier fixed-bar cutoff is documented in render_stop_target_report.py's
     CONFLUENCE_N_POINTS comment. `merged` (see that report's --merged/--full-year)
@@ -193,14 +201,11 @@ def select_candidates(ss_confl_min, start=None, end=None, limit=A._DEFAULT, merg
     candidates = []
     for i in range(len(strong)):
         row_d = strong.iloc[i]
-        confluent_h1 = LC.find_confluent_levels(
-            ledger_h1, row_d["type"], float(row_d["price"]), row_d["formation_time"],
-            row_d["retest_time"], h1_confluence_points)
-        same_side_h1 = LC.same_side_live_confluence(confluent_h1, row_d["type"], row_d["breakout_time"])
+        same_side_h1 = _same_side_confluence(ledger_h1, row_d, h1_confluence_points)
         if len(same_side_h1) < ss_confl_min:
             continue
         candidates.append({
-            "i": i, "row": row_d, "confluent_h1": confluent_h1, "same_side_h1": same_side_h1,
+            "i": i, "row": row_d, "same_side_h1": same_side_h1,
         })
     return h1_df, pos_by_ts, strong, candidates
 
@@ -208,17 +213,13 @@ def select_candidates(ss_confl_min, start=None, end=None, limit=A._DEFAULT, merg
 def m5_confluence_for_row(row_d):
     """Same query as select_candidates' H1 side, run on the M5 ledger for
     whichever contract was front-month at this trade's retest. Returns
-    (m5_ledger, confluent_m5, same_side_m5); m5_ledger/confluent_m5/
-    same_side_m5 are all empty (not None) when the contract has no M5 data."""
+    (m5_ledger, same_side_m5), both empty (not None) when the contract has
+    no M5 data. Keep the full ledger for the independent exit searches."""
     m5_ledger = LC.m5_levels_for_ts(row_d["retest_time"])
     if m5_ledger is None or m5_ledger.empty:
         empty = pd.DataFrame()
-        return (m5_ledger if m5_ledger is not None else empty), empty, empty
-    confluent_m5 = LC.find_confluent_levels(
-        m5_ledger, row_d["type"], float(row_d["price"]), row_d["formation_time"],
-        row_d["retest_time"], M5_CONFLUENCE_N_POINTS)
-    same_side_m5 = LC.same_side_live_confluence(confluent_m5, row_d["type"], row_d["breakout_time"])
-    return m5_ledger, confluent_m5, same_side_m5
+        return (m5_ledger if m5_ledger is not None else empty), empty
+    return m5_ledger, _same_side_confluence(m5_ledger, row_d, M5_CONFLUENCE_N_POINTS)
 
 
 def extreme_group_entry(row_d, same_side_h1, same_side_m5):
@@ -313,11 +314,10 @@ def cluster_candidates(candidates):
 
 
 def cluster_anchor(cluster):
-    """The cluster's representative row for display/search purposes: the
+    """The cluster's representative row for qualification and baseline: the
     EARLIEST-retesting member (tie-broken by earliest formation, then
-    lowest candidate index) -- the oldest, first-forming level the cluster
-    grew around, and also the safest (earliest, so never-look-ahead) start
-    point for find_alt_fill's forward tick scan."""
+    lowest candidate index). Entry selection uses this first setup; the
+    fill window instead starts at the selected refined H1 level's retest."""
     def sort_key(cand):
         row_d = cand["row"]
         return (pd.Timestamp(row_d["retest_time"]), pd.Timestamp(row_d["formation_time"]), cand["i"])
@@ -367,10 +367,8 @@ def cluster_confluence(cluster):
     on that member's own price -- a confluence zone is only meaningful
     relative to a level) into one combined pool, then pick the fine-tuned
     entry as the extreme of the WHOLE pool -- not a single member's own
-    local window. Entries matching one of the cluster's OWN member levels
-    are excluded from the external confluence counts and the broader analysis
-    pools (they are the trade itself, not external supporting structure),
-    but still compete for the extreme-price pick like any other member.
+    local window. Each cluster member's own level contributes once through
+    the member-price pool, not again through another member's support pool.
 
     Returns a dict: alt_price/alt_source/group_n (the fine-tuned entry),
     alt_formation_time/alt_end_time (the specific level that SUPPLIED
@@ -381,18 +379,15 @@ def cluster_confluence(cluster):
     H1 pane should always show a genuine H1 LXPB structure with a real
     formation-to-retest span; alt_price/alt_formation_time/alt_end_time
     remain what the trade actually enters at, shown as a separate "entry"
-    line when it differs), confl_h1_n/ss_confl_n (external-confluence
-    counts), confluent_h1/confluent_m5 (deduped broader analysis pools),
-    and m5_ledger (one member's full M5 ledger -- same contract for
-    the whole cluster -- for the target and stop searches).
+    line when it differs), h1_retest_time (the selected H1 level's actual
+    retest/consumption bar, or None if still open), and m5_ledger (the full
+    M5 ledger for the entry setup's contract).
 
     alt_formation_time/h1_formation_time are always that specific level's
-    own formation bar. alt_end_time/h1_end_time are that level's own
-    death_time when known (it may have since been consumed by an unrelated
-    retest of its own, independent of this cluster), else this cluster's
-    own retest_time as the latest time we can vouch the level was actually
-    live and usable as this trade's resting price -- never later, since
-    nothing past this cluster's own retest is part of the trade."""
+    own formation bar. External alt_end_time endpoints remain clipped to
+    the first setup for display. The selected H1 ray ends at its actual
+    retest/consumption bar; if still open, its displayed endpoint remains
+    the first setup, but that is NOT a substitute fill-window anchor."""
     anchor_row = cluster_anchor(cluster)["row"]
     level_type = anchor_row["type"]
     cluster_retest_time = anchor_row["retest_time"]
@@ -409,28 +404,19 @@ def cluster_confluence(cluster):
         own_starts.append(row_d["formation_time"])
         own_ends.append(row_d["retest_time"])
 
-    seen_h1, seen_m5 = {}, {}            # broader pools (any type) -> ledger row
-    seen_same_h1, seen_same_m5 = {}, {}  # narrower same-type-live pools -> ledger row, for Confl. counts
+    seen_same_h1, seen_same_m5 = {}, {}
     m5_ledger = None
 
     for cand in cluster:
         row_d = cand["row"]
-        for _, r in cand["confluent_h1"].iterrows():
-            k = _level_key(r["type"], r["price"], r["formation_time"])
-            if k not in own_keys:
-                seen_h1.setdefault(k, r)
         for _, r in cand["same_side_h1"].iterrows():
             k = _level_key(r["type"], r["price"], r["formation_time"])
             if k not in own_keys:
                 seen_same_h1.setdefault(k, r)
 
-        ledger, confluent_m5, same_side_m5 = m5_confluence_for_row(row_d)
+        ledger, same_side_m5 = m5_confluence_for_row(row_d)
         if m5_ledger is None and ledger is not None and not ledger.empty:
             m5_ledger = ledger
-        for _, r in confluent_m5.iterrows():
-            k = _level_key(r["type"], r["price"], r["formation_time"])
-            if k not in own_keys:
-                seen_m5.setdefault(k, r)
         for _, r in same_side_m5.iterrows():
             k = _level_key(r["type"], r["price"], r["formation_time"])
             if k not in own_keys:
@@ -445,10 +431,8 @@ def cluster_confluence(cluster):
 
     def _ext_end(r):
         """This external level's own end for ray-drawing: its own death (if
-        it has since been consumed, independent of this cluster) clipped to
-        never exceed this cluster's own retest -- past that point nothing
-        is part of this trade regardless of what that other level went on
-        to do."""
+        known) clipped to the original entry-selection snapshot. This is
+        display metadata, not the refined H1 fill-window trigger."""
         death = r["death_time"]
         if pd.isna(death):
             return cluster_retest_time
@@ -487,11 +471,13 @@ def cluster_confluence(cluster):
     h1_prices = own_prices + [float(r["price"]) for r in same_h1_list]
     h1_sources = ["own"] * len(own_prices) + ["h1"] * len(same_h1_list)
     h1_starts = own_starts + [_naive(r["formation_time"]) for r in same_h1_list]
-    h1_ends = own_ends + [_ext_end(r) for r in same_h1_list]
+    # These supports are already broken, so death is their first retest/
+    # consumption bar, including an early touch that was not a trade signal.
+    h1_retests = own_ends + [
+        _naive(r["death_time"]) if pd.notna(r["death_time"]) else None
+        for r in same_h1_list]
     h1_idx = int(np.argmax(h1_prices)) if level_type == "LLPB" else int(np.argmin(h1_prices))
-
-    confluent_h1 = pd.DataFrame(list(seen_h1.values())) if seen_h1 else pd.DataFrame()
-    confluent_m5 = pd.DataFrame(list(seen_m5.values())) if seen_m5 else pd.DataFrame()
+    h1_retest_time = h1_retests[h1_idx]
 
     return {
         "alt_price": prices[idx], "alt_source": sources[idx], "group_n": len(prices),
@@ -499,9 +485,9 @@ def cluster_confluence(cluster):
         "entry_m5_level": (same_m5_list[idx - len(own_prices) - len(same_h1_list)].to_dict()
                            if sources[idx] == "m5" else None),
         "h1_price": h1_prices[h1_idx], "h1_source": h1_sources[h1_idx],
-        "h1_formation_time": h1_starts[h1_idx], "h1_end_time": h1_ends[h1_idx],
-        "confl_h1_n": len(seen_h1), "ss_confl_n": len(seen_same_h1),
-        "confluent_h1": confluent_h1, "confluent_m5": confluent_m5,
+        "h1_formation_time": h1_starts[h1_idx],
+        "h1_end_time": h1_retest_time if h1_retest_time is not None else cluster_retest_time,
+        "h1_retest_time": h1_retest_time,
         "m5_ledger": m5_ledger if m5_ledger is not None else pd.DataFrame(),
     }
 
@@ -558,9 +544,9 @@ def _scan_alt_fill(ticks, raw_alt, is_long, pegged=False, peg_step=None, peg_cap
     return None, None
 
 
-def find_alt_fill(row_d, alt_price, is_long, level_type, max_hours,
+def find_alt_fill(window_start, alt_price, is_long, level_type, max_hours,
                    pegged=False, peg_step=None, peg_cap=None):
-    """First fill within the forward-only H1 retest search window.
+    """First fill in [refined H1 retest candle start, start + max_hours).
 
     Passive limits require a correct-side trade at/through their price.
     Pegged replacements may instead execute against the opposite quote;
@@ -568,13 +554,17 @@ def find_alt_fill(row_d, alt_price, is_long, level_type, max_hours,
     """
     if is_long != (level_type == "LHPB"):
         raise ValueError("Entry direction does not match the LXPB level type")
-    retest_time = pd.to_datetime(row_d["retest_time"], utc=True)
-    hi = retest_time + pd.Timedelta(hours=max_hours)
-    ticks = R._ticks_for_window(retest_time, hi)
+    window_start = pd.to_datetime(window_start, utc=True)
+    if pd.isna(window_start):
+        raise ValueError("A refined H1 retest is required to start the fill window")
+    if not np.isfinite(max_hours) or max_hours <= 0:
+        raise ValueError("Fill-window hours must be finite and positive")
+    hi = window_start + pd.Timedelta(hours=max_hours)
+    ticks = R._ticks_for_window(window_start, hi)
     if ticks is None or ticks.empty:
         return None, None
-    offset, _sym = R._offset_for_ts(retest_time)
-    win = ticks.loc[(ticks.index >= retest_time) & (ticks.index < hi)]
+    offset, _sym = R._offset_for_ts(window_start)
+    win = ticks.loc[(ticks.index >= window_start) & (ticks.index < hi)]
     touch, raw_fill = _scan_alt_fill(
         win, alt_price - offset, is_long, pegged, peg_step, peg_cap)
     return (touch, raw_fill + offset) if raw_fill is not None else (None, None)
@@ -615,9 +605,9 @@ def build_minute_bars(touch_time, horizon_hours=HORIZON_HOURS):
     return bars
 
 
-def build_fill_window_chart(row_d, alt_price, level_type, max_hours, fail_reason):
+def build_fill_window_chart(window_start, alt_price, level_type, max_hours, fail_reason):
     """1-minute price-action pane covering the WHOLE fill-search window
-    (the subject's own retest_time through +max_hours, plus half an hour of
+    (the refined H1 retest candle through +max_hours, plus half an hour of
     trailing context) for an entry that never filled -- lets a human
     reviewer actually see what price did (e.g. touched the level on the
     wrong side, never got close, or the data simply ran out) instead of
@@ -631,12 +621,15 @@ def build_fill_window_chart(row_d, alt_price, level_type, max_hours, fail_reason
     find_alt_fill/resolve_trades' own offset handling above) -- this pane
     is a chart, not a fill search, so it converts to the same continuous/
     display scale as `alt_price` and every other pane in this report."""
-    retest_time = pd.Timestamp(row_d["retest_time"], tz="UTC")
-    hi = retest_time + pd.Timedelta(hours=max_hours) + pd.Timedelta(minutes=30)
-    ticks = R._ticks_for_window(retest_time, hi)
+    window_start = pd.to_datetime(window_start, utc=True)
+    if pd.isna(window_start):
+        raise ValueError("Cannot draw a fill window before the refined H1 retest")
+    hi = window_start + pd.Timedelta(hours=max_hours) + pd.Timedelta(minutes=30)
+    ticks = R._ticks_for_window(window_start, hi)
     if ticks is None or ticks.empty:
         return None
-    offset, _sym = R._offset_for_ts(retest_time)
+    ticks = ticks.loc[(ticks.index >= window_start) & (ticks.index < hi)]
+    offset, _sym = R._offset_for_ts(window_start)
     bars = ticks.resample("1min").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
     bars["Close"] = bars["Close"].ffill()
     bars["Open"] = bars["Open"].fillna(bars["Close"])
@@ -650,8 +643,8 @@ def build_fill_window_chart(row_d, alt_price, level_type, max_hours, fail_reason
                "close": float(r.Close) + offset} for t, r in bars.iterrows()]
     price_lines = [{"price": alt_price, "color": R.LEVEL_COLOR, "lineWidth": 2, "lineStyle": 0,
                    "title": f"{level_type} {alt_price:.2f} (fine-tuned entry -- never filled)"}]
-    title = (f"Fill window (1min)  |  {level_type} resting {alt_price:.2f}  |  retest "
-            f"{R._to_pt_str(retest_time)}  &rarr;  +{max_hours:.1f}h  |  "
+    title = (f"Fill window (1min)  |  {level_type} resting {alt_price:.2f}  |  refined H1 retest "
+            f"{R._to_pt_str(window_start)}  &rarr;  +{max_hours:.1f}h  |  "
             f"{fail_reason or 'unfilled'}")
     return {"title": title, "candles": candles, "markers": [], "priceLines": price_lines, "precision": 2}
 
@@ -729,6 +722,11 @@ def process_cluster(cluster, args):
     is_long = level_type == "LHPB"
 
     conf = cluster_confluence(cluster)
+    h1_retest_time = conf["h1_retest_time"]
+    window_start = (pd.to_datetime(h1_retest_time, utc=True)
+                    if h1_retest_time is not None else None)
+    window_end = (window_start + pd.Timedelta(hours=args.max_alt_fill_hours)
+                  if window_start is not None else None)
     alt_price, alt_source, group_n = conf["alt_price"], conf["alt_source"], conf["group_n"]
     own_price = float(row_d["entry_price"])
     # Every cluster member's own H1 price, extreme-first, for the H1 Entry
@@ -739,22 +737,25 @@ def process_cluster(cluster, args):
 
     result = {
         "i": anchor["i"], "row": row_d, "level_type": level_type, "is_long": is_long,
-        "ss_confl": conf["ss_confl_n"], "group_n": group_n,
+        "group_n": group_n,
         "cluster_size": len(cluster), "cluster_members": member_prices,
         "own_price": own_price, "alt_price": alt_price, "alt_source": alt_source,
         "alt_formation_time": conf["alt_formation_time"], "alt_end_time": conf["alt_end_time"],
         "entry_m5_level": conf["entry_m5_level"],
         "h1_price": conf["h1_price"], "h1_source": conf["h1_source"],
         "h1_formation_time": conf["h1_formation_time"], "h1_end_time": conf["h1_end_time"],
+        "fill_window_start": window_start, "fill_window_end": window_end,
         "improved": abs(alt_price - own_price) > 1e-9,
-        "confluent_h1": conf["confluent_h1"], "confluent_m5": conf["confluent_m5"],
         "chart_confluent_h1": h1_chart_confluence(
             cluster, conf["h1_price"], conf["h1_formation_time"]),
         "filled": False,
     }
 
+    if window_start is None:
+        result["fail_reason"] = "refined_h1_not_retested"
+        return result
     touch_time_alt, fill_price = find_alt_fill(
-        row_d, alt_price, is_long, level_type, args.max_alt_fill_hours,
+        window_start, alt_price, is_long, level_type, args.max_alt_fill_hours,
         pegged=args.pegged_entry, peg_step=args.peg_step, peg_cap=args.peg_cap)
     if touch_time_alt is None:
         result["fail_reason"] = "unfilled_within_window"
@@ -773,7 +774,11 @@ def process_cluster(cluster, args):
     # Everything downstream (target search, bracket, PnL/R) is relative to
     # the price ACTUALLY paid (fill_price), not the originally-quoted
     # alt_price -- identical when pegging is off (fill_price == alt_price).
-    target_price, target_row = dynamic_target(conf["m5_ledger"], level_type, fill_price, is_long,
+    m5_ledger = conf["m5_ledger"]
+    fill_contract = R._contract_index_for(touch_time_alt)
+    if fill_contract != R._contract_index_for(pd.to_datetime(row_d["retest_time"], utc=True)):
+        m5_ledger = LC.m5_levels(fill_contract)
+    target_price, target_row = dynamic_target(m5_ledger, level_type, fill_price, is_long,
                                               touch_time_alt)
     if target_price is None:
         target_pts = args.fallback_target
@@ -783,7 +788,7 @@ def process_cluster(cluster, args):
         target_pts = abs(target_price - fill_price)
         target_price_disp = target_price
         target_source = "m5_opposite"
-    stop_price, stop_row = dynamic_stop(conf["m5_ledger"], level_type, fill_price, is_long,
+    stop_price, stop_row = dynamic_stop(m5_ledger, level_type, fill_price, is_long,
                                         touch_time_alt)
     if stop_price is None:
         stop_price = fill_price - args.stop if is_long else fill_price + args.stop
@@ -793,7 +798,8 @@ def process_cluster(cluster, args):
     stop_pts = abs(stop_price - fill_price)
 
     trade = {"type": level_type, "entry": fill_price, "is_long": is_long,
-             "retest_time": row_d["retest_time"], "stop_dist": stop_pts, "target_dist": target_pts}
+             "retest_time": touch_time_alt.tz_convert("UTC").tz_localize(None),
+             "stop_dist": stop_pts, "target_dist": target_pts}
     resolved = SR.resolve_trades([trade], {0: bars}, stop=None, target=None)[0]
     # resolve_trades already computes favorable/adverse/giveback/entry_gapped
     # internally (via the same _compute_excursion/_compute_giveback this
@@ -830,11 +836,11 @@ def process_cluster(cluster, args):
 # bid/ask-volume + 1min + footprint chart stack per row, the same gapped-
 # entry tooltip and confluence-ray hover tooltips, the same Reviewed/Valid/
 # Replayed/Notes columns persisted to localStorage with CSV export/import,
-# and the same numeric/status filter panel + excursion-percentile summary --
+# and the same status filter panel + excursion-percentile summary --
 # reusing SR.CSS/SR.JS/SR.build_trade_chart/SR.build_m5_chart/
 # R.build_1s_trio_chart verbatim so this report never re-implements any of
 # that rendering. Extra columns beyond the base layout are this strategy's
-# own: Confl. (external H1 count), Merged H1 levels (member prices),
+# own: Merged H1 levels (member prices),
 # H1 Entry vs fine-tuned Entry (with a source tag h1/m5/own), Target
 # Src (m5_opposite vs fallback_fixed), a Stop source badge, R (reward:risk on offer at entry)
 # and PnL (realized points). Baseline (same subject trade at its original
@@ -866,11 +872,10 @@ td.merged-h1-levels { max-width:220px; white-space:normal; }
 
 # Chart rendering (H1/M5/1s-trio/bid/ask/1min panes, ray hover tooltips,
 # toggleChart), and Reviewed/Valid/Replayed/Notes persistence + CSV
-# export/import + the numeric/status filter panel are ALL reused verbatim
+# export/import + the status filter panel are ALL reused verbatim
 # from render_stop_target_report.JS -- it already keys off the same
-# th1-/ch1-/tm5-/cm5-/tc-/cc-/tb-/cb-/ta-/ca-/t1m-/c1m- element ids and the
-# data-confl row attributes and numeric filters present in this report,
-# so nothing here needs its own copy of that logic.
+# th1-/ch1-/tm5-/cm5-/tc-/cc-/tb-/cb-/ta-/ca-/t1m-/c1m- element ids and
+# discovers available filter controls, so nothing here needs its own copy.
 JS = SR.JS
 
 
@@ -899,6 +904,27 @@ def _stats_block(rows, key_outcome, key_r):
         "avg_r": (float(np.mean(vals_r)) if vals_r else 0.0),
         "total_r": (float(np.sum(vals_r)) if vals_r else 0.0),
     }
+
+
+def _fill_window_description(res):
+    if res["fill_window_start"] is None:
+        return f"refined H1 {res['h1_price']:.2f} not retested; fill window not started"
+    return (f"fill window from refined H1 {res['h1_price']:.2f} retest candle: "
+            f"{R._to_pt_str(res['fill_window_start'])} to {R._to_pt_str(res['fill_window_end'])}")
+
+
+def _annotate_fill_window(chart, res):
+    if chart is None:
+        return
+    chart["title"] += f"  |  {_fill_window_description(res)}"
+    if res["fill_window_start"] is not None:
+        start = R._to_epoch_utc(res["fill_window_start"])
+        if any(c["time"] == start for c in chart["candles"]):
+            chart["markers"].append({
+                "time": start, "position": "inBar", "color": R.P2_COLOR,
+                "shape": "circle", "text": "Refined H1 retest / window start",
+            })
+            chart["markers"].sort(key=lambda m: m["time"])
 
 
 def build_chart_stack_for_row(h1_df, pos_by_ts, res):
@@ -930,10 +956,13 @@ def build_chart_stack_for_row(h1_df, pos_by_ts, res):
                               f"{res['alt_price']:.2f} to {alt_price:.2f}")
     chart_m5 = SR.build_m5_chart(
         row_for_chart, resolved, stop_pts, target_pts,
-        level_price=res["h1_price"], entry_level=res["entry_m5_level"])
+        level_price=res["h1_price"], entry_level=res["entry_m5_level"],
+        fill_window=(res["fill_window_start"], res["fill_window_end"]))
     if chart_m5 is not None:
         chart_m5["title"] += (f"  |  target: {res['target_source']}"
                               f"  |  stop: {res['stop_source']}")
+    _annotate_fill_window(chart_h1, res)
+    _annotate_fill_window(chart_m5, res)
     execution_charts, fp = build_execution_charts(res)
     return {"h1": chart_h1, "m5": chart_m5, **execution_charts}, fp
 
@@ -985,9 +1014,8 @@ def build_unfilled_chart_stack(h1_df, pos_by_ts, res, args):
     no resolved trade (no touch_time/exit/outcome) to build the usual
     stack from, but a reviewer still wants to SEE the price action rather
     than just read "UNFILLED". Reuses the H1/M5 panes with a stub resolved
-    dict (outcome/exit/touch all None -- both build_trade_chart and
-    build_m5_chart already handle a None exit_time/touch_time by falling
-    back to retest_time) and the fallback stop/target as nominal reference
+    dict (no fabricated touch or exit), the refined H1 window as M5 context,
+    and the fallback stop/target as nominal reference
     lines (the real bracket was never computed since there was no fill to
     search dynamic exits from). The 1s trio/1min pane is
     replaced by build_fill_window_chart, a 1-minute pane spanning the WHOLE
@@ -1017,23 +1045,31 @@ def build_unfilled_chart_stack(h1_df, pos_by_ts, res, args):
                           f"never actually computed since there was no fill)")
     chart_m5 = SR.build_m5_chart(
         row_for_chart, resolved_stub, args.stop, args.fallback_target,
-        level_price=res["h1_price"], entry_level=res["entry_m5_level"])
+        level_price=res["h1_price"], entry_level=res["entry_m5_level"],
+        fill_window=((res["fill_window_start"], res["fill_window_end"])
+                     if res["fill_window_start"] is not None else None))
+    _annotate_fill_window(chart_h1, res)
+    _annotate_fill_window(chart_m5, res)
 
-    fill_window = build_fill_window_chart(row_d, alt_price, level_type,
-                                          args.max_alt_fill_hours, res.get("fail_reason"))
+    fill_window = (build_fill_window_chart(
+        res["fill_window_start"], alt_price, level_type,
+        args.max_alt_fill_hours, res.get("fail_reason"))
+        if res["fill_window_start"] is not None else None)
     chart_stack = {"h1": chart_h1, "m5": chart_m5, "trio": None, "oneMin": fill_window}
     note = "<p class='note'>(entry never filled -- no tick-level touch to build a footprint from)</p>"
     fp = {"narrow": note, "wide": note}
     return chart_stack, fp
 
 
-N_COLS = 24  # keep in sync with `head` below and every colspan in this section
+N_COLS = 23  # keep in sync with `head` below and every colspan in this section
 
 
 def render(args):
     if (not np.isfinite(args.stop) or args.stop <= 0 or
             not np.isfinite(args.fallback_target) or args.fallback_target <= 0):
         raise ValueError("Fallback stop and target distances must be finite and positive")
+    if not np.isfinite(args.max_alt_fill_hours) or args.max_alt_fill_hours <= 0:
+        raise ValueError("Fill-window hours must be finite and positive")
     # args.limit is already the correctly-resolved tri-state by the time it
     # gets here (A._DEFAULT sentinel / concrete int / None-for-no-cap) -- see
     # __main__ below. Do NOT re-derive it from `args.limit is None` here: for
@@ -1106,8 +1142,10 @@ def render(args):
         row_d = res["row"]
         level_type = res["level_type"]
         type_cls = "type-lhpb" if res["is_long"] else "type-llpb"
-        confl_h1_n = len(res["confluent_h1"])
-        retest_str = R._to_pt_str(row_d["retest_time"])
+        retest_str = (R._to_pt_str(res["fill_window_start"])
+                      if res["fill_window_start"] is not None else "-")
+        retest_title = (f"{_fill_window_description(res)}; original H1 retest: "
+                        f"{R._to_pt_str(row_d['retest_time'])}")
         members_str = ", ".join(f"{p:.2f}" for p in res["cluster_members"])
         if res.get("cluster_size", 1) > 1:
             h1_entry_title = (f' title="{res["cluster_size"]} mutually-confluent H1 levels '
@@ -1129,11 +1167,10 @@ def render(args):
             )
             rows_html.append(f"""
 <tr class="lvl-row unfilled-row" data-idx="{idx}"
-    data-confl="{confl_h1_n}"
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
-  <td class="left">{retest_str}</td>
-  <td>{confl_h1_n}</td><td class="left merged-h1-levels">{members_str}</td>
+  <td class="left" title="{retest_title}">{retest_str}</td>
+  <td class="left merged-h1-levels">{members_str}</td>
   <td>{h1_entry_cell}</td>
   <td colspan="17">UNFILLED &mdash; {res.get('fail_reason', '')}</td>
   <td class="expand-cell"><button class="expand-btn" data-idx="{idx}"
@@ -1246,11 +1283,10 @@ def render(args):
 
         rows_html.append(f"""
 <tr class="lvl-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
-    data-confl="{confl_h1_n}"
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
-  <td class="left">{retest_str}</td>
-  <td>{confl_h1_n}</td><td class="left merged-h1-levels">{members_str}</td>
+  <td class="left" title="{retest_title}">{retest_str}</td>
+  <td class="left merged-h1-levels">{members_str}</td>
   <td>{h1_entry_cell}</td>
   <td>{res['alt_price']:.2f}{gap_flag}<span class="{src_cls}">{res['alt_source']}{improved_flag}</span>{chase_flag}</td>
   <td class="left">{entry_touch_str}</td>
@@ -1331,14 +1367,19 @@ def render(args):
 </div>
 <p class="lead">Fine-tuned entry = most extreme price (highest for LLPB/short, lowest for
 LHPB/long) among the subject's own H1 level and its same-side H1+M5 confluent levels still
-unconsumed immediately before this trade's H1 retest (H1 search radius
+unconsumed immediately before the cluster's ORIGINAL first H1 retest (H1 search radius
 &plusmn;{h1_radius}pt; M5 search radius &plusmn;{m5_radius}pt; M5 levels must have formed
 by the H1 breakout bar). The H1 radius controls SS qualification, clustering and
 entry selection. Clusters are transitive: the radius limits each link, not the
 total cluster span, and linked levels can have different breakout/retest bars. (Own
 Entry vs Entry columns; the src tag shows which member supplied the extreme: own/h1/m5),
-verified filled on real ticks (forward-only, &le;{args.max_alt_fill_hours}h -- an entry never
-reached in that window is UNFILLED and excluded from every stat here, not counted as a loss).
+verified filled on real ticks from the REFINED H1 level's own retest candle START
+(not its exact tick touch). The window is [start, start + {args.max_alt_fill_hours:g}h);
+it does not begin at the original cluster anchor's retest. The Refined H1 retest column
+shows this start; hover for the original H1 retest and window end.
+If that H1 level has not yet been retested/consumed, the window has not started.
+An entry never reached in its window is UNFILLED and excluded from every stat here,
+not counted as a loss.
 {peg_lead_sentence}
 Target = the MOST RECENTLY FORMED (P0) live opposite-type M5 level on the favourable side,
 not the closest price or the newest breakout. Its P1 candle must have broken at least
@@ -1364,18 +1405,6 @@ docstring for full detail and design-choice caveats).</p>
     filter_panel = """
 <div class="filter-panel">
   <div class="filter-row">
-    <span class="filter-label">Confl.</span>
-    <select class="f-num-op" data-target="confl">
-      <option value="any" selected>any</option>
-      <option value="gte">&ge;</option>
-      <option value="gt">&gt;</option>
-      <option value="eq">=</option>
-      <option value="lte">&le;</option>
-      <option value="lt">&lt;</option>
-    </select>
-    <input type="number" class="f-num-val" data-target="confl" value="0" min="0" step="1">
-  </div>
-  <div class="filter-row">
     <span class="filter-label">Status</span>
     <label class="chip"><input type="checkbox" class="f-cb f-review-status" value="unreviewed" checked> Unreviewed</label>
     <label class="chip"><input type="checkbox" class="f-cb f-review-status" value="reviewed" checked> Reviewed</label>
@@ -1398,9 +1427,8 @@ docstring for full detail and design-choice caveats).</p>
 </div>
 """
 
-    head = (f"<th class=\"left\">#</th><th class=\"left\">Type</th><th class=\"left\">Retest (H1)</th>"
-            f"<th title=\"External H1 levels found within +/-{h1_radius}pt of each cluster "
-            f"member, excluding the cluster's own levels\">Confl.</th>"
+    head = (f"<th class=\"left\">#</th><th class=\"left\">Type</th>"
+            f"<th class=\"left\">Refined H1 retest</th>"
             f"<th class=\"left\" title=\"Distinct H1 prices merged into this trade, "
             f"extreme-first: highest for LLPB, lowest for LHPB. "
             f"Single-level trades show their own H1 price.\">Merged H1 levels</th>"
@@ -1469,7 +1497,9 @@ if __name__ == "__main__":
     parser.add_argument("--fallback-target", type=float, default=DEFAULT_FALLBACK_TARGET)
     parser.add_argument("--baseline-stop", type=float, default=DEFAULT_BASELINE_STOP)
     parser.add_argument("--baseline-target", type=float, default=DEFAULT_BASELINE_TARGET)
-    parser.add_argument("--max-alt-fill-hours", type=float, default=MAX_ALT_FILL_HOURS_DEFAULT)
+    parser.add_argument("--max-alt-fill-hours", type=float, default=MAX_ALT_FILL_HOURS_DEFAULT,
+                        help="Fill-window duration from the refined H1 level's own retest "
+                             f"candle start, not its exact tick touch (default {MAX_ALT_FILL_HOURS_DEFAULT:g}h).")
     parser.add_argument("--pegged-entry", action=argparse.BooleanOptionalAction, default=True,
                         help="Simulate a peg-to-market/chasing limit order for the "
                              "fine-tuned entry instead of a plain static limit: on every "

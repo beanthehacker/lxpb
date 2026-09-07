@@ -395,6 +395,11 @@ lists its own H1 price. This replaces the post-merge external SS count and
 its numeric table filter; `--ss-confl-min` still qualifies candidates before
 merging. M5 entry levels and external H1 support are not cluster members.
 
+The historical **Confl.** column and its numeric filter are no longer
+generated. The generator does not aggregate historical external-level
+counts; same-side confluence remains in use for SS qualification,
+clustering, entry selection and the blue H1 chart overlays.
+
 The H1 radius is **+/-5.25 points** by default. It applies throughout SS
 qualification, clustering and H1 entry selection, not just deduplication.
 The M5 entry search remains **+/-5 points** around each cluster member.
@@ -408,10 +413,27 @@ merging existing ones. Connections are transitive, so a cluster's total
 price span can exceed the radius and its members can have different
 breakout/retest bars. Existing level-liveness and fill rules still apply.
 
+The **3-hour entry window starts at the refined H1 level's own retest
+candle start**, not the original cluster anchor's retest or the refined
+level's exact intrabar touch. Select the H1 reference from the existing
+entry pool first, then use that level's actual retest/consumption bar from
+its lifecycle, not a clipped chart endpoint. If it has not yet been
+retested/consumed, the window has not started and the order stays UNFILLED;
+there is no fallback to the original anchor. The interval includes its
+start and excludes its end (`--max-alt-fill-hours`, default 3).
+
+The **Refined H1 retest** column shows this window start; its tooltip
+retains the original H1 retest and the window end. For SS2 full-year row 0,
+the window is January 1, 2026 **18:00-21:00 PT**, rather than 15:00-18:00.
+Original entry qualification, cluster identity and the fixed 2/8 baseline
+still use the original H1 setup.
+
 Execution charts (1s candles, bid/ask volume, 1-minute context and footprints)
 load around the exact filled-entry timestamp, even when the order fills
 after the original H1 retest hour. Unfilled orders instead show the full
-entry-search window; they do not have execution-centered charts or footprints.
+refined-H1 entry-search window in the M5 and 1-minute panes; they do not
+have execution-centered charts or footprints. No fill-window pane is
+fabricated when the refined H1 level has not yet been retested.
 
 The **target** is the most recently formed **P0**, not the nearest price or
 the latest P1: a live opposite-type M5 level on the favourable side of the
