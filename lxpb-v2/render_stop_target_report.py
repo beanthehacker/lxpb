@@ -869,7 +869,8 @@ _m5_bars = LC.m5_bars_for_contract
 
 
 
-def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=None):
+def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=None,
+                   fill_window=None, p1_bar_width=pd.Timedelta(hours=1), p1_label="H1"):
     """5-minute companion pane for build_trade_chart's H1 chart.
 
     Runs the SAME LXPB state machine (lxpb.detect_lxpb_h1 is timeframe
@@ -883,6 +884,15 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     the exact selected M5 ledger row in `entry_level`, if M5 supplied the
     planned entry. Its P0-to-death ray is highlighted separately from the
     blue eligible levels and the actual (possibly pegged) fill price.
+    An optional (start, end) `fill_window` anchors the pane at the refined
+    H1 retest and shows the whole window for unfilled orders without making
+    up a touch or exit. The selected entry still belongs to the original
+    setup; the window does not re-qualify or change that entry plan.
+
+    `p1_bar_width`/`p1_label` generalize the "P1 breakout bar" concept for a
+    caller whose own subject level is native to a different timeframe than
+    H1 (e.g. an M5-native strategy report, where `row["breakout_time"]` is
+    itself a 5-minute bar) -- both default to the original H1 behaviour.
 
     A qualifying M5 level must be all four of:
       * the SAME type as the H1 level (an H1 LLPB retest only cares about M5
@@ -916,11 +926,15 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     instant. Bars come from _m5_bars' cached whole-contract series, so the
     state machine can be walked from the H1 breakout bar forward no matter how
     long ago that was -- the window is bounded only by the contract segment."""
-    retest_time = pd.Timestamp(row["retest_time"], tz="UTC")
+    setup_time = pd.Timestamp(row["retest_time"], tz="UTC")
+    retest_time = (pd.to_datetime(fill_window[0], utc=True)
+                   if fill_window is not None else setup_time)
     breakout_time = pd.Timestamp(row["breakout_time"], tz="UTC")
     exit_time = resolved.get("exit_time")
     touch_time = resolved.get("touch_time")
-    hi = (exit_time if exit_time is not None else retest_time) + pd.Timedelta(hours=2)
+    context_end = (exit_time if exit_time is not None else
+                   pd.to_datetime(fill_window[1], utc=True) if fill_window is not None else retest_time)
+    hi = context_end + pd.Timedelta(hours=2)
     # Reach back far enough that the M5 machine can actually see the H1
     # breakout bar -- levels are only eligible if they formed by then, so a
     # window starting after it would report "none qualify" as an artefact.
@@ -958,7 +972,7 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     # True when the H1 breakout happened in an EARLIER contract, so no bar in
     # this segment can satisfy the formation filter -- reported honestly in
     # the title rather than as a bare "no level qualified".
-    breakout_out_of_reach = all_bars.index[0] > breakout_time + pd.Timedelta(hours=1)
+    breakout_out_of_reach = all_bars.index[0] > breakout_time + p1_bar_width
 
     level_type = row["type"]
     price = float(row["price"])
@@ -985,7 +999,7 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     # H1 bars are hourly, so that bar covers [breakout_time, +1h).
     as_of = pd.Timestamp(touch_time) if touch_time is not None else retest_time
     entry_bar_pos = int(all_bars.index.searchsorted(as_of, side="right")) - 1
-    form_cutoff = breakout_time + pd.Timedelta(hours=1) - pd.Timedelta(nanoseconds=1)
+    form_cutoff = breakout_time + p1_bar_width - pd.Timedelta(nanoseconds=1)
     near_levels = []
     if entry_bar_pos > 0:
         ledger = LC.m5_levels(seg_idx)
@@ -1008,8 +1022,8 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     if entry_level is not None:
         formed = pd.to_datetime(entry_level["formation_time"], utc=True)
         death = entry_level["death_time"]
-        if (entry_level["type"] != level_type or formed >= retest_time or
-                (pd.notna(death) and pd.to_datetime(death, utc=True) < retest_time)):
+        if (entry_level["type"] != level_type or formed >= setup_time or
+                (pd.notna(death) and pd.to_datetime(death, utc=True) < setup_time)):
             raise ValueError("M5 entry level must be same-side and unconsumed before H1 retest")
         selected = next((lv for lv in near_levels
                          if lv["price"] == float(entry_level["price"]) and
@@ -1037,11 +1051,8 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     idx = bars.index
     n_bars = len(idx)
     retest_pos = max(0, int(idx.searchsorted(retest_time, side="right")) - 1)
-    if exit_time is not None:
-        exit_pos = min(int(idx.searchsorted(exit_time, side="right")) - 1, n_bars - 1)
-        exit_pos = max(exit_pos, retest_pos)
-    else:
-        exit_pos = retest_pos
+    exit_pos = min(int(idx.searchsorted(context_end, side="right")) - 1, n_bars - 1)
+    exit_pos = max(exit_pos, retest_pos)
 
     def _pos(ts):
         return min(max(int(idx.searchsorted(pd.Timestamp(ts), side="right")) - 1, 0), n_bars - 1)
@@ -1143,7 +1154,7 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
 
     price_lines = [
         {"price": h1_price, "color": R.LEVEL_COLOR, "lineWidth": 2, "lineStyle": 0,
-         "title": f"H1 {level_type} {h1_price:.2f}" + (" (entry)" if price == h1_price else "")},
+         "title": f"{p1_label} {level_type} {h1_price:.2f}" + (" (entry)" if price == h1_price else "")},
         {"price": target_price, "color": EXIT_WIN_COLOR, "lineWidth": 1, "lineStyle": 2,
          "title": f"target {target_price:.2f} (+{_fmt_pts(target)}pt)"},
         {"price": stop_price, "color": EXIT_LOSS_COLOR, "lineWidth": 1, "lineStyle": 2,
@@ -1155,14 +1166,14 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
 
     if n_live_levels:
         lvl_txt = (f"{n_live_levels} live M5 {level_type} ray(s) within "
-                   f"{M5_NEAR_PTS:.0f}pt formed by H1 breakout "
+                   f"{M5_NEAR_PTS:.0f}pt formed by {p1_label} breakout "
                    f"(solid = broken, dashed = unbroken; hover for details)")
     elif breakout_out_of_reach:
-        lvl_txt = (f"H1 breakout bar predates this contract's tick data -- "
+        lvl_txt = (f"{p1_label} breakout bar predates this contract's tick data -- "
                    f"cannot tell which M5 {level_type} levels existed by then")
     else:
         lvl_txt = (f"no live M5 {level_type} level within {M5_NEAR_PTS:.0f}pt "
-                   f"formed by H1 breakout")
+                   f"formed by {p1_label} breakout")
     title = (f"M5  |  {lvl_txt}  |  {R._to_pt_str(window.index[0])} \u2192 "
              f"{R._to_pt_str(window.index[-1])}")
     if entry_level is not None:
