@@ -40,8 +40,8 @@ in JS_TEMPLATE (id/label/hint) plus its default rule in compute_hints's
 persistence, and CSV export/import are all driven off the FEATURES list.
 
 Usage:
-    python render_labels_report.py --data ../data/es-h1-continuous-backadjusted.csv --limit 300
-    python render_labels_report.py --data ../data/es-h1-continuous-backadjusted.csv --all --output all_labels.html
+    python render_labels_report.py --limit 300
+    python render_labels_report.py --all --output all_labels.html
 """
 import os
 import sys
@@ -74,36 +74,37 @@ from candle_utils import (  # noqa: E402
 )
 
 # 1s/1min real-tick charts + tick-level volume-by-price footprint, spliced
-# from the local Sierra Chart .scid files using the SAME reverse-engineered
-# roll-switch/offset rule (`build_es_h1_2026_backadjusted.py`'s `CONTRACTS`/
-# `roll_switch_utc`/`TV_GROUND_TRUTH_OFFSETS`) as
+# from the local Sierra Chart .scid files using B26's reverse-engineered
+# roll-switch rule (`CONTRACTS`/`roll_switch_utc`) to pick which contract
+# really traded at a given instant -- the same rule
 # render_lxpb_retest_1s_report.py and ../retest-vol-scalp/lxpb_retest_vol_scalp.py
-# -- reimplemented standalone here (rather than imported) so this module has
-# no import-order dependency on either sibling script, mirroring the same
-# "reimplemented standalone" choice lxpb_retest_vol_scalp.py's own docstring
-# makes. Only valid for retests within B26.CONTRACTS' 2026 coverage -- the
-# default --start=2026-01-01 keeps every row in range; older/out-of-range
-# retests simply render with a "(no tick data in this window)" placeholder.
+# use, reimplemented standalone here (rather than imported) so this module has
+# no import-order dependency on either sibling script.
+#
+# Only the roll TIMING comes from B26. Its TV_GROUND_TRUTH_OFFSETS constants
+# are deliberately NOT used: those were measured against one frozen export and
+# go stale the moment TradingView re-exports, which is what the old "vintage
+# delta" correction existed to patch. The offsets are measured live instead
+# (see _measure_scid_offset). Only valid for instants within B26.CONTRACTS'
+# coverage -- moments outside it simply render with a "(no tick data in this
+# window)" placeholder.
 import build_es_h1_2026_backadjusted as B26  # noqa: E402
 
 sys.path.insert(0, r"D:\acheron\AcheronUtils")  # scidReader.py lives there
 from scidReader import get_scid_df  # noqa: E402
 
-# ../data/es-h1-continuous-backadjusted.csv is the whole-monorepo canonical, back-adjusted,
-# jump-free continuous ES H1 series (see data/build_es_h1_continuous.py at repo root),
-# used consistently by lxpb.py/lxpb-es-vol/label-review. It is built by taking the frozen,
-# internally-consistent TradingView back-adjusted export (data/es-h1-2015-14aug2026.csv) as
-# the historical base and extending it with fresh, real front-month .scid data (which
-# always carries a +0 offset as the current contract) -- so it stays accurate without ever
-# needing a fresh TradingView re-export (which is what caused the original drift bug: each
-# re-export recalculates ALL history relative to a new anchor date).
+# H1 bars come from _display_h1() -- TradingView's own continuous ES1! export
+# and nothing else (see "continuous contracts only" in CLAUDE.md). `--data`
+# stays available for pointing this report at some other CSV, but it defaults
+# to None, meaning "the display series".
 #
-# lxpb-v2 is a self-contained set of scripts living directly under
-# D:\lxpb, with NO local data/ folder of its own -- ALL data (this
-# canonical CSV, plus the 2026-only tick-splicing helper/CSV used for
-# real-tick 1s/1min/footprint charts) lives in the single shared
-# ..\data folder (D:\lxpb\data), the repo-wide single source of truth.
-DEFAULT_DATA = os.path.join(_DATA_DIR, "es-h1-continuous-backadjusted.csv")
+# The old default here was ../data/es-h1-continuous-backadjusted.csv, a hybrid
+# that took a frozen TradingView export as its historical base and extended it
+# with resampled front-month .scid bars. That is exactly the construction the
+# convention now forbids: the two halves are different feeds spliced at an
+# arbitrary date, so the state machine saw a vendor change mid-history. It is
+# no longer read by anything here.
+DEFAULT_DATA = None
 DEFAULT_OUTPUT = os.path.join(_HERE, "public", "reports", "lxpb_labels_report.html")
 
 BARS_BEFORE = 8     # H1 bars of context shown before Phase 0 (formation)
@@ -216,6 +217,46 @@ def _segment_for(i):
     return start, end
 
 
+# Max plausible close->open jump AT a registered roll boundary in a
+# correctly back-adjusted continuous series -- real residual noise there
+# measures ~2-2.5pt (ordinary bar-to-bar movement, nothing special about the
+# instant), while a genuinely broken/missing back-adjustment reproduces the
+# real, un-adjusted quarterly ES calendar spread (multiple points, often
+# 5-15+). See the "continuous contracts only" convention in CLAUDE.md --
+# every continuous series this repo builds (H1 today via _display_h1, M5
+# once it exists) must pass this at every roll it covers.
+MAX_ROLL_JUMP_PTS = 5.0
+
+
+def _assert_no_roll_gaps(bars, label, max_jump_pts=MAX_ROLL_JUMP_PTS):
+    """Raise if `bars` (a continuous OHLC frame, open/close columns, any
+    timeframe) has an unexplained close->open jump at a registered roll
+    boundary (_own_roll()) -- the one place a broken back-adjustment/splice
+    can actually show up, since mid-segment there is no adjustment applied
+    at all. A real market gap (weekend, holiday, news) can be large too, but
+    that happens at session boundaries scattered throughout a segment, not
+    reliably exactly at the roll instant every single time -- a big jump
+    landing precisely on the roll is the splice, not the market. Rolls
+    outside `bars`' own coverage are skipped, not flagged."""
+    idx = bars.index
+    for roll_ts in _own_roll():
+        if roll_ts is None:
+            continue
+        pos = idx.searchsorted(roll_ts)
+        if pos <= 0 or pos >= len(idx):
+            continue
+        prev_close = float(bars["close"].iloc[pos - 1])
+        next_open = float(bars["open"].iloc[pos])
+        jump = abs(next_open - prev_close)
+        if jump > max_jump_pts:
+            raise RuntimeError(
+                f"{label}: {jump:.2f}pt jump across the roll at {roll_ts} "
+                f"({prev_close:.2f} -> {next_open:.2f}, max allowed "
+                f"{max_jump_pts:.2f}) -- back-adjustment/splice looks broken, "
+                f"not a real market gap. See 'continuous contracts only' in "
+                f"CLAUDE.md before using this series for anything.")
+
+
 def _contract_index_for(ts_utc):
     """Which CONTRACTS[i] was actually front-month (i.e. which .scid file's
     RAW, unadjusted prices are what really traded) at ts_utc."""
@@ -227,137 +268,304 @@ def _contract_index_for(ts_utc):
     return n - 1
 
 
-# --- back-adjustment splice-vintage calibration -----------------------------
-# B26.TV_GROUND_TRUTH_OFFSETS converts raw .scid prices into the price scale of
-# ONE specific TradingView export: OFFSET_CALIB_H1, the frozen file those
-# constants were measured against. That distinction matters because ES1! is not
-# a real contract -- TradingView splices the quarterly chain (H26 -> M26 -> U26)
-# into one series and shifts every OLDER segment by that roll's spread so the
-# chart has no gap. Those spreads are RECOMPUTED on every export, so re-exporting
-# silently moves the absolute price of historical bars: between the 14aug and the
-# 24aug/1jan/2sep exports the 2026-01-20 15:00 close moved 7009.50 -> 7007.75
-# (-1.75 across the whole H26 segment, -5.75 across M26, 0.00 for the live U26).
+# --- TradingView continuous exports: the ONE source of structural OHLC -------
+# Every H1/M5 series this repo runs the LXPB state machine over comes from
+# TradingView's own continuous ES1! exports and nothing else. See the "data
+# convention: continuous contracts only" section in CLAUDE.md: .scid data is
+# never resampled into H1 or M5 structural bars, not even to fill a hole --
+# where an export stops, the series stops, and the range is simply absent.
 #
-# Feeding a newer export to code still holding the old constants therefore
-# mis-scales every .scid-derived pane, AND -- because this same offset converts
-# entry/stop/target into raw tick terms -- resolves exits at the wrong price.
-# Rather than hard-code a second set of constants (which the NEXT export would
-# stale in exactly the same way), measure the shift between the calibration
-# export and whatever series is actually displayed, and add it. Exports sharing
-# the calibration vintage measure 0.00 and make this a no-op.
-#
-# All DISPLAY_H1_PATHS must share one vintage (verified: pairwise 0.00 across
-# every overlap); they are merged newest-wins, oldest file first.
+# All exports in one list MUST share a single splice vintage. TradingView
+# recomputes its back-adjustment on every export, so two vintages of the same
+# bar can differ by points (the H26/M26 segments moved -1.75/-5.75 between the
+# 14aug and the 24aug/1jan/2sep H1 vintages). Mixing them inside one series
+# would plant a step change in the middle of history that no roll explains.
+# _assert_one_vintage checks this on every overlap instead of trusting it, so
+# a newly dropped-in export that was re-exported on a different anchor fails
+# loudly at load rather than silently reshaping levels.
 DISPLAY_H1_PATHS = [
     os.path.join(_HERE, "data", "1jan2026-CME_MINI_ES1!, 60.csv"),
     os.path.join(_HERE, "data", "24aug-CME_MINI_ES1!, 60.csv"),
     os.path.join(_HERE, "data", "2sep-CME_MINI_ES1!, 60.csv"),
 ]
-OFFSET_CALIB_H1 = os.path.join(_DATA_DIR, "es-h1-2015-14aug2026.csv")
-# Only measure inside B26's own contract coverage: _segment_for(0) deliberately
-# extends back to None, but pre-2026 bars belong to contracts B26 does not model
-# (U25/Z25...), each carrying its own unrelated splice shift.
-_VINTAGE_EPOCH = pd.Timestamp("2026-01-01", tz="UTC")
-# A splice shift is constant across a segment by construction, but a few bars
-# legitimately differ -- single-bar data revisions, and the ~1 session either
-# side of a roll that two vintages can time differently -- so require a dominant
-# mode rather than perfect agreement.
-_VINTAGE_MIN_MODE_SHARE = 0.95
-_VINTAGE_MIN_OVERLAP = 100
-_VINTAGE_DELTAS = None
+
+# M5 equivalent of DISPLAY_H1_PATHS -- TradingView's own continuous ES1! M5
+# export, on the same back-adjusted scale as DISPLAY_H1_PATHS (checked at
+# load by _assert_shares_h1_scale, not assumed). Together these cover
+# 2024-12-08 -> present with no internal hole beyond real session closures;
+# to extend the range, add another export here rather than reaching for
+# .scid. Merged newest-wins, oldest file first, same as DISPLAY_H1_PATHS.
+DISPLAY_M5_PATHS = [
+    os.path.join(_DATA_DIR, "8dec2024-23mar2025-CME_MINI_ES1!, 5_e8128.csv"),
+    os.path.join(_DATA_DIR, "23mar2025-3jul2025-CME_MINI_ES1!, 5_e8128.csv"),
+    os.path.join(_DATA_DIR, "3jul2025-12oct2025-CME_MINI_ES1!, 5_e8128.csv"),
+    os.path.join(_DATA_DIR, "12oct2025-2feb2026-CME_MINI_ES1!, 5_e8128.csv"),
+    os.path.join(_DATA_DIR, "Feb2026-CME_MINI_ES1!, 5_e8128.csv"),
+    os.path.join(_DATA_DIR, "15feb2026-31may2026-CME_MINI_ES1!, 5_e8128.csv"),
+    os.path.join(_DATA_DIR, "31may2026-10sep2026-CME_MINI_ES1!, 5_e8128.csv"),
+]
+
+# Two exports of the same vintage agree to the tick on every shared bar, so
+# any disagreement at all is a different vintage -- but allow a handful of
+# single-bar revisions rather than demanding literal perfection.
+_VINTAGE_MIN_AGREE_SHARE = 0.99
+# Bars the M5 export must share with the H1 one before their agreement means
+# anything -- a handful of matching bars could agree by coincidence.
+_SCALE_CHECK_MIN_OVERLAP = 100
+# Raw .scid closes are a different vendor's feed, so a few bars legitimately
+# differ from TradingView's even at the correct offset; require a dominant
+# mode rather than the near-perfect agreement demanded of two TV exports.
+_SCID_OFFSET_MIN_MODE_SHARE = 0.95
+# Gaps longer than this are reported (not raised) when a continuous series is
+# built: a normal weekend is 2d 1h and the longest real holiday closure in the
+# covered range is Good Friday at 3d 1h, so anything past this is missing data
+# rather than a closed market. It is legal -- the series just does not cover
+# it -- but it must never pass unnoticed, because the state machine walks
+# straight across it as though the two sides were adjacent bars.
+_MAX_EXPECTED_GAP = pd.Timedelta(days=3, hours=12)
 
 
-def _seg_closes(df, lo, hi):
-    s = df["close"]
-    s = s[s.index >= lo]
-    return s if hi is None else s[s.index < hi]
-
-
-def _load_h1_csv(path):
-    """A TradingView H1 export as a UTC-aware OHLC frame (load_ohlc_data
-    hands back a naive-UTC index; the segment maths below compares against
-    tz-aware roll instants)."""
+def _load_tv_csv(path):
+    """A TradingView continuous export (any timeframe) as a UTC-aware OHLC
+    frame. `lxpb.load_ohlc_data` hands back a naive-UTC index; every segment
+    and roll comparison in this module is tz-aware, so localise once here."""
     df = L.load_ohlc_data(path).copy()
     idx = pd.DatetimeIndex(df.index)
     df.index = idx.tz_localize("UTC") if idx.tz is None else idx.tz_convert("UTC")
     return df
 
 
-def _display_h1():
-    """DISPLAY_H1_PATHS merged newest-wins -- the price scale the reports
-    actually show and trade off."""
-    frames = [_load_h1_csv(p) for p in DISPLAY_H1_PATHS if os.path.exists(p)]
+# Kept as an alias: sibling scripts import this name for generic
+# TradingView-export loading, which is all it ever did.
+_load_h1_csv = _load_tv_csv
+
+
+def _assert_one_vintage(frames, label):
+    """Raise unless every pair of `frames` (path -> OHLC) agrees on the bars
+    they share.
+
+    Two exports pulled from the same back-adjustment anchor are identical to
+    the tick wherever they overlap. A disagreement means one of them was
+    re-exported against a different anchor, and merging them would put a step
+    change into the middle of the series that no roll accounts for -- levels
+    either side of it would then be measured in two different price scales.
+    That used to be patched after the fact by measuring a per-contract
+    "vintage delta" against a frozen reference export; refusing the mismatch
+    outright is both simpler and safer, since the delta could only ever
+    correct the one file it was measured against."""
+    items = list(frames.items())
+    for a in range(len(items)):
+        for b in range(a + 1, len(items)):
+            (pa, fa), (pb, fb) = items[a], items[b]
+            common = fa.index.intersection(fb.index)
+            if len(common) == 0:
+                continue
+            same = (fa.loc[common, "close"].round(4) ==
+                    fb.loc[common, "close"].round(4))
+            share = float(same.mean())
+            if share < _VINTAGE_MIN_AGREE_SHARE:
+                diff = (fa.loc[common, "close"] - fb.loc[common, "close"]).round(4)
+                raise RuntimeError(
+                    f"{label}: {os.path.basename(pa)} and {os.path.basename(pb)} "
+                    f"disagree on {(1 - share):.1%} of their {len(common)} shared "
+                    f"bars (modal difference {float(diff.mode().iloc[0]):+.2f}pt) "
+                    "-- they are different back-adjustment vintages and cannot be "
+                    "merged into one series. Re-export both from the same anchor, "
+                    "or drop one. See 'continuous contracts only' in CLAUDE.md.")
+
+
+def _report_series_gaps(bars, label):
+    """Print any hole longer than _MAX_EXPECTED_GAP. Never raises.
+
+    Missing history is a legitimate state now that .scid can no longer be
+    resampled to paper over one, but it is never harmless: the LXPB state
+    machine sees the bars either side of a hole as consecutive, so a level
+    can appear to break out and retest across days that were never handed
+    to it. Say so at load time rather than leaving it to be inferred from
+    the levels."""
+    if len(bars) < 2:
+        return
+    deltas = bars.index.to_series().diff()
+    big = deltas[deltas > _MAX_EXPECTED_GAP]
+    if big.empty:
+        return
+    print(f"  [data] {label}: {len(big)} gap(s) longer than "
+          f"{_MAX_EXPECTED_GAP} -- the series does not cover these, and the "
+          f"state machine will treat each hole's two sides as adjacent bars:")
+    for end_ts, delta in big.items():
+        print(f"    {end_ts - delta} -> {end_ts}  ({delta})")
+
+
+def _merge_tv_exports(paths, label):
+    """The shared body of _display_h1/_display_m5: load every export that
+    exists, check they are one vintage, merge newest-wins, then validate the
+    result at every roll boundary it covers."""
+    frames = {p: _load_tv_csv(p) for p in paths if os.path.exists(p)}
     if not frames:
+        raise RuntimeError(f"no {label} exports exist: {paths}")
+    _assert_one_vintage(frames, label)
+    merged = (pd.concat(frames.values()) if len(frames) > 1
+              else next(iter(frames.values())))
+    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    _assert_no_roll_gaps(merged, label)
+    _report_series_gaps(merged, label)
+    return merged
+
+
+_DISPLAY_H1_CACHE = None
+_DISPLAY_M5_CACHE = None
+
+
+def _display_h1():
+    """DISPLAY_H1_PATHS merged newest-wins -- TradingView's own continuous
+    ES1! H1 series, and the price scale every report shows and trades off.
+
+    This is the ONLY source of H1 structural bars (see "continuous contracts
+    only" in CLAUDE.md). Where the exports stop, H1 history stops; no .scid
+    extension fills in behind them."""
+    global _DISPLAY_H1_CACHE
+    if _DISPLAY_H1_CACHE is None:
+        _DISPLAY_H1_CACHE = _merge_tv_exports(DISPLAY_H1_PATHS, "display H1 series")
+    return _DISPLAY_H1_CACHE
+
+
+def _assert_shares_h1_scale(m5):
+    """Raise unless the M5 export sits on the same back-adjusted scale as the
+    H1 one, measured rather than assumed.
+
+    Both are TradingView continuous ES1! exports, so the M5 bar that opens an
+    hour opens on the same print as that hour's H1 bar. Comparing the two is
+    therefore a direct read of whether the files were adjusted against the
+    same anchor -- the check that matters most now that nothing downstream
+    re-scales either series."""
+    h1 = _display_h1()
+    common = m5.index.intersection(h1.index)
+    if len(common) < _SCALE_CHECK_MIN_OVERLAP:
         raise RuntimeError(
-            "cannot calibrate .scid back-adjustment offsets: none of the display H1 "
-            f"exports exist: {DISPLAY_H1_PATHS}")
-    merged = pd.concat(frames) if len(frames) > 1 else frames[0]
-    return merged[~merged.index.duplicated(keep="last")].sort_index()
-
-
-def _vintage_deltas():
-    """Per-contract shift (display export - calibration export), measured.
-
-    Also the promised guard: a splice shift is a CONSTANT across a whole
-    contract segment by construction, so if the measured difference is not
-    overwhelmingly one single value the two files are not comparable (e.g.
-    one is unadjusted, or the segment/roll boundaries no longer hold) and
-    the offsets cannot be trusted -- fail loudly rather than silently
-    mis-scale every tick chart and exit resolution."""
-    global _VINTAGE_DELTAS
-    if _VINTAGE_DELTAS is not None:
-        return _VINTAGE_DELTAS
-    if not os.path.exists(OFFSET_CALIB_H1):
+            f"display M5 series: only {len(common)} bars line up with the "
+            f"display H1 series -- too few to confirm they share a "
+            f"back-adjustment scale (need >= {_SCALE_CHECK_MIN_OVERLAP}).")
+    same = (m5.loc[common, "open"].round(4) == h1.loc[common, "open"].round(4))
+    share = float(same.mean())
+    if share < _VINTAGE_MIN_AGREE_SHARE:
+        diff = (m5.loc[common, "open"] - h1.loc[common, "open"]).round(4)
         raise RuntimeError(
-            "cannot calibrate .scid back-adjustment offsets: the export "
-            f"TV_GROUND_TRUTH_OFFSETS was measured against is missing: {OFFSET_CALIB_H1}")
-    disp, calib = _display_h1(), _load_h1_csv(OFFSET_CALIB_H1)
-    out = {}
-    for i, (sym, _y, _m) in enumerate(B26.CONTRACTS):
-        seg_start, seg_end = _segment_for(i)
-        lo = max(seg_start, _VINTAGE_EPOCH) if seg_start is not None else _VINTAGE_EPOCH
-        a, b = _seg_closes(disp, lo, seg_end), _seg_closes(calib, lo, seg_end)
-        common = a.index.intersection(b.index)
-        if len(common) < _VINTAGE_MIN_OVERLAP:
-            raise RuntimeError(
-                f"cannot calibrate {sym}'s back-adjustment offset: only {len(common)} "
-                f"H1 bars overlap between {DISPLAY_H1_PATHS} and {OFFSET_CALIB_H1} in "
-                f"[{lo}, {seg_end}) -- need >= {_VINTAGE_MIN_OVERLAP}.")
-        diff = (a.loc[common] - b.loc[common]).round(4)
-        delta = float(diff.mode().iloc[0])
-        share = float((diff == delta).mean())
-        if share < _VINTAGE_MIN_MODE_SHARE:
-            raise RuntimeError(
-                f"{sym}: the difference between the display H1 export and the "
-                f"offset-calibration export is not a constant splice shift "
-                f"({share:.1%} of {len(common)} bars are {delta:+.2f}, "
-                f"{diff.nunique()} distinct values) -- the two files are not the "
-                "same kind of series, so TV_GROUND_TRUTH_OFFSETS cannot be "
-                f"corrected onto it.\n  display: {DISPLAY_H1_PATHS}\n  calib:   "
-                f"{OFFSET_CALIB_H1}")
-        out[sym] = delta
-    _VINTAGE_DELTAS = out
-    if any(v != 0.0 for v in out.values()):
-        print("  .scid back-adjustment re-calibrated onto the display H1 export's "
-              "splice vintage: " + ", ".join(
-                  f"{s}{B26.TV_GROUND_TRUTH_OFFSETS[s]:+.2f}{d:+.2f}="
-                  f"{B26.TV_GROUND_TRUTH_OFFSETS[s] + d:+.2f}" for s, d in out.items()))
-    return out
+            f"display M5 series: {(1 - share):.1%} of the {len(common)} bars it "
+            f"shares with the display H1 series disagree (modal difference "
+            f"{float(diff.mode().iloc[0]):+.2f}pt) -- the two exports are on "
+            "different back-adjustment scales, so levels and prices taken from "
+            "them are not comparable. Re-export both from the same anchor.")
+
+
+def _display_m5():
+    """DISPLAY_M5_PATHS merged newest-wins -- TradingView's own continuous
+    ES1! M5 series, and the ONLY source of M5 structural bars (see
+    "continuous contracts only" in CLAUDE.md).
+
+    Validated three ways before any caller sees it: one vintage across the
+    exports, no unexplained jump at a roll, and the same back-adjusted scale
+    as the H1 series. Cached -- these are static files."""
+    global _DISPLAY_M5_CACHE
+    if _DISPLAY_M5_CACHE is None:
+        merged = _merge_tv_exports(DISPLAY_M5_PATHS, "display M5 series")
+        _assert_shares_h1_scale(merged)
+        _DISPLAY_M5_CACHE = merged
+    return _DISPLAY_M5_CACHE
+
+
+# --- mapping raw .scid ticks onto the TradingView scale ---------------------
+# STRICTLY ONE-WAY. A .scid file holds one real contract's own traded prices;
+# the continuous series is TradingView's splice of the quarterly chain. Raw
+# tick prices are moved ONTO the continuous scale so that a tick chart, a
+# fill and a level can be compared -- the continuous series is never pushed
+# back into raw terms to build structural bars out of ticks.
+#
+# The shift is MEASURED, per contract, against the display M5 export itself,
+# rather than read from a constant. A constant can only ever be right for the
+# one export vintage it was measured against, which is what made a second
+# "vintage delta" correction necessary before; measuring against whatever
+# series is actually loaded is right by construction and needs no upkeep when
+# a new export lands.
+_SCID_OFFSET_MIN_OVERLAP = 100
+_SCID_OFFSETS = {}
+
+
+def _front_month_start(seg_idx):
+    """When CONTRACTS[seg_idx] actually BECAME front month.
+
+    Not the same as _segment_for(seg_idx)[0], which is deliberately None for
+    the first contract so that any older timestamp still maps to some tick
+    file. A .scid file holds its contract's whole traded life, and a
+    quarterly contract trades for months before it goes front -- thinly, at
+    its own calendar-spread distance from the front month. Measuring an
+    offset over that back-month period compares two different things and
+    produces no constant at all (EPH26: 60% agreement over its full file,
+    99.9% over its front-month span alone).
+
+    The first contract has no predecessor in CONTRACTS, so its start comes
+    from the roll of the quarterly before it, by the same rule."""
+    start, _end = _segment_for(seg_idx)
+    if start is not None:
+        return start
+    _sym, year, month = B26.CONTRACTS[seg_idx]
+    prev_year, prev_month = (year, month - 3) if month > 3 else (year - 1, 12)
+    return B26.roll_switch_utc(prev_year, prev_month)
+
+
+def _measure_scid_offset(sym, seg_idx):
+    """Points to ADD to `sym`'s raw .scid prices to land on the continuous
+    scale, from the mode of (TradingView close - raw close) over the bars
+    where that contract was actually front month.
+
+    The mode, not the mean: a back-adjustment shift is one constant applied
+    to a whole segment, so the right answer is the value nearly every bar
+    agrees on, and averaging would let a handful of cross-vendor tick
+    discrepancies drag it off a real tick boundary."""
+    tv = _display_m5()
+    _seg_start, seg_end = _segment_for(seg_idx)
+    df = _load_contract(sym)
+    if df is None or df.empty:
+        raise RuntimeError(f"cannot measure {sym}'s .scid offset: no tick data")
+    lo = max(_front_month_start(seg_idx), df.index[0])
+    hi = seg_end if seg_end is not None else df.index[-1] + pd.Timedelta(seconds=1)
+    raw = _slice_sorted(df, lo, hi)["Close"].resample("5min").last().dropna()
+    common = raw.index.intersection(tv.index)
+    if len(common) < _SCID_OFFSET_MIN_OVERLAP:
+        raise RuntimeError(
+            f"cannot measure {sym}'s .scid offset: only {len(common)} M5 bars "
+            f"overlap between its front-month span [{lo}, {hi}) and the display "
+            f"M5 export (need >= {_SCID_OFFSET_MIN_OVERLAP}). Add an export "
+            "covering that span to DISPLAY_M5_PATHS.")
+    diff = (tv.loc[common, "close"] - raw.loc[common]).round(4)
+    offset = float(diff.mode().iloc[0])
+    share = float((diff == offset).mean())
+    if share < _SCID_OFFSET_MIN_MODE_SHARE:
+        raise RuntimeError(
+            f"{sym}: the difference between the display M5 export and this "
+            f"contract's raw .scid closes is not a constant ({share:.1%} of "
+            f"{len(common)} bars are {offset:+.2f}, {diff.nunique()} distinct "
+            "values) -- the export and the tick file do not describe the same "
+            "contract over that span, so ticks cannot be mapped onto it.")
+    print(f"  [scale] {sym} .scid -> TradingView continuous: {offset:+.2f}pt "
+          f"(measured on {len(common):,} M5 bars, {share:.1%} agreement)")
+    return offset
 
 
 def _offset_for_ts(ts_utc):
-    """Converts a back-adjusted/continuous price into whichever contract is
-    actually front-month AT ts_utc's raw terms -- see
-    render_lxpb_retest_1s_report.py's `_offset_for_ts` docstring for why
-    it's the retest segment's own offset, not the level's formation-bar
-    segment's offset.
+    """`(offset, symbol)` for the contract that was really front month at
+    `ts_utc`: add `offset` to that .scid file's raw prices to read them on
+    the continuous scale, subtract it to express a continuous price in the
+    raw terms a tick scan compares against.
 
-    The constant is corrected onto the price scale of the H1 export actually
-    being displayed (see DISPLAY_H1_PATHS) -- a no-op when that export shares
-    TV_GROUND_TRUTH_OFFSETS' own splice vintage."""
+    It is the segment of the moment being looked at, not of the level's own
+    formation bar -- the ticks being read are the ones that traded then. See
+    render_lxpb_retest_1s_report.py's own `_offset_for_ts` for the longer
+    version of that argument."""
     i = _contract_index_for(ts_utc)
     sym = B26.CONTRACTS[i][0]
-    return B26.TV_GROUND_TRUTH_OFFSETS[sym] + _vintage_deltas()[sym], sym
+    if sym not in _SCID_OFFSETS:
+        _SCID_OFFSETS[sym] = _measure_scid_offset(sym, i)
+    return _SCID_OFFSETS[sym], sym
 
 
 def _load_contract(symbol):
@@ -1665,7 +1873,15 @@ def render(data_path, output_path, title, n_ticks, tick_size, start=None, end=No
            limit=300, order="desc", pad_seconds=PAD_SECONDS_DEFAULT,
            one_min_pad_minutes=ONE_MIN_PAD_MINUTES_DEFAULT, include_footprint=True,
            exclude_gaps=True, strong_only=False):
-    h1_df = L.load_ohlc_data(data_path)
+    # `None` means the TradingView continuous display series -- the default,
+    # and the only H1 source this repo treats as canonical. Its index is
+    # tz-aware; load_ohlc_data's is naive, and everything downstream (the
+    # state machine, the --start/--end filters, the chart builders) compares
+    # against naive timestamps, so normalise to that here.
+    if data_path is None:
+        h1_df = _display_h1().tz_localize(None)
+    else:
+        h1_df = L.load_ohlc_data(data_path)
     _touch_lv0, touch_lv1_df, retests_df = L.detect_lxpb_h1(h1_df)
 
     if start:
@@ -1731,7 +1947,9 @@ def render(data_path, output_path, title, n_ticks, tick_size, start=None, end=No
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate LXPB hand-labeling HTML report")
-    parser.add_argument("--data", default=DEFAULT_DATA, help="H1 OHLC CSV path")
+    parser.add_argument("--data", default=DEFAULT_DATA,
+                         help="H1 OHLC CSV path. Defaults to the TradingView "
+                              "continuous display series (DISPLAY_H1_PATHS).")
     parser.add_argument("--output", default=DEFAULT_OUTPUT, help="Output HTML path")
     parser.add_argument("--title", default="LXPB Hand-Labeling Report",
                          help="Report page title")
@@ -1768,7 +1986,7 @@ if __name__ == "__main__":
                               "row-banding for rows sharing the same retest bar (confluence).")
     args = parser.parse_args()
 
-    if not os.path.exists(args.data):
+    if args.data is not None and not os.path.exists(args.data):
         print(f"Error: {args.data} not found.")
         sys.exit(1)
 

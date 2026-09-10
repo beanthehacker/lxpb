@@ -2,6 +2,24 @@ r"""
 LXPB level ledger + on-disk cache (H1 and M5)
 =============================================
 
+CONVENTION -- continuous contracts only (see CLAUDE.md): every level ledger
+built here comes from ONE continuous, back-adjusted series spanning every
+contract rollover, sourced from TradingView's own continuous exports and
+nothing else. Both h1_levels() (one run over R._display_h1()) and
+m5_levels() (one run over m5_bars_continuous()) follow this, and neither
+takes a contract or segment argument -- there is one ledger per timeframe,
+not one per contract.
+
+Raw .scid data is never resampled into H1 or M5 bars here, not even to fill
+a hole an export doesn't cover: where the exports stop, the ledger stops.
+.scid remains the source for second- and tick-level work (fills, exits,
+footprints, the 1s/1min panes), where prices are mapped ONTO this scale via
+R._offset_for_ts and never the other way round.
+
+A continuous series with a large price jump at a rollover boundary means the
+back-adjustment/splice is wrong (R._assert_no_roll_gaps checks for exactly
+this) -- fix the splice, never fall back to per-contract data.
+
 Every consumer in this repo that needs LXPB levels currently re-runs
 `lxpb.detect_lxpb_h1` from scratch, and that function only ever reports the
 state machine's THREE END-OF-DATA BUCKETS:
@@ -43,6 +61,11 @@ of the three buckets, so anything the old API could answer, this can too.
     retested             reached a valid retest; death_time == retest_time
     consumed_early       touched/gapped past before MIN_HOURS_BEFORE_RETEST
     discarded_no_close   bar traded into the level but did not close through
+    gated_dropped        closed through, but failed lxpb.py's candidate gate
+                         (see advance_one_bar's own docstring for the full
+                         rule set: is_spike, or is_swing AND consolidating)
+                         -- not a real pre-breakout extreme, so never
+                         tracked as a P0
     open_unbroken        still in touch_lv0 at the end of the data
     open_awaiting_retest still in touch_lv1 at the end of the data
 
@@ -108,7 +131,7 @@ Usage
     import lxpb_levels_cache as LC
 
     h1 = LC.h1_levels()                     # whole merged H1 series
-    m5 = LC.m5_levels(seg_idx)              # one contract's M5 series
+    m5 = LC.m5_levels()                     # whole merged M5 series (every contract)
 
     live = LC.levels_live_as_of(m5, ts, level_type="LLPB",
                                 near_price=7568.0, near_pts=20.0)
@@ -116,7 +139,7 @@ Usage
 CLI
 ---
     python lxpb_levels_cache.py --build-h1
-    python lxpb_levels_cache.py --build-m5 all
+    python lxpb_levels_cache.py --build-m5
     python lxpb_levels_cache.py --stats
 """
 
@@ -139,7 +162,7 @@ L = R.L
 # Bump when the ledger's SCHEMA or the way it is derived changes, so every
 # cached file rebuilds. (Changes to lxpb.py's own rules are picked up via
 # RULES_FINGERPRINT below instead.)
-ALGO_VERSION = 1
+ALGO_VERSION = 3
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          "data", "levels_cache")
@@ -147,6 +170,7 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 FATE_RETESTED = "retested"
 FATE_CONSUMED_EARLY = "consumed_early"
 FATE_DISCARDED_NO_CLOSE = "discarded_no_close"
+FATE_GATED_DROPPED = "gated_dropped"
 FATE_OPEN_UNBROKEN = "open_unbroken"
 FATE_OPEN_AWAITING_RETEST = "open_awaiting_retest"
 
@@ -157,6 +181,7 @@ COLUMNS = [
     "timeframe", "contract", "type", "price",
     "formation_time", "is_spike", "is_swing",
     "breakout_time", "breakout_open", "breakout_high", "breakout_low", "breakout_close",
+    "er_score",
     "retest_time", "retest_open", "retest_high", "retest_low", "retest_close",
     "entry_price", "fta", "stop_loss",
     "death_time", "fate",
@@ -288,7 +313,7 @@ class _LedgerObserver:
             # always a real bool rather than the pending None.
             "is_swing": bool(lv["is_swing"]) if lv["is_swing"] is not None else False,
             "breakout_time": pd.NaT, "breakout_open": np.nan, "breakout_high": np.nan,
-            "breakout_low": np.nan, "breakout_close": np.nan,
+            "breakout_low": np.nan, "breakout_close": np.nan, "er_score": np.nan,
             "retest_time": pd.NaT, "retest_open": np.nan, "retest_high": np.nan,
             "retest_low": np.nan, "retest_close": np.nan,
             "entry_price": np.nan, "fta": np.nan, "stop_loss": np.nan,
@@ -309,10 +334,36 @@ class _LedgerObserver:
         row["breakout_high"] = lv["breakout_high"]
         row["breakout_low"] = lv["breakout_low"]
         row["breakout_close"] = lv["breakout_close"]
+        # The candidate gate's efficiency-ratio score at the moment this
+        # level broke out (see lxpb.advance_one_bar's own docstring),
+        # computed regardless of which rule actually passed it (is_spike
+        # included) -- useful for reviewing/retuning ER_CONSOLIDATION_MAX
+        # later even on levels a different rule let through. NaN if
+        # lxpb.py had too few closes to score it at all (.get is
+        # defensive; every fresh build always sets the key).
+        er = lv.get("er_score")
+        row["er_score"] = er if er is not None else np.nan
 
-    def observe(self, state, bar_time):
+    def apply_finalized_swing(self, finalized_swing):
+        """Patch the real is_swing value into an already-emitted row.
+
+        `_row_for`/`_base_row` snapshot a level's fields the moment it is
+        FIRST observed -- for a brand-new level that's its own formation
+        bar, when is_swing is still the pending `None` (coerced to
+        False there). `lxpb.advance_one_bar` finalizes is_swing one bar
+        later and hands back exactly the levels it just finalized
+        (`finalized_swing`) so this is the only place the real value
+        ever gets written into the row that's already sitting in
+        self.rows."""
+        for lv in finalized_swing:
+            row = self.rows.get(self._key(lv))
+            if row is not None:
+                row["is_swing"] = bool(lv["is_swing"])
+
+    def observe(self, state, bar_time, gated_dropped=()):
         """Record everything that happened to levels on the bar just processed."""
         lv0, lv1, retests = state["touch_lv0"], state["touch_lv1"], state["retests"]
+        gated_by_key = {self._key(lv): lv for lv in gated_dropped}
 
         # --- completed retests (phase 3): the level's terminal state ---
         retested_keys = set()
@@ -355,8 +406,13 @@ class _LedgerObserver:
             k = self._key(lv)
             row = self._row_for(lv)
             hit = broke_now.get(k)
+            gated = gated_by_key.get(k)
             if hit is not None:
                 self._apply_breakout(row, hit)
+            elif gated is not None:
+                self._apply_breakout(row, gated)
+                row["death_time"] = bar_time
+                row["fate"] = FATE_GATED_DROPPED
             else:
                 row["death_time"] = bar_time
                 row["fate"] = FATE_DISCARDED_NO_CLOSE
@@ -402,8 +458,9 @@ def build_ledger(bars, timeframe, contract="", resume=None):
         state, obs = resume
 
     for bar in bars.itertuples(index=True):
-        L.advance_one_bar(state, bar)
-        obs.observe(state, bar.Index)
+        finalized_swing, gated_dropped = L.advance_one_bar(state, bar)
+        obs.apply_finalized_swing(finalized_swing)
+        obs.observe(state, bar.Index, gated_dropped)
 
     # Snapshot BEFORE finish(), which stamps terminal fates onto the rows of
     # levels that are merely still open -- those must stay open in the blob so a
@@ -451,50 +508,34 @@ def _resume_blob(state, obs):
 
 
 # --------------------------------------------------------------------------
-# M5 bars (whole contract, display scale) -- shared with render_stop_target_report
+# M5 bars -- the one continuous TradingView series
 # --------------------------------------------------------------------------
 
-_M5_BARS_BY_SEG = {}
+_M5_BARS_CONTINUOUS = None
 
 
-def m5_bars_for_contract(seg_idx):
-    """Whole-contract 5-minute OHLC for contract segment `seg_idx`, in the
-    display (back-adjusted) scale, built once per process and cached.
+def m5_bars_continuous():
+    """The M5 equivalent of R._display_h1(): one continuous, back-adjusted
+    series spanning every rollover, straight from TradingView's own ES1! M5
+    exports (R._display_m5()) and nothing else.
 
-    Any consumer that needs M5 bars should come through here rather than
-    resampling a per-trade tick window: the LXPB state machine has to see
-    every bar from a level's formation onward, and formation-to-retest spans
-    are unbounded (the longest in 2026 is 235 days), so per-window resampling
-    forces an arbitrary span cap -- which is exactly the bug that made the M5
-    pane report "no live level" for ~15% of trades. A whole ES contract is
-    only ~25k M5 bars, and R._load_contract already caches the tick frame."""
-    if seg_idx in _M5_BARS_BY_SEG:
-        return _M5_BARS_BY_SEG[seg_idx]
-    sym = R.B26.CONTRACTS[seg_idx][0]
-    seg_start, seg_end = R._segment_for(seg_idx)
-    df = R._load_contract(sym)
-    if df is None or df.empty:
-        _M5_BARS_BY_SEG[seg_idx] = None
-        return None
-    lo = seg_start if seg_start is not None else df.index[0]
-    hi = seg_end if seg_end is not None else df.index[-1] + pd.Timedelta(seconds=1)
-    sl = R._slice_sorted(df, lo, hi)
-    if sl.empty:
-        _M5_BARS_BY_SEG[seg_idx] = None
-        return None
-    bars = sl.resample("5min").agg({"Open": "first", "High": "max",
-                                    "Low": "min", "Close": "last"})
-    bars["Close"] = bars["Close"].ffill()
-    bars["Open"] = bars["Close"].shift(1).fillna(bars["Close"])
-    for c in ("High", "Low"):
-        bars[c] = bars[c].fillna(bars["Close"])
-    bars = bars.dropna(subset=["Close"])
-    offset, _sym = R._offset_for_ts(bars.index[len(bars) // 2])
-    bars = bars + offset
-    bars.columns = ["open", "high", "low", "close"]
-    bars.index.name = "time"
-    _M5_BARS_BY_SEG[seg_idx] = bars
-    return bars
+    There is deliberately no .scid fallback. Resampling a contract's raw
+    ticks into M5 bars and shifting them by a measured per-segment constant
+    looks equivalent, but it is a different vendor's feed joined to
+    TradingView's at an arbitrary date, and that constant is one average for
+    a whole segment, so it carries a few points of error near a roll. Where
+    the exports stop, the series stops -- see the "continuous contracts only"
+    convention in CLAUDE.md. R._display_m5 reports any hole it does contain,
+    and validates both the splice at every roll and the scale against the H1
+    series, before any of this is handed to the state machine.
+
+    Cached per process, though R._display_m5 is itself cached: this exists as
+    a named entry point so callers say which series they mean rather than
+    reaching into a display helper."""
+    global _M5_BARS_CONTINUOUS
+    if _M5_BARS_CONTINUOUS is None:
+        _M5_BARS_CONTINUOUS = R._display_m5()
+    return _M5_BARS_CONTINUOUS
 
 
 # --------------------------------------------------------------------------
@@ -636,30 +677,43 @@ def h1_levels(bars=None, rebuild=False, verbose=True):
 
     The bars come from R._display_h1() -- the single source of truth for the
     TradingView H1 exports -- so this ledger is on exactly the same price
-    scale as the H1 charts and as `row["price"]` in the trade reports."""
+    scale as the H1 charts and as `row["price"]` in the trade reports. This
+    is the model every timeframe's level detection should follow: ONE
+    continuous, back-adjusted series (validated gap-free at every roll by
+    R._assert_no_roll_gaps), ONE state-machine run over the whole thing --
+    see the "continuous contracts only" convention in CLAUDE.md."""
     if bars is None:
         bars = R._display_h1()
     df, meta, _ = _reconcile("h1_levels", bars, "H1", "", rebuild, verbose)
     return _to_current_scale(df, meta, bars, verbose, "H1")
 
 
-def m5_levels(seg_idx, rebuild=False, verbose=True):
-    """Full M5 level ledger for one contract segment.
+def m5_levels(rebuild=False, verbose=True):
+    """Full M5 level ledger over the continuous, back-adjusted, gap-free
+    series spanning every contract (m5_bars_continuous) -- one
+    state-machine run over the whole thing, same model as h1_levels. A
+    level formed on one contract CAN be retested by a later contract's
+    bars, exactly like a real trader watching one continuous chart would
+    expect (see the "continuous contracts only" convention in CLAUDE.md;
+    this replaced a per-contract-segment version that could not do that --
+    [[feedback-continuous-contracts-only]] in project memory).
 
     Survives a rollover without recomputing: the stored ledger is shifted onto
     the current back-adjustment scale rather than rebuilt, because that shift is
     provably all that changes (see the module docstring)."""
-    bars = m5_bars_for_contract(seg_idx)
+    bars = m5_bars_continuous()
     if bars is None or bars.empty:
         return None
-    sym = R.B26.CONTRACTS[seg_idx][0]
-    df, meta, _ = _reconcile(f"m5_levels_{sym}", bars, "M5", sym, rebuild, verbose)
-    return _to_current_scale(df, meta, bars, verbose, sym)
+    df, meta, _ = _reconcile("m5_levels_continuous", bars, "M5", "", rebuild, verbose)
+    return _to_current_scale(df, meta, bars, verbose, "M5")
 
 
 def m5_levels_for_ts(ts, **kw):
-    """Convenience: the M5 ledger of whichever contract was front-month at `ts`."""
-    return m5_levels(R._contract_index_for(pd.Timestamp(ts, tz="UTC")), **kw)
+    """Convenience/backward-compatible name: the one continuous M5 ledger.
+    `ts` is accepted but unused -- kept so existing call sites that ask
+    "the M5 ledger relevant to this timestamp" don't need to change; there
+    is now only ever one M5 ledger, not one per contract."""
+    return m5_levels(**kw)
 
 
 # --------------------------------------------------------------------------
@@ -798,15 +852,6 @@ def same_side_live_confluence(confluent, level_type, breakout_time):
 # CLI
 # --------------------------------------------------------------------------
 
-def _all_segments():
-    """(seg_idx, symbol) for every contract whose .scid file is actually present."""
-    out = []
-    for i, (sym, _, _) in enumerate(R.B26.CONTRACTS):
-        if os.path.exists(os.path.join(R.SCID_DIR, f"F.US.{sym}.scid")):
-            out.append((i, sym))
-    return out
-
-
 def _print_stats(df, label):
     if df is None or df.empty:
         print(f"{label}: (empty)")
@@ -815,7 +860,7 @@ def _print_stats(df, label):
           f"{df['formation_time'].min()} -> {df['formation_time'].max()}")
     counts = df["fate"].value_counts()
     for fate in (FATE_RETESTED, FATE_CONSUMED_EARLY, FATE_DISCARDED_NO_CLOSE,
-                 FATE_OPEN_UNBROKEN, FATE_OPEN_AWAITING_RETEST):
+                 FATE_GATED_DROPPED, FATE_OPEN_UNBROKEN, FATE_OPEN_AWAITING_RETEST):
         print(f"    {fate:<22} {int(counts.get(fate, 0)):>8,}")
     print(f"    {'broke out at some point':<22} {int(df['breakout_time'].notna().sum()):>8,}")
 
@@ -824,8 +869,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--build-h1", action="store_true")
-    ap.add_argument("--build-m5", default=None,
-                    help="'all' or a contract symbol such as EPU26")
+    ap.add_argument("--build-m5", action="store_true",
+                    help="one continuous M5 ledger spanning every contract -- "
+                         "see the 'continuous contracts only' convention in CLAUDE.md")
     ap.add_argument("--rebuild", action="store_true", help="ignore any cached copy")
     ap.add_argument("--stats", action="store_true")
     args = ap.parse_args()
@@ -837,13 +883,9 @@ def main():
         df = h1_levels(rebuild=args.rebuild)
         _print_stats(df, "H1")
 
-    if args.build_m5:
-        want = args.build_m5.upper()
-        for i, sym in _all_segments():
-            if want != "ALL" and sym != want:
-                continue
-            df = m5_levels(i, rebuild=args.rebuild)
-            _print_stats(df, f"M5 {sym}")
+    if args.build_m5 or args.stats:
+        df = m5_levels(rebuild=args.rebuild)
+        _print_stats(df, "M5 (continuous)")
 
 
 if __name__ == "__main__":

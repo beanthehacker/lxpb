@@ -774,10 +774,12 @@ def process_cluster(cluster, args):
     # Everything downstream (target search, bracket, PnL/R) is relative to
     # the price ACTUALLY paid (fill_price), not the originally-quoted
     # alt_price -- identical when pegging is off (fill_price == alt_price).
+    # conf["m5_ledger"] is the one continuous M5 ledger (see the
+    # "continuous contracts only" convention in CLAUDE.md) -- it already
+    # covers the fill's own instant even when a pegged/chased fill lands
+    # in a later contract than the original retest, so no reload-onto-a-
+    # different-contract special case is needed here anymore.
     m5_ledger = conf["m5_ledger"]
-    fill_contract = R._contract_index_for(touch_time_alt)
-    if fill_contract != R._contract_index_for(pd.to_datetime(row_d["retest_time"], utc=True)):
-        m5_ledger = LC.m5_levels(fill_contract)
     target_price, target_row = dynamic_target(m5_ledger, level_type, fill_price, is_long,
                                               touch_time_alt)
     if target_price is None:

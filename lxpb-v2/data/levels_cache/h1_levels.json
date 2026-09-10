@@ -1,8 +1,8 @@
 {
   "kind": "h1",
   "contract": "",
-  "algo_version": 1,
-  "rules": "82bbea38623c-mh1",
+  "algo_version": 3,
+  "rules": "6095e0c2f4f5-mh1",
   "bars_fingerprint": "11259-f9ec65de46edab06",
   "shape_fingerprint": "11259-28e38699b2804758",
   "anchor": 6160.5,
@@ -13,6 +13,6 @@
   "n_levels": 22518,
   "built_how": "rebuild",
   "resolved": "rebuild",
-  "built_seconds": 3.12,
-  "built_at": "2026-09-05T02:54:49.967793+00:00"
+  "built_seconds": 1.0,
+  "built_at": "2026-09-10T23:40:07.526244+00:00"
 }

@@ -118,6 +118,8 @@ MIN_R_DEFAULT = 1.0
 PEG_STEP_DEFAULT = SF.PEG_STEP_DEFAULT
 PEG_CAP_DEFAULT = SF.PEG_CAP_DEFAULT
 P1_BAR_WIDTH = pd.Timedelta(minutes=5)  # this strategy's own P1 is an M5 bar, not H1
+CANDIDATE_COLOR = "#7dd3fc"  # light blue -- every C1..Cn marker (dot + label), chosen or not;
+                             # suppressed ones are distinguished by their " ✕" text suffix, not color
 
 # Matches analyze_breakout_exits.DEFAULT_START/END -- the same Jul-Aug 2026
 # span the base (non-full-year) ss_confl2 H1 report uses.
@@ -155,48 +157,47 @@ def _seg_departed_levels(m5_ledger, start_ts, end_ts):
 
 
 def select_candidates(ss_confl_min, start, end, confluence_points):
-    """M5-native candidate rows across every contract segment with tick data
-    on disk. Returns (candidates, seg_departed): candidates is a list of
-    dicts (candidate index `i`, the row itself, its own same-side M5
-    confluence set, and the segment's M5 ledger -- kept per-candidate since
-    dynamic_target/dynamic_stop need the full ledger, not just the
-    confluence subset); seg_departed is {seg_idx: DataFrame} of every
-    'departed' M5 level (see _seg_departed_levels -- clean retests AND
-    consumed_early) in [start, end) for that segment, BEFORE the
-    ss_confl_min filter -- kept separately so the p1_reacted dynamic filter (see
-    _p1_group_reaction_cutoffs) can see a P1 group's full membership,
-    including P0s that don't themselves clear ss_confl_min or were never a
-    tradeable retest at all."""
+    """M5-native candidate rows over the one continuous M5 ledger (see the
+    "continuous contracts only" convention in CLAUDE.md -- LC.m5_levels()
+    now spans every contract rollover in one state-machine run, so a P0
+    formed on one contract can be retested by a later contract's bars).
+    Returns (candidates, departed): candidates is a list of dicts
+    (candidate index `i`, the row itself, its own same-side M5 confluence
+    set, the shared ledger -- kept per-candidate since dynamic_target/
+    dynamic_stop need the full ledger, not just the confluence subset --
+    and `seg_idx`, which RAW contract's own ticks cover this candidate's
+    own instant, still needed for chart/tick work even though level
+    detection itself no longer cares); departed is every 'departed' M5
+    level (see _seg_departed_levels -- clean retests AND consumed_early)
+    in [start, end), BEFORE the ss_confl_min filter -- kept separately so
+    the p1_reacted dynamic filter (see _p1_group_reaction_cutoffs) can see
+    a P1 group's full membership, including P0s that don't themselves
+    clear ss_confl_min or were never a tradeable retest at all."""
     if not np.isfinite(confluence_points) or confluence_points < 0:
         raise ValueError("M5 confluence radius must be finite and non-negative")
     start_ts = pd.Timestamp(start, tz="UTC")
     end_ts = pd.Timestamp(end, tz="UTC") + pd.Timedelta(days=1)  # end date inclusive
     candidates = []
-    seg_departed = {}
-    for seg_idx, sym in LC._all_segments():
-        m5_ledger = LC.m5_levels(seg_idx, verbose=False)
-        if m5_ledger is None or m5_ledger.empty:
+    m5_ledger = LC.m5_levels(verbose=False)
+    if m5_ledger is None or m5_ledger.empty:
+        return candidates, pd.DataFrame()
+    retests = LC.retests(m5_ledger)
+    retests = retests[(retests["retest_time"] >= start_ts) & (retests["retest_time"] < end_ts)]
+    departed = _seg_departed_levels(m5_ledger, start_ts, end_ts)
+    for _, row_d in retests.iterrows():
+        same_side_m5 = SF._same_side_confluence(m5_ledger, row_d, confluence_points)
+        if len(same_side_m5) < ss_confl_min:
             continue
-        seg_retests = LC.retests(m5_ledger)
-        seg_retests = seg_retests[(seg_retests["retest_time"] >= start_ts) &
-                                  (seg_retests["retest_time"] < end_ts)]
-        departed = _seg_departed_levels(m5_ledger, start_ts, end_ts)
-        if not departed.empty:
-            seg_departed[seg_idx] = departed
-        if seg_retests.empty:
-            continue
-        for _, row_d in seg_retests.iterrows():
-            same_side_m5 = SF._same_side_confluence(m5_ledger, row_d, confluence_points)
-            if len(same_side_m5) < ss_confl_min:
-                continue
-            candidates.append({
-                "row": row_d, "same_side_m5": same_side_m5,
-                "m5_ledger": m5_ledger, "seg_idx": seg_idx, "sym": sym,
-            })
+        seg_idx = R._contract_index_for(pd.Timestamp(row_d["retest_time"]))
+        sym = R.B26.CONTRACTS[seg_idx][0]
+        candidates.append({
+            "row": row_d, "same_side_m5": same_side_m5,
+            "m5_ledger": m5_ledger, "seg_idx": seg_idx, "sym": sym,
+        })
     candidates.sort(key=lambda c: pd.Timestamp(c["row"]["retest_time"]))
     for i, cand in enumerate(candidates):
         cand["i"] = i
-    return candidates, seg_departed
+    return candidates, departed
 
 
 # --------------------------------------------------------------------------
@@ -331,13 +332,13 @@ def _entry_level_row(cluster, conf):
     return None
 
 
-def _dynamic_stop_m5(seg_idx, level_type, alt_price, is_long, entry_level_info,
+def _dynamic_stop_m5(level_type, alt_price, is_long, entry_level_info,
                      m5_ledger, touch_time_alt):
     """(stop_price, stop_row, stop_source) for one trade.
 
     entry_level_info['is_spike'] -> stop = one tick beyond THAT level's own
-    P0 candle's low/high (read from the cached whole-contract M5 series,
-    LC.m5_bars_for_contract -- same source build_m5_chart's own M5 rays
+    P0 candle's low/high (read from the continuous M5 series,
+    LC.m5_bars_continuous -- same source build_m5_chart's own M5 rays
     use). No fallback to the thrust-candle rule if this can't be computed
     (P0 bar missing from the cached series, or the resulting stop lands on
     the wrong side of the fill) -- that trade is a real "no trade"
@@ -350,7 +351,7 @@ def _dynamic_stop_m5(seg_idx, level_type, alt_price, is_long, entry_level_info,
     stop_row is always a pd.Series (like SF.dynamic_stop's own return) so
     callers can .to_dict() either path uniformly."""
     if entry_level_info is not None and entry_level_info.get("is_spike"):
-        all_bars = LC.m5_bars_for_contract(seg_idx)
+        all_bars = LC.m5_bars_continuous()
         formation_time = pd.Timestamp(entry_level_info["formation_time"])
         if formation_time.tzinfo is None:
             formation_time = formation_time.tz_localize("UTC")
@@ -409,10 +410,14 @@ def process_cluster(cluster, args):
     conf = cluster_confluence(cluster)
     alt_price, alt_source, group_n = conf["alt_price"], conf["alt_source"], conf["group_n"]
 
+    cluster_member_formations = sorted(
+        pd.Timestamp(c["row"]["formation_time"]) for c in cluster)
+
     result = {
         "i": anchor["i"], "row": row_d, "level_type": level_type, "is_long": is_long,
         "seg_idx": cluster[0]["seg_idx"],
         "group_n": group_n, "cluster_size": len(cluster), "cluster_members": member_prices,
+        "cluster_member_formations": cluster_member_formations,
         "own_price": own_price, "alt_price": alt_price, "alt_source": alt_source,
         "alt_formation_time": conf["alt_formation_time"], "alt_end_time": conf["alt_end_time"],
         "entry_m5_level": conf["entry_m5_level"],
@@ -447,7 +452,7 @@ def process_cluster(cluster, args):
 
     entry_level_info = _entry_level_row(cluster, conf)
     stop_price, stop_row, stop_source = _dynamic_stop_m5(
-        cluster[0]["seg_idx"], level_type, fill_price, is_long, entry_level_info,
+        level_type, fill_price, is_long, entry_level_info,
         m5_ledger, touch_time_alt)
     if stop_price is None:
         result["fail_reason"] = "no_m5_stop"
@@ -530,6 +535,99 @@ def _annotate_p0_p1_p2(chart_m5, row_for_chart, is_long):
     chart_m5["markers"].sort(key=lambda m: m["time"])
 
 
+def _p1_sibling_group(level_type, breakout_time):
+    """Every M5 level (any fate) sharing (level_type, breakout_time) in the
+    one continuous M5 ledger -- i.e. the full field of P0 candidates one
+    breakout bar broke at once, including ones lxpb.py's own candidate
+    gate silently dropped (fate 'gated_dropped' -- see lxpb.py's own
+    advance_one_bar docstring), not just the ones that became tradeable
+    P0s. Sorted by formation_time. Returns None if fewer than 2 candidates
+    shared this P1 (nothing else to annotate or protect from chart
+    compression)."""
+    ledger = LC.m5_levels(verbose=False)
+    if ledger is None or ledger.empty:
+        return None
+    breakout_time = pd.Timestamp(breakout_time)
+    if breakout_time.tzinfo is None:
+        breakout_time = breakout_time.tz_localize("UTC")
+    group = ledger[(ledger["type"] == level_type) &
+                   (pd.to_datetime(ledger["breakout_time"], utc=True) == breakout_time)]
+    if len(group) < 2:
+        return None
+    return group.sort_values("formation_time")
+
+
+def _annotate_candidates(chart_m5, row_for_chart, is_long, group, cluster_member_formations):
+    """Mark every OTHER M5 P0 candidate in `group` (see _p1_sibling_group),
+    labeled C1/C2/... in formation-time order -- the whole field the
+    winning P0 was chosen from, not just the winner. The winning P0 itself
+    (already marked "P0" by _annotate_p0_p1_p2, called first) gets its own
+    C-number folded into that same marker's text instead of a second
+    overlapping dot.
+
+    A confluence cluster can merge >1 mutually-confluent M5 level into ONE
+    trade (see cluster_candidates/cluster_confluence): when that happens,
+    `row_for_chart` (built from cluster_anchor's row -- the EARLIEST-
+    retesting member) is only ONE of those levels, and another member --
+    e.g. the one whose price actually became the fill via alt_price's
+    most-extreme-of-cluster rule -- can independently show up in this
+    SAME P1 group. Without checking `cluster_member_formations` (every
+    member's own formation_time, not just the anchor's), that other
+    member would be mislabeled as a rejected/unchosen sibling candidate
+    when it's actually already part of THIS trade -- so it gets
+    "(in trade)" appended instead of being flagged suppressed or plain.
+    Mutates chart_m5 in place; no-op if chart_m5 or group is None."""
+    if chart_m5 is None or not chart_m5["candles"] or group is None:
+        return
+
+    # Matched on formation_time ALONE, not price: row_for_chart["price"] has
+    # already been overwritten with the trade's actual FILL price by the
+    # caller (build_chart_stack_for_row), which can differ from the P0's own
+    # raw ledger price (most-extreme-of-cluster selection, pegged chasing).
+    # formation_time is untouched and unique per type within one P1 group
+    # (one bar can only register one LLPB / one LHPB), so it alone is exact.
+    own_formation = pd.Timestamp(row_for_chart["formation_time"])
+    if own_formation.tzinfo is None:
+        own_formation = own_formation.tz_localize("UTC")
+    member_formations = {pd.Timestamp(t).tz_localize("UTC") if pd.Timestamp(t).tzinfo is None
+                         else pd.Timestamp(t) for t in cluster_member_formations}
+
+    times = [c["time"] for c in chart_m5["candles"]]
+
+    def snap(ts):
+        target = R._to_epoch_utc(pd.Timestamp(ts))
+        i = bisect.bisect_right(times, target) - 1
+        return times[i] if i >= 0 else None
+
+    n_group = len(group)
+    new_markers = []
+    for n, (_, lv) in enumerate(group.iterrows(), start=1):
+        formation = pd.Timestamp(lv["formation_time"])
+        if formation == own_formation:
+            for m in chart_m5["markers"]:
+                if m.get("text") == "P0":
+                    m["text"] = f"P0 (C{n}/{n_group})"
+            continue
+        t = snap(lv["formation_time"])
+        if t is None:
+            continue
+        if formation in member_formations:
+            new_markers.append({
+                "time": t, "position": "belowBar" if is_long else "aboveBar",
+                "color": CANDIDATE_COLOR, "shape": "circle",
+                "text": f"C{n} (in trade)",
+            })
+            continue
+        suppressed = lv["fate"] == "gated_dropped"
+        new_markers.append({
+            "time": t, "position": "belowBar" if is_long else "aboveBar",
+            "color": CANDIDATE_COLOR, "shape": "circle",
+            "text": f"C{n}" + (" ✕" if suppressed else ""),
+        })
+    chart_m5["markers"].extend(new_markers)
+    chart_m5["markers"].sort(key=lambda m: m["time"])
+
+
 def build_chart_stack_for_row(res):
     """M5 + 1s-trio + 1min + footprint chart stack for a filled, in-R trade
     -- no H1 pane exists in this strategy. Reuses
@@ -552,14 +650,38 @@ def build_chart_stack_for_row(res):
         ts = pd.Timestamp(row_for_chart[col])
         if ts.tzinfo is not None:
             row_for_chart[col] = ts.tz_convert("UTC").tz_localize(None)
+    # Fetched BEFORE build_m5_chart (not just for _annotate_candidates
+    # afterward) so every sibling candidate's own formation bar can be
+    # passed in as extra_context_times -- otherwise build_m5_chart's own
+    # compression can land one inside a "[N bars skipped]" gap before it
+    # ever gets a marker, making the real price action around it
+    # unreviewable (see extra_context_times's own docstring).
+    sibling_group = _p1_sibling_group(row_for_chart["type"], row_for_chart["breakout_time"])
+    # The breakout bar and the retest bar get explicit protection too, not
+    # just each candidate's own formation bar -- retest is already the
+    # anchor of the always-shown entry region, but making it explicit here
+    # costs nothing and removes any doubt per this trade's own review need.
+    extra_context_times = [row_for_chart["breakout_time"], row_for_chart["retest_time"]]
+    if sibling_group is not None:
+        extra_context_times.extend(sibling_group["formation_time"])
     chart_m5 = SR.build_m5_chart(
         row_for_chart, resolved, stop_pts, target_pts,
         level_price=res["own_price"], entry_level=res["entry_m5_level"],
-        p1_bar_width=P1_BAR_WIDTH, p1_label="M5")
+        p1_bar_width=P1_BAR_WIDTH, p1_label="M5",
+        # This M5 pane IS the primary structural chart here (no H1 pane
+        # exists), and now also carries the C1/C2/... candidate markers
+        # (_annotate_candidates) -- double the shared defaults so the
+        # wider, full-row pane (see chart-row-solo below) actually shows
+        # more market structure instead of just more empty space.
+        bars_before_retest=2 * SR.M5_BARS_BEFORE_RETEST,
+        bars_after_exit=2 * SR.M5_BARS_AFTER_EXIT,
+        extra_context_times=extra_context_times)
     if chart_m5 is not None:
         chart_m5["title"] += (f"  |  R {res['r_multiple']:.2f}  |  entry via "
                               f"{res['alt_source']} ({res['group_n']} in group)")
         _annotate_p0_p1_p2(chart_m5, row_for_chart, res["is_long"])
+        _annotate_candidates(chart_m5, row_for_chart, res["is_long"], sibling_group,
+                            res["cluster_member_formations"])
     execution_charts, fp = SF.build_execution_charts({**res, "row": row_for_chart})
     return {"m5": chart_m5, **execution_charts}, fp
 
@@ -608,20 +730,21 @@ def _run_cluster_chunk_subprocess(spec):
     position to reassemble the report.
 
     `m5_ledger` was stripped from every candidate before crossing the
-    process boundary (see process_clusters) to avoid pickling a whole
-    contract's ledger once per candidate; reload it once per distinct
-    segment here instead (cheap -- LC.m5_levels reads the cached parquet,
-    not raw ticks) and re-attach it, exactly what select_candidates itself
-    hands process_cluster in the serial (--workers=1) path."""
+    process boundary (see process_clusters) to avoid pickling the whole
+    (now continuous, whole-history) ledger once per candidate; reload it
+    once per child process here instead (cheap -- LC.m5_levels reads the
+    cached parquet, not raw ticks) and re-attach it, exactly what
+    select_candidates itself hands process_cluster in the serial
+    (--workers=1) path. One shared ledger for every candidate in this
+    chunk now -- there is only ever one M5 ledger (see the "continuous
+    contracts only" convention in CLAUDE.md), not one per contract
+    segment."""
     args = spec["args"]
-    ledger_by_seg = {}
+    m5_ledger = LC.m5_levels(verbose=False)
     out = {}
     for pos, cluster in zip(spec["positions"], spec["clusters"]):
         for cand in cluster:
-            seg_idx = cand["seg_idx"]
-            if seg_idx not in ledger_by_seg:
-                ledger_by_seg[seg_idx] = LC.m5_levels(seg_idx, verbose=False)
-            cand["m5_ledger"] = ledger_by_seg[seg_idx]
+            cand["m5_ledger"] = m5_ledger
         res = process_cluster(cluster, args)
         if res["filled"]:
             chart_stack, fp = build_chart_stack_for_row(res)
@@ -766,7 +889,7 @@ def _naive_bracket_touch(bars, entry_adj, is_long, stop_pts, target_pts, offset)
     return "no_hit"
 
 
-def _resolve_raw_retest(seg_idx, m5_ledger, row_d):
+def _resolve_raw_retest(m5_ledger, row_d):
     """(outcome, touch_time) for one RAW 'departed' M5 level -- a clean
     retest OR a consumed_early death (see _seg_departed_levels) -- not
     fine-tuned, not fill-window-searched: row_d['touch_time'] itself is the
@@ -789,7 +912,7 @@ def _resolve_raw_retest(seg_idx, m5_ledger, row_d):
     if target_price is None:
         return None, None
     stop_price, _, _ = _dynamic_stop_m5(
-        seg_idx, level_type, price, is_long, row_d.to_dict(), m5_ledger, touch_time)
+        level_type, price, is_long, row_d.to_dict(), m5_ledger, touch_time)
     if stop_price is None:
         return None, None
     stop_pts = abs(stop_price - price)
@@ -805,38 +928,47 @@ def _resolve_raw_retest(seg_idx, m5_ledger, row_d):
     return outcome, touch_time
 
 
-def _p1_group_reaction_cutoffs(relevant_keys, seg_departed):
+def _p1_group_reaction_cutoffs(relevant_keys, departed):
     """{(seg_idx, type, breakout_time): earliest reacting touch_time} for
     every relevant_keys entry whose FULL P1 group (every DEPARTED M5 level
     -- clean retest or consumed_early, see _seg_departed_levels -- sharing
-    that type+breakout_time in this segment, including P0s below
-    ss_confl_min or that never became a tradeable retest at all) has >=2
-    members. Walks each such group in touch_time order and resolves every
-    member with _resolve_raw_retest until one reaches outcome=='target',
-    which sets that group's cutoff; a group with no reacting member is
-    absent from the returned dict (never filtered). Single-member groups
-    have no OTHER P0 to react on their behalf, so they are skipped without
-    ever touching tick data."""
-    keys_by_seg = {}
-    for seg_idx, level_type, breakout_time in relevant_keys:
-        keys_by_seg.setdefault(seg_idx, set()).add((level_type, breakout_time))
+    that type+breakout_time, including P0s below ss_confl_min or that
+    never became a tradeable retest at all) has >=2 members. Walks each
+    such group in touch_time order and resolves every member with
+    _resolve_raw_retest until one reaches outcome=='target', which sets
+    that group's cutoff; a group with no reacting member is absent from
+    the returned dict (never filtered). Single-member groups have no
+    OTHER P0 to react on their behalf, so they are skipped without ever
+    touching tick data.
+
+    `seg_idx` is kept in relevant_keys/the returned dict's key purely for
+    the caller's own lookup convenience (_apply_p1_reaction_filter keys
+    off it too) -- level detection itself is one continuous ledger now,
+    so it is never used here to pick which ledger to query. A given
+    breakout_time deterministically implies one seg_idx (R._contract_index_for
+    of an absolute timestamp), so every relevant_keys entry sharing a
+    (type, breakout_time) already shares the same seg_idx too -- deduping
+    on the 2-tuple below is exact, not an approximation."""
+    if departed is None or departed.empty:
+        return {}
+    keys = {(level_type, breakout_time) for _, level_type, breakout_time in relevant_keys}
+    m5_ledger = LC.m5_levels(verbose=False)
+    if m5_ledger is None or m5_ledger.empty:
+        return {}
 
     cutoffs = {}
-    for seg_idx, keys in keys_by_seg.items():
-        departed = seg_departed.get(seg_idx)
-        if departed is None or departed.empty:
+    seg_idx_by_key = {(level_type, breakout_time): seg_idx
+                      for seg_idx, level_type, breakout_time in relevant_keys}
+    for (level_type, breakout_time), group in departed.groupby(["type", "breakout_time"]):
+        key2 = (level_type, pd.Timestamp(breakout_time))
+        if key2 not in keys or len(group) < 2:
             continue
-        m5_ledger = LC.m5_levels(seg_idx, verbose=False)
-        for (level_type, breakout_time), group in departed.groupby(["type", "breakout_time"]):
-            key3 = (level_type, pd.Timestamp(breakout_time))
-            if key3 not in keys or len(group) < 2:
-                continue
-            group = group.sort_values("touch_time")
-            for _, row_d in group.iterrows():
-                outcome, touch_time = _resolve_raw_retest(seg_idx, m5_ledger, row_d)
-                if outcome == "target":
-                    cutoffs[(seg_idx, level_type, key3[1])] = touch_time
-                    break
+        group = group.sort_values("touch_time")
+        for _, row_d in group.iterrows():
+            outcome, touch_time = _resolve_raw_retest(m5_ledger, row_d)
+            if outcome == "target":
+                cutoffs[(seg_idx_by_key[key2], level_type, key2[1])] = touch_time
+                break
     return cutoffs
 
 
@@ -854,13 +986,14 @@ def _apply_p1_reaction_filter(results, cutoffs):
     into a `data-dyn-tags` attribute (plus data-r/data-pnl-pts/data-outcome
     for live recompute) on that row's <tr>, and the report's JS (see the
     'Dynamic filters' block appended to JS below _finish_report) lets the
-    user toggle a checkbox per tag IN THE BROWSER to hide/show those rows
-    and recompute win rate / avg R / total R / total PnL live, with NO
-    Python regen required. This is deliberately generic: to add a new
-    dynamic filter, (1) tag qualifying results with one more entry in
-    dyn_tags (their own detection logic, wherever that lives), (2) add one
-    <label class="chip"> checkbox with class f-dyn-exclude and
-    data-tag="<your tag>" to the filter panel in _finish_report. Nothing
+    user toggle an Exclude or an Only (isolate) checkbox per tag IN THE
+    BROWSER to hide/show those rows and recompute win rate / avg R /
+    total R / total PnL live, with NO Python regen required. This is
+    deliberately generic: to add a new dynamic filter, (1) tag qualifying
+    results with one more entry in dyn_tags (their own detection logic,
+    wherever that lives), (2) add one <label class="chip"> checkbox with
+    class f-dyn-exclude and one more with class f-dyn-isolate, both
+    data-tag="<your tag>", to the filter panel in _finish_report. Nothing
     else needs to change -- the JS's recomputeDynStats() is tag-agnostic."""
     for res in results:
         if not res["filled"]:
@@ -955,7 +1088,7 @@ def render(args):
     if not np.isfinite(args.max_alt_fill_hours) or args.max_alt_fill_hours <= 0:
         raise ValueError("Fill-window hours must be finite and positive")
 
-    candidates, seg_departed = select_candidates(
+    candidates, departed = select_candidates(
         args.ss_confl_min, args.start, args.end, args.m5_confluence_points)
     radius = SR._fmt_pts(args.m5_confluence_points)
     print(f"{len(candidates)} M5 retests have SS Confl >= {args.ss_confl_min} "
@@ -977,7 +1110,7 @@ def render(args):
                           pd.Timestamp(anchor_row["breakout_time"])))
     print(f"p1_reacted: checking {len(relevant_keys)} distinct P1 group(s) "
           f"for an already-reacted sibling P0...", flush=True)
-    p1_cutoffs = _p1_group_reaction_cutoffs(relevant_keys, seg_departed)
+    p1_cutoffs = _p1_group_reaction_cutoffs(relevant_keys, departed)
 
     results, chart_stacks, fps = process_clusters(clusters, args)
     results = _apply_p1_reaction_filter(results, p1_cutoffs)
@@ -1161,7 +1294,7 @@ def _render_row(idx, res, chart_stacks, fps):
 </tr>
 <tr class="chart-row hidden" data-idx="{idx}" id="chart-row-{idx}">
   <td colspan="{N_COLS}"><div class="chart-stack">
-    <div class="chart-row-2col">
+    <div class="chart-row-2col chart-row-solo">
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-{idx}"></div><div class="chart-ph" id="cm5-{idx}"></div></div>
     </div>
     <div class="chart-row-2col">
@@ -1281,16 +1414,21 @@ above for trade-exclusion toggles you can flip live in the browser, no regen req
   </div>
   <div class="filter-row">
     <span class="filter-label" title="Live, in-browser trade-exclusion toggles -- no Python regen
-needed. Checking one hides those rows AND recomputes win rate / avg R / total R / total PnL
-above from only the remaining (not excluded) trades. To add another dynamic filter: tag
-qualifying results with an entry in res['dyn_tags'] (Python side) and add one more checkbox
-here with class f-dyn-exclude and data-tag matching that tag -- see
-_apply_p1_reaction_filter's docstring in render_m5_confl2_report.py for the full
-convention.">Dynamic filters</span>
+needed. Checking Exclude hides those rows AND recomputes win rate / avg R / total R / total PnL
+above from only the remaining (not excluded) trades. Checking Only instead hides every OTHER
+row (any Only checked takes priority over every Exclude box, and multiple Only boxes union
+together). To add another dynamic filter: tag qualifying results with an entry in
+res['dyn_tags'] (Python side) and add one more Exclude/Only checkbox pair here with class
+f-dyn-exclude/f-dyn-isolate and data-tag matching that tag -- see _apply_p1_reaction_filter's
+docstring in render_m5_confl2_report.py for the full convention.">Dynamic filters</span>
     <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="p1_reacted">
       Exclude P1-already-reacted</label>
+    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="p1_reacted">
+      Only</label>
     <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="globex_eth_open" checked>
       Exclude Globex/ETH open fills (15:00-15:05 PT)</label>
+    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="globex_eth_open">
+      Only</label>
   </div>
 </div>
 """
@@ -1369,6 +1507,12 @@ td.merged-h1-levels { max-width:220px; white-space:normal; }
 tr.lvl-row.dyn-hidden, tr.chart-row.dyn-hidden { display:none !important; }
 .dyn-tag-badge { display:inline-block; margin-left:6px; padding:1px 6px; font-size:0.72em;
                 border-radius:3px; background:#4a3010; color:#fbbf24; cursor:help; }
+.chip-iso { margin-left:-4px; opacity:0.8; font-size:0.9em; }
+/* This strategy has no H1 pane -- the M5 pane is the only thing in its own
+   chart-row-2col row (see build_chart_stack_for_row), so it should fill
+   the row instead of sitting in the grid's first 1fr column with an empty
+   second column beside it. */
+.chart-row-2col.chart-row-solo { grid-template-columns: 1fr; }
 </style>
 """
 JS = SR.JS + """
@@ -1377,33 +1521,44 @@ JS = SR.JS + """
 // Dynamic filters -- see _apply_p1_reaction_filter's own docstring in
 // render_m5_confl2_report.py for the full authoring convention (this is
 // the intentionally-generic, tag-agnostic half of it). Each
-// f-dyn-exclude checkbox's data-tag names a tag a Python-side filter may
-// have added to a row's data-dyn-tags (space-separated -- a row can
-// carry more than one). Checking a box hides every row carrying that
-// tag -- via its OWN .dyn-hidden class, kept deliberately separate from
-// the review-workflow filters' .hidden class above (applyReviewFilters,
-// in the shared JS) so the two systems never fight over one class; a row
-// is invisible if EITHER is set -- and recomputes the win rate / avg R /
+// f-dyn-exclude/f-dyn-isolate checkbox's data-tag names a tag a
+// Python-side filter may have added to a row's data-dyn-tags
+// (space-separated -- a row can carry more than one). Checking an
+// Exclude box hides every row carrying that tag; checking an Isolate
+// ("Only") box instead hides every row NOT carrying that tag (any
+// Isolate box checked takes priority over every Exclude box, and
+// multiple checked Isolate boxes union together) -- both act via the
+// SAME .dyn-hidden class, kept deliberately separate from the
+// review-workflow filters' .hidden class above (applyReviewFilters, in
+// the shared JS) so the two systems never fight over one class; a row is
+// invisible if EITHER is set -- and recomputes the win rate / avg R /
 // total R / total PnL summary boxes from only the remaining (not
-// excluded) trades. To add another dynamic filter: tag qualifying
-// results with one more entry in res['dyn_tags'] (Python side) and add
-// one more <input class="f-dyn-exclude" data-tag="..."> checkbox to the
-// filter panel -- recomputeDynStats() below needs no changes for a new
-// tag, it reads whatever tags are present.
+// hidden) trades. To add another dynamic filter: tag qualifying results
+// with one more entry in res['dyn_tags'] (Python side) and add one more
+// <input class="f-dyn-exclude" data-tag="..."> / <input
+// class="f-dyn-isolate" data-tag="..."> checkbox pair to the filter
+// panel -- recomputeDynStats() below needs no changes for a new tag, it
+// reads whatever tags are present.
 // ---------------------------------------------------------------------
 function activeDynExcludeTags() {
   return Array.from(document.querySelectorAll('.f-dyn-exclude:checked')).map(cb => cb.dataset.tag);
 }
+function activeDynIsolateTags() {
+  return Array.from(document.querySelectorAll('.f-dyn-isolate:checked')).map(cb => cb.dataset.tag);
+}
 function recomputeDynStats() {
   const excludeTags = activeDynExcludeTags();
+  const isolateTags = activeDynIsolateTags();
   let n = 0, wins = 0, sumR = 0, sumPnl = 0;
-  document.querySelectorAll('#lvl-table tbody tr.lvl-row:not(.unfilled-row)').forEach(tr => {
+  document.querySelectorAll('#lvl-table tbody tr.lvl-row').forEach(tr => {
     const tags = (tr.dataset.dynTags || '').split(' ').filter(Boolean);
-    const excluded = excludeTags.length > 0 && tags.some(t => excludeTags.includes(t));
-    tr.classList.toggle('dyn-hidden', excluded);
+    const hidden = isolateTags.length > 0
+      ? !tags.some(t => isolateTags.includes(t))
+      : (excludeTags.length > 0 && tags.some(t => excludeTags.includes(t)));
+    tr.classList.toggle('dyn-hidden', hidden);
     const chartRow = document.getElementById('chart-row-' + tr.dataset.idx);
-    if (chartRow) chartRow.classList.toggle('dyn-hidden', excluded);
-    if (excluded) return;
+    if (chartRow) chartRow.classList.toggle('dyn-hidden', hidden);
+    if (hidden || tr.classList.contains('unfilled-row')) return;
     const rVal = parseFloat(tr.dataset.r);
     const pnl = parseFloat(tr.dataset.pnlPts);
     if (!isNaN(rVal)) {
@@ -1422,7 +1577,7 @@ function recomputeDynStats() {
   setText('sum-total-r', sumR.toFixed(1));
   setText('sum-total-pnl', (sumPnl >= 0 ? '+' : '') + sumPnl.toFixed(1));
 }
-document.querySelectorAll('.f-dyn-exclude').forEach(cb => cb.addEventListener('change', recomputeDynStats));
+document.querySelectorAll('.f-dyn-exclude, .f-dyn-isolate').forEach(cb => cb.addEventListener('change', recomputeDynStats));
 recomputeDynStats();
 </script>
 """

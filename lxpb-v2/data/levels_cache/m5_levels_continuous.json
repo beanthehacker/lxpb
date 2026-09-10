@@ -1,0 +1,18 @@
+{
+  "kind": "m5",
+  "contract": "",
+  "algo_version": 3,
+  "rules": "6095e0c2f4f5-mh1",
+  "bars_fingerprint": "124146-192f15fe56fb47ce",
+  "shape_fingerprint": "124146-cadbe27ac8e5ee13",
+  "anchor": 6500.5,
+  "state_anchor": 6500.5,
+  "n_bars": 124146,
+  "first_bar": "2024-12-08 23:00:00+00:00",
+  "last_bar": "2026-09-10 17:25:00+00:00",
+  "n_levels": 248292,
+  "built_how": "rebuild",
+  "resolved": "rebuild",
+  "built_seconds": 28.25,
+  "built_at": "2026-09-10T23:39:56.265464+00:00"
+}

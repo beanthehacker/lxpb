@@ -23,6 +23,19 @@ import pandas as pd
 
 MIN_HOURS_BEFORE_RETEST = 1
 
+# Candidate gate, rule 4 (consolidation vs trend -- see advance_one_bar's own
+# docstring): Kaufman's Efficiency Ratio over a small window of bar closes
+# straddling the candidate's own formation bar. ER = |net change| / (sum of
+# |close-to-close| changes) -- near 1.0 for an uninterrupted directional
+# push (no give-back), near 0.0 for a choppy, range-bound consolidation.
+# BEFORE/AFTER counts are bars strictly before/after formation (the
+# formation bar's own close is always included); AFTER is a maximum, not a
+# requirement -- a candidate that breaks out before AFTER bars have elapsed
+# is scored on whatever closes it actually has.
+ER_BARS_BEFORE = 2
+ER_BARS_AFTER = 2
+ER_CONSOLIDATION_MAX = 0.5  # ER below this counts as "consolidating enough"
+
 
 def load_ohlc_data(csv_path: str) -> pd.DataFrame:
     """Load OHLC data from CSV (epoch-seconds `time` column); return a
@@ -63,6 +76,22 @@ def is_hammer(o: float, h: float, l: float, c: float) -> bool:
     return small_body and long_lower_wick and small_upper_wick
 
 
+def _efficiency_ratio(closes):
+    """Kaufman's Efficiency Ratio over a sequence of closes: |net change| /
+    (sum of |close-to-close| changes). 1.0 = a straight, uninterrupted
+    move (trend); 0.0 = perfectly round-tripped (maximal chop). Returns
+    None if there are fewer than 2 closes to compare (not enough data to
+    say anything -- callers should treat that as "don't know", not as
+    evidence of either a trend or a consolidation)."""
+    if len(closes) < 2:
+        return None
+    diffs = [abs(closes[i + 1] - closes[i]) for i in range(len(closes) - 1)]
+    total = sum(diffs)
+    if total == 0:
+        return 0.0  # perfectly flat closes -- maximally consolidating
+    return abs(closes[-1] - closes[0]) / total
+
+
 def new_state() -> dict:
     """Empty LXPB state — three lists of plain-typed dicts.
 
@@ -78,19 +107,55 @@ def new_state() -> dict:
     `advance_one_bar` call, before that level can possibly break out.
     `prev_high`/`prev_low` cache the bar before the current one so a
     newly formed level always has its look-back side on hand too.
+
+    `recent_closes` holds the last ER_BARS_BEFORE closes from bars
+    STRICTLY BEFORE the one currently being processed (updated at the end
+    of every `advance_one_bar` call) -- the rolling window a newly formed
+    level snapshots from, plus its own formation bar's close, to seed its
+    `er_closes` (see Phase 1's own comment for why this lives on the
+    level rather than being recomputed later from scratch).
+
+    `pending_er` holds every level whose `er_closes` hasn't yet reached
+    ER_BARS_BEFORE+1+ER_BARS_AFTER entries -- i.e. every level still
+    accumulating its own efficiency-ratio window. A level drops out (by
+    reaching the cap, or by breaking out) within a few bars of formation
+    regardless of how long it then sits in touch_lv0 waiting to break, so
+    this stays small even over a huge bar history where touch_lv0 itself
+    does not -- see the loop that walks it in Phase 2's own comment for
+    why that distinction matters.
     """
     return {
         "touch_lv0": [],
         "touch_lv1": [],
         "retests": [],
         "pending_swing": [],
+        "pending_er": [],
+        "recent_closes": [],
         "prev_high": None,
         "prev_low": None,
     }
 
 
-def advance_one_bar(state: dict, bar) -> None:
+def advance_one_bar(state: dict, bar) -> tuple:
     """Advance LXPB state by one OHLC bar (namedtuple from itertuples(index=True)).
+
+    Returns (finalized_swing, gated_dropped):
+      finalized_swing -- the levels whose `is_swing` was just finalized
+        this call (state['pending_swing'] as it stood before Phase 0
+        cleared it). An external observer that snapshots a level's fields
+        the moment it first sees it (e.g. lxpb_levels_cache.py) captures
+        is_swing while it is still the pending `None`, one bar before the
+        real value lands here -- callers that care about the correct
+        value need to know exactly when it becomes final so they can
+        patch whatever they already recorded.
+      gated_dropped -- levels that broke out this bar (Phase 2) but were
+        NOT promoted to touch_lv1 because they failed the candidate
+        gate (see Phase 2 below): price closed through them, but they
+        weren't a real pre-breakout extreme, so they're not tracked
+        further. An external observer needs this too, to distinguish
+        "broke but not a real candidate" from "never broke at all"
+        (FATE_DISCARDED_NO_CLOSE) -- both look identical from outside
+        (level leaves touch_lv0, never appears in touch_lv1) without it.
 
     Order: phase 0 (finalize pending swing) → phase 3 (retest) → phase 2
     (breakout) → phase 1 (register) → phase 4 (running-FTA update). Phase
@@ -122,10 +187,38 @@ def advance_one_bar(state: dict, bar) -> None:
     finalized here in Phase 0 — one bar after the level was created,
     always before that same level's earliest possible breakout (Phase
     2 of this same call).
+
+    Candidate gate (Phase 2): a level only gets promoted to touch_lv1
+    (tracked as a live breakout awaiting retest) if:
+      `is_spike` (its own formation candle was a hammer/shooting star --
+        a self-contained reversal that doesn't need neighbor-bar
+        confirmation, since a lower-timeframe view of that one candle is
+        itself a low-high-low / high-low-high pattern), OR
+      `is_swing` (a genuine local extreme against its immediate neighbor
+        bars) AND its own neighborhood is CONSOLIDATING rather than
+        trending -- `_efficiency_ratio(lv["er_closes"])` below
+        ER_CONSOLIDATION_MAX (see that function and the module-level
+        constants' own comments). is_swing alone is not enough: a razor-
+        thin 1-bar dip inside an otherwise clean, one-directional run can
+        satisfy the immediate-neighbor test purely by chance (its low
+        beats the bars on either side by a few ticks) while the wider
+        few bars around it show no real two-sided rejection at all --
+        the efficiency ratio catches that by scoring the actual
+        closes, not just endpoints.
+    A level that breaks out satisfying neither is not a real pre-breakout
+    extreme -- e.g. one bar in the middle of the same directional move
+    that produces the breakout, or one bar still inside the immediately
+    preceding opposite move -- so it is silently dropped rather than
+    tracked as a P0. Each of these is an independent, additive check,
+    not a ranking that picks a single "best" candidate among several
+    that still pass -- more may be added the same way later.
     """
     # Phase 0: finalize is_swing for levels formed on the previous bar,
-    # using this bar as the look-ahead ("next") bar.
-    for lv in state["pending_swing"]:
+    # using this bar as the look-ahead ("next") bar. Keep the pre-clear
+    # list so the caller can patch anything it already snapshotted with
+    # the old (pending) is_swing value.
+    finalized_swing = state["pending_swing"]
+    for lv in finalized_swing:
         if lv["type"] == "LHPB":
             lv["is_swing"] = lv["price"] >= lv.pop("_prev_high") and lv["price"] >= bar.high
             del lv["_prev_low"]
@@ -184,6 +277,8 @@ def advance_one_bar(state: dict, bar) -> None:
     #     then rejected → genuine failed breakout, discard
     #   bar entirely on before-side → no interaction, keep
     keep = []
+    gated_dropped = []
+    broke_out_ids = set()
     for lv in state["touch_lv0"]:
         price = lv["price"]
         if lv["type"] == "LHPB":
@@ -216,33 +311,87 @@ def advance_one_bar(state: dict, bar) -> None:
                     keep.append(lv)
                     continue
         if broke:
-            state["touch_lv1"].append({
-                **lv,
-                "breakout_time":  bar.Index,
-                "breakout_open":  bar.open,
-                "breakout_high":  bar.high,
-                "breakout_low":   bar.low,
-                "breakout_close": bar.close,
-                "running_fta":    np.nan,
-            })
+            broke_out_ids.add(id(lv))
+            er = _efficiency_ratio(lv.get("er_closes", ()))
+            consolidating = er is None or er < ER_CONSOLIDATION_MAX
+            if lv["is_spike"] or (lv["is_swing"] and consolidating):
+                state["touch_lv1"].append({
+                    **lv,
+                    "breakout_time":  bar.Index,
+                    "breakout_open":  bar.open,
+                    "breakout_high":  bar.high,
+                    "breakout_low":   bar.low,
+                    "breakout_close": bar.close,
+                    "running_fta":    np.nan,
+                    "er_score":       er,
+                })
+            else:
+                # Candidate gate failed: price closed through it, but it
+                # was never a real pre-breakout extreme. Not tracked
+                # further -- see this function's own docstring. Still
+                # stamped with breakout_* (same shape as a touch_lv1
+                # entry) so a caller can record WHAT it broke against
+                # even though it's not being tracked for a retest.
+                gated_dropped.append({
+                    **lv,
+                    "breakout_time":  bar.Index,
+                    "breakout_open":  bar.open,
+                    "breakout_high":  bar.high,
+                    "breakout_low":   bar.low,
+                    "breakout_close": bar.close,
+                    "er_score":       er,
+                })
         # else: bar range contained the level but close didn't pass — discard
     state["touch_lv0"] = keep
+
+    # Every level still growing its own er_closes window gets this bar's
+    # close appended, up to the AFTER cap -- the candidate gate's
+    # efficiency-ratio window (see this function's own docstring) grows
+    # forward exactly as far as the level survives, stopping once it has
+    # ER_BARS_AFTER post-formation closes. Walks `state["pending_er"]` (a
+    # short list of only the still-growing levels), NOT the full
+    # touch_lv0 -- touch_lv0 can hold thousands of long-dormant levels on
+    # a big M5 history, and nearly all of them stopped needing appends
+    # within a couple of bars of formation, so scanning all of touch_lv0
+    # here every single bar would cost O(bars * |touch_lv0|) for work
+    # that only ever touches a handful of recently-formed entries.
+    # broke_out_ids excludes levels that left touch_lv0 THIS bar (Phase 2,
+    # above) -- their own er_closes was already read at the exact gate
+    # check above and must not keep growing after the fact (this list and
+    # the new touch_lv1/gated_dropped dicts share the same list object via
+    # the `**lv` spread, so appending here would silently corrupt an
+    # already-decided, already-recorded entry).
+    er_cap = ER_BARS_BEFORE + 1 + ER_BARS_AFTER
+    still_pending = []
+    for lv in state["pending_er"]:
+        if id(lv) in broke_out_ids:
+            continue
+        lv["er_closes"].append(bar.close)
+        if len(lv["er_closes"]) < er_cap:
+            still_pending.append(lv)
+    state["pending_er"] = still_pending
 
     # Phase 1: register this bar's high/low as new zero-touch levels.
     # is_spike is a single-bar pattern, finalized now. is_swing needs the
     # bar after formation, so it starts as None (pending) unless this is
     # the very first bar (no look-back bar exists → not a swing, per the
-    # original is_swing_high/is_swing_low boundary behavior).
+    # original is_swing_high/is_swing_low boundary behavior). er_closes
+    # seeds from the rolling recent_closes buffer plus this bar's own
+    # close -- ER_BARS_BEFORE prior closes and the formation bar's own,
+    # ready for the loop above to extend forward on later bars.
     is_first_bar = state["prev_high"] is None
+    er_seed = state["recent_closes"] + [bar.close]
     lhpb = {
         "type": "LHPB", "price": bar.high, "formation_time": bar.Index,
         "is_spike": is_hammer(bar.open, bar.high, bar.low, bar.close),
         "is_swing": False if is_first_bar else None,
+        "er_closes": list(er_seed),
     }
     llpb = {
         "type": "LLPB", "price": bar.low, "formation_time": bar.Index,
         "is_spike": is_shootingstar(bar.open, bar.high, bar.low, bar.close),
         "is_swing": False if is_first_bar else None,
+        "er_closes": list(er_seed),
     }
     if not is_first_bar:
         lhpb["_prev_high"] = state["prev_high"]
@@ -253,7 +402,11 @@ def advance_one_bar(state: dict, bar) -> None:
         state["pending_swing"].append(llpb)
     state["touch_lv0"].append(lhpb)
     state["touch_lv0"].append(llpb)
+    if len(er_seed) < er_cap:
+        state["pending_er"].append(lhpb)
+        state["pending_er"].append(llpb)
     state["prev_high"], state["prev_low"] = bar.high, bar.low
+    state["recent_closes"] = (state["recent_closes"] + [bar.close])[-ER_BARS_BEFORE:]
 
     # Phase 4: update running_fta for levels whose FTA window contains this bar.
     # FTA window is (breakout_time, retest_time) — exclusive both ends. Excluding
@@ -271,8 +424,10 @@ def advance_one_bar(state: dict, bar) -> None:
             else:  # LLPB
                 lv["running_fta"] = b_high if cur != cur or b_high > cur else cur
 
+    return finalized_swing, gated_dropped
 
-_INTERNAL_KEYS = {"running_fta", "_prev_high", "_prev_low"}
+
+_INTERNAL_KEYS = {"running_fta", "_prev_high", "_prev_low", "er_closes"}
 
 
 def _strip_internal(rows: list) -> list:

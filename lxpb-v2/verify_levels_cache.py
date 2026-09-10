@@ -474,12 +474,14 @@ def check_finetune_fill_windows():
                 assert fine_trade["retest_time"] == late.tz_localize(None)
                 assert base_trade["retest_time"] == row["retest_time"]
                 assert base_trade["entry"] == 100 and base_trade["stop_dist"] == 2
-                exit_ledger = rolled_ledger if rolled else m5
-                assert target.call_args.args[0] is exit_ledger and stop.call_args.args[0] is exit_ledger
-                if rolled:
-                    load_ledger.assert_called_once_with(1)
-                else:
-                    load_ledger.assert_not_called()
+                # The M5 ledger is one continuous series now (see the
+                # "continuous contracts only" convention in CLAUDE.md), so a
+                # fill drifting into a later contract than the original
+                # retest (rolled=True) no longer needs -- or triggers -- a
+                # reload onto a different per-contract ledger: `m5` already
+                # covers it, and LC.m5_levels is never called from here.
+                assert target.call_args.args[0] is m5 and stop.call_args.args[0] is m5
+                load_ledger.assert_not_called()
 
         pending = [dict(cluster[0], same_side_h1=external.assign(
             death_time=pd.NaT, retest_time=pd.NaT, fate="open_awaiting_retest"))]
@@ -1127,11 +1129,10 @@ LC._print_stats(h1, "H1 ledger")
 bad += compare(h1_bars, h1, "H1 live-set", n_cuts=8 if QUICK else 25)
 bad += compare_retests(h1_bars, h1, "H1")
 
-print("\n=== M5 (EPU26) ===")
-seg = R._contract_index_for(pd.Timestamp("2026-07-01 15:00", tz="UTC"))
-m5_bars = LC.m5_bars_for_contract(seg)
+print("\n=== M5 (continuous) ===")
+m5_bars = LC.m5_bars_continuous()
 print(f"M5 bars: {len(m5_bars):,}  {m5_bars.index[0]} -> {m5_bars.index[-1]}")
-m5 = LC.m5_levels(seg, rebuild=not QUICK)
+m5 = LC.m5_levels(rebuild=not QUICK)
 LC._print_stats(m5, "M5 ledger")
 bad += compare(m5_bars, m5, "M5 live-set", n_cuts=5 if QUICK else 12)
 bad += compare_retests(m5_bars, m5, "M5")

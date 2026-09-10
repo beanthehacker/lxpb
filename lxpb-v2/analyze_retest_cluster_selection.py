@@ -108,9 +108,9 @@ import render_labels_report as R  # noqa: E402
 # Default H1 series: the same TradingView ES1! 60m export the existing
 # strong-breakout / stop-target reports use, so rows here line up with
 # stop2_target2_trades_report.html. It carries ~13 months of history
-# (2025-07 -> 2026-08), plenty of lookback for the ZigZag swing pass, and
-# its back-adjustment frame matches B26.TV_GROUND_TRUTH_OFFSETS (no roll
-# between that export and the frozen 2026 offsets), which is what makes
+# (2025-07 -> 2026-08), plenty of lookback for the ZigZag swing pass, and it
+# is one of DISPLAY_H1_PATHS, so it shares the splice vintage the .scid
+# offsets are measured against (R._offset_for_ts) -- which is what makes
 # adjusted -> raw tick conversion valid.
 DEFAULT_DATA = os.path.join(_HERE, "data", "24aug-CME_MINI_ES1!, 60.csv")
 DEFAULT_CANDIDATES_CSV = os.path.join(_HERE, "data", "cluster_selection_candidates.csv")

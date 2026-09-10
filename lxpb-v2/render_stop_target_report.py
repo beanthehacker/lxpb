@@ -859,23 +859,27 @@ M5_BARS_AFTER_EXIT = 12
 M5_CTX_BEFORE_FORMATION = 4  # context bars kept around an M5 level's formation bar, so a
 M5_CTX_AFTER_FORMATION = 4   # ray's START is visible even when it formed long before entry
 M5_CTX_AROUND_RAY_END = 2    # ditto for the ray's END (the level's own M5 retest bar)
+M5_CTX_EXTRA_TIME = 3        # context bars kept around each of build_m5_chart's own
+                             # `extra_context_times` (e.g. every P0 candidate sharing a
+                             # trade's P1, not just the ones near_levels already covers)
 M5_MAX_MERGE_GAP = 12        # gaps <= this many M5 bars are kept rather than compressed
 M5_COLOR = "#38bdf8"         # qualifying M5 level
 
-# Whole-contract M5 bars and the M5 level ledger both live in lxpb_levels_cache
+# The continuous M5 bars and the M5 level ledger both live in lxpb_levels_cache
 # so that every consumer (this report, backtests, ad-hoc analysis) shares one
 # implementation and one on-disk cache. See that module's docstring.
-_m5_bars = LC.m5_bars_for_contract
+_m5_bars = LC.m5_bars_continuous
 
 
 
 def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=None,
-                   fill_window=None, p1_bar_width=pd.Timedelta(hours=1), p1_label="H1"):
+                   fill_window=None, p1_bar_width=pd.Timedelta(hours=1), p1_label="H1",
+                   bars_before_retest=None, bars_after_exit=None, extra_context_times=None):
     """5-minute companion pane for build_trade_chart's H1 chart.
 
     Runs the SAME LXPB state machine (lxpb.detect_lxpb_h1 is timeframe
-    agnostic -- it just walks whatever bars it is handed) over real 1s ticks
-    resampled to 5 minutes, so the M5 chart shows the M5 timeframe's own
+    agnostic -- it just walks whatever bars it is handed) over TradingView's
+    continuous M5 series, so the M5 chart shows the M5 timeframe's own
     LXPB levels alongside the H1 level being traded. Both the bars and the
     levels come from lxpb_levels_cache, which persists the whole lifecycle of
     every level so this pane never has to replay the machine per trade.
@@ -893,6 +897,24 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     caller whose own subject level is native to a different timeframe than
     H1 (e.g. an M5-native strategy report, where `row["breakout_time"]` is
     itself a 5-minute bar) -- both default to the original H1 behaviour.
+
+    `bars_before_retest`/`bars_after_exit` override the module-level
+    M5_BARS_BEFORE_RETEST/M5_BARS_AFTER_EXIT window-sizing constants for
+    this call only (None keeps the shared default) -- for a caller whose
+    M5 pane IS the primary structural chart (again, an M5-native report)
+    rather than a companion pane, showing more candles around the trade
+    is worth the extra chart height/data.
+
+    `extra_context_times` -- an optional iterable of timestamps that each
+    get their own protected +/-M5_CTX_EXTRA_TIME-bar segment, exactly like
+    a near_levels ray's formation bar (see below), so they survive
+    compression even when nothing else in this function already knows
+    about them. For a caller marking its own extra structure on the pane
+    after build_m5_chart returns (e.g. every P0 candidate sharing a
+    trade's own P1 -- not just the ones near_levels covers), passing
+    those same timestamps in here is what makes the real price action
+    around each one reviewable instead of landing inside a
+    "[N bars skipped]" gap and all getting snapped to one boundary bar.
 
     A qualifying M5 level must be all four of:
       * the SAME type as the H1 level (an H1 LLPB retest only cares about M5
@@ -920,12 +942,12 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     line as the H1 pane) and the only structural marker is P2 -- the M5
     candle on which price actually touched that H1 level.
 
-    Ticks are raw per-contract prices; the offset _m5_bars applies puts them
-    in the same back-adjusted/continuous scale as row["price"] and the H1
-    pane, so the two charts never mix raw and adjusted numbers for the same
-    instant. Bars come from _m5_bars' cached whole-contract series, so the
-    state machine can be walked from the H1 breakout bar forward no matter how
-    long ago that was -- the window is bounded only by the contract segment."""
+    The bars are TradingView's own continuous M5 export (_m5_bars), already
+    on the same back-adjusted scale as row["price"] and the H1 pane, so the
+    two charts never mix raw and adjusted numbers for the same instant. It
+    spans every rollover, so the state machine can be walked from the H1
+    breakout bar forward no matter how long ago that was, and the window is
+    bounded only by the export's own coverage."""
     setup_time = pd.Timestamp(row["retest_time"], tz="UTC")
     retest_time = (pd.to_datetime(fill_window[0], utc=True)
                    if fill_window is not None else setup_time)
@@ -943,35 +965,30 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     # exceed a week and the longest gap is 235 days), and the old 8-day cap
     # silently truncated the window to start AFTER the breakout bar, which
     # made the formation filter unsatisfiable and reported "no live M5 level"
-    # for ~15% of trades no matter what the data said. The only clamp is the
-    # contract segment below, which is a real data boundary rather than an
-    # arbitrary cost cap -- affordable because the bars come from a cached
-    # whole-contract M5 series (_m5_bars) instead of a per-trade tick load.
+    # for ~15% of trades no matter what the data said. There is no clamp at
+    # all now: the bars are one continuous back-adjusted series spanning every
+    # rollover, so a window may reach as far back as the data goes, across as
+    # many contracts as it likes. (It used to be clamped to the retest's own
+    # contract segment, because the bars were then raw per-contract .scid and
+    # a window straddling a roll would have spliced two price scales together.)
     lo = min(retest_time - pd.Timedelta(days=M5_LOOKBACK_DAYS),
              breakout_time - pd.Timedelta(days=M5_BREAKOUT_WARMUP_DAYS))
-    # Clamp to the retest's OWN contract segment. Raw .scid prices differ by a
-    # constant per contract, so a window straddling a roll would splice two
-    # price scales together and a single `offset` could not correct both.
-    seg_idx = R._contract_index_for(retest_time)
-    seg_start, seg_end = R._segment_for(seg_idx)
-    if seg_start is not None:
-        lo = max(lo, seg_start)
-    if seg_end is not None:
-        hi = min(hi, seg_end)
     if lo >= hi:
         return None
-    all_bars = _m5_bars(seg_idx)
+    all_bars = _m5_bars()
     if all_bars is None or all_bars.empty:
         return None
-    # Only chart a window that actually contains the trade. Near the end of
-    # the tick data the series can cover an earlier span only, in which case
-    # searchsorted would clamp the "retest" to the last bar and the pane would
-    # show an unrelated window with a bogus entry marker.
+    # Only chart a window that actually contains the trade. At either end of
+    # the M5 export's coverage the series can miss the trade entirely, in
+    # which case searchsorted would clamp the "retest" to the nearest bar and
+    # the pane would show an unrelated window with a bogus entry marker.
     if all_bars.index[0] > retest_time or all_bars.index[-1] < retest_time:
         return None
-    # True when the H1 breakout happened in an EARLIER contract, so no bar in
-    # this segment can satisfy the formation filter -- reported honestly in
-    # the title rather than as a bare "no level qualified".
+    # True when the series does not reach back to the breakout bar, so no bar
+    # in it can satisfy the formation filter -- reported honestly in the title
+    # rather than as a bare "no level qualified". Only possible right at the
+    # start of the M5 export's own coverage now that nothing clamps per
+    # contract.
     breakout_out_of_reach = all_bars.index[0] > breakout_time + p1_bar_width
 
     level_type = row["type"]
@@ -1002,7 +1019,7 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     form_cutoff = breakout_time + p1_bar_width - pd.Timedelta(nanoseconds=1)
     near_levels = []
     if entry_bar_pos > 0:
-        ledger = LC.m5_levels(seg_idx)
+        ledger = LC.m5_levels()
         if ledger is not None and not ledger.empty:
             live = LC.levels_live_as_of(
                 ledger, all_bars.index[entry_bar_pos - 1], level_type=level_type,
@@ -1041,8 +1058,6 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     if near_levels:
         earliest = min(lv["formation_time"] for lv in near_levels)
         lo = min(lo, earliest - pd.Timedelta(minutes=5 * M5_CTX_BEFORE_FORMATION))
-        if seg_start is not None:
-            lo = max(lo, seg_start)
     a = int(all_bars.index.searchsorted(lo, side="left"))
     b = int(all_bars.index.searchsorted(hi, side="left"))
     bars = all_bars.iloc[a:b]
@@ -1061,7 +1076,9 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     # small segment at its start (and at its end, when it was retested) so a
     # level that formed hours earlier still shows both endpoints. Everything
     # between is compressed out by _merge_segments.
-    segments = [(retest_pos - M5_BARS_BEFORE_RETEST, exit_pos + M5_BARS_AFTER_EXIT)]
+    before = M5_BARS_BEFORE_RETEST if bars_before_retest is None else bars_before_retest
+    after = M5_BARS_AFTER_EXIT if bars_after_exit is None else bars_after_exit
+    segments = [(retest_pos - before, exit_pos + after)]
     for lv in near_levels:
         fpos = _pos(lv["formation_time"])
         lv["form_pos"] = fpos
@@ -1070,6 +1087,17 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
             epos = _pos(lv["end_time"])
             lv["end_pos"] = epos
             segments.append((epos - M5_CTX_AROUND_RAY_END, epos + M5_CTX_AROUND_RAY_END))
+    if extra_context_times:
+        for ts in extra_context_times:
+            # Normalize to tz-aware UTC regardless of what the caller passed
+            # (row_for_chart-derived naive timestamps and ledger-sourced
+            # tz-aware ones both show up here in practice) -- idx is always
+            # tz-aware, and comparing it against a naive Timestamp raises.
+            ts = pd.Timestamp(ts)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("UTC")
+            epos = _pos(ts)
+            segments.append((epos - M5_CTX_EXTRA_TIME, epos + M5_CTX_EXTRA_TIME))
     merged = R._merge_segments(segments, n_bars, M5_MAX_MERGE_GAP)
 
     parts, skip_markers = [], []
@@ -1077,7 +1105,9 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
         if gap:
             skip_markers.append({
                 "time": R._to_epoch_utc(idx[s]),
-                "position": "inBar", "color": "#9ca3af", "shape": "square",
+                # "inBar" centers the label ON the candle body, where it's
+                # unreadable against the wick/body -- "aboveBar" clears it.
+                "position": "aboveBar", "color": "#9ca3af", "shape": "square",
                 "text": f"[{gap} bars skipped]",
             })
         parts.append(bars.iloc[s:e + 1])
