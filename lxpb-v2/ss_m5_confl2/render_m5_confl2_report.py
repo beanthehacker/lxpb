@@ -144,7 +144,7 @@ def _seg_departed_levels(m5_ledger, start_ts, end_ts):
     lxpb_levels_cache.py's own fate table). A consumed_early level was
     never a tradeable retest in this strategy's own selection logic, but
     price DID reach its price and move on, which is exactly the kind of
-    reaction --filter-p1-reaction needs to detect: a level dying this way
+    reaction the p1_reacted dynamic filter needs to detect: a level dying this way
     right after its own breakout is if anything a SHARPER rejection than a
     clean retest hours later. Adds a single unified 'touch_time' column
     (retest_time for a clean retest, death_time for consumed_early, since
@@ -163,7 +163,7 @@ def select_candidates(ss_confl_min, start, end, confluence_points):
     confluence subset); seg_departed is {seg_idx: DataFrame} of every
     'departed' M5 level (see _seg_departed_levels -- clean retests AND
     consumed_early) in [start, end) for that segment, BEFORE the
-    ss_confl_min filter -- kept separately so --filter-p1-reaction (see
+    ss_confl_min filter -- kept separately so the p1_reacted dynamic filter (see
     _p1_group_reaction_cutoffs) can see a P1 group's full membership,
     including P0s that don't themselves clear ss_confl_min or were never a
     tradeable retest at all."""
@@ -380,9 +380,11 @@ GLOBEX_OPEN_END_PT = pd.Timedelta(hours=15, minutes=5)
 
 def _in_globex_open_window(ts_utc):
     """True if ts_utc's Pacific-time-of-day falls in [15:00, 15:05) -- the
-    daily Globex/ETH reopen (6pm ET). Fills landing in this window are
-    excluded outright (not counted as a loss): the M5 stop/target structure
-    this strategy trades against isn't reliable across the reopen gap."""
+    daily Globex/ETH reopen (6pm ET), when the M5 stop/target structure this
+    strategy trades against isn't reliable across the reopen gap. Used by
+    _apply_globex_open_filter to TAG (not remove) a filled trade's own fill
+    time -- see that function's docstring for the dynamic-filter
+    convention this participates in."""
     pt = pd.Timestamp(ts_utc).tz_convert("America/Los_Angeles")
     tod = pd.Timedelta(hours=pt.hour, minutes=pt.minute)
     return GLOBEX_OPEN_START_PT <= tod < GLOBEX_OPEN_END_PT
@@ -714,7 +716,9 @@ def process_clusters(clusters, args):
 
 
 # --------------------------------------------------------------------------
-# Optional pre-filter (--filter-p1-reaction): a single P1 (breakout) bar can
+# The p1_reacted dynamic filter (always computed, tags -- see the "Dynamic
+# filters" convention in _apply_p1_reaction_filter's own docstring below):
+# a single P1 (breakout) bar can
 # be shared by several DIFFERENT P0 levels of the same type (dynamic_target's
 # own "P1 shared by >=2 P0s" rule already leans on this) even when those P0s
 # are too far apart in price to be confluence-clustered into one trade (see
@@ -738,7 +742,7 @@ def _naive_bracket_touch(bars, entry_adj, is_long, stop_pts, target_pts, offset)
     SR.resolve_trades' full fill-realism pipeline (which additionally
     requires TARGET, a resting limit order, to see a qualifying
     OPPOSITE-side print -- a same-side print merely brushing the price
-    doesn't count there). --filter-p1-reaction cares whether the market
+    doesn't count there). The p1_reacted dynamic filter cares whether the market
     actually reacted off this P0 and ran to the opposite level, not
     whether a specific resting order would have filled there, so this
     intentionally skips that refinement. Returns 'target', 'stop', or
@@ -966,24 +970,22 @@ def render(args):
         print(f"{len(candidates)} candidate rows collapse into {len(clusters)} distinct "
               f"confluence clusters ({n_merged} duplicate row(s) merged)", flush=True)
 
-    if args.filter_p1_reaction:
-        relevant_keys = set()
-        for cluster in clusters:
-            anchor_row = SF.cluster_anchor(cluster)["row"]
-            relevant_keys.add((cluster[0]["seg_idx"], anchor_row["type"],
-                              pd.Timestamp(anchor_row["breakout_time"])))
-        print(f"--filter-p1-reaction: checking {len(relevant_keys)} distinct P1 group(s) "
-              f"for an already-reacted sibling P0...", flush=True)
-        p1_cutoffs = _p1_group_reaction_cutoffs(relevant_keys, seg_departed)
+    relevant_keys = set()
+    for cluster in clusters:
+        anchor_row = SF.cluster_anchor(cluster)["row"]
+        relevant_keys.add((cluster[0]["seg_idx"], anchor_row["type"],
+                          pd.Timestamp(anchor_row["breakout_time"])))
+    print(f"p1_reacted: checking {len(relevant_keys)} distinct P1 group(s) "
+          f"for an already-reacted sibling P0...", flush=True)
+    p1_cutoffs = _p1_group_reaction_cutoffs(relevant_keys, seg_departed)
 
     results, chart_stacks, fps = process_clusters(clusters, args)
-    if args.filter_p1_reaction:
-        results = _apply_p1_reaction_filter(results, p1_cutoffs)
-        n_tagged = sum(1 for r in results if "p1_reacted" in r.get("dyn_tags", ()))
-        print(f"--filter-p1-reaction: {len(p1_cutoffs)} P1 group(s) had an already-reacted "
-              f"sibling P0; {n_tagged} trade(s) tagged 'p1_reacted' (still shown/counted by "
-              f"default -- toggle the Dynamic filters checkbox in the report to exclude "
-              f"them)", flush=True)
+    results = _apply_p1_reaction_filter(results, p1_cutoffs)
+    n_tagged = sum(1 for r in results if "p1_reacted" in r.get("dyn_tags", ()))
+    print(f"p1_reacted: {len(p1_cutoffs)} P1 group(s) had an already-reacted "
+          f"sibling P0; {n_tagged} trade(s) tagged 'p1_reacted' (still shown/counted by "
+          f"default -- toggle the Dynamic filters checkbox in the report to exclude "
+          f"them)", flush=True)
     results = _apply_globex_open_filter(results)
     n_globex_tagged = sum(1 for r in results if "globex_eth_open" in r.get("dyn_tags", ()))
     print(f"{n_globex_tagged} trade(s) tagged 'globex_eth_open' (excluded from the report's "
@@ -1191,11 +1193,6 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
         f"Queue position and additional cancel/replace latency are not modeled."
         if args.pegged_entry else
         "Entry is a plain static limit order (no chasing).")
-    p1_filter_note = (
-        ' <strong>--filter-p1-reaction is ON:</strong> if a different P0 sharing the same P1 '
-        '(same type, same breakout bar) already produced a filled trade that reached its '
-        'target at an earlier retest, this trade is invalidated (see the reacted-time note on '
-        'its NO TRADE row).' if args.filter_p1_reaction else '')
     reason_html = "".join(
         f'<div class="box"><strong>{n}</strong>{reason}</div>'
         for reason, n in sorted(reason_counts.items(), key=lambda kv: -kv[1]))
@@ -1255,7 +1252,8 @@ fixed stop/target. Both searches use only completed M5 candles and the live ledg
 immediately before the fill's M5 bar, with no fixed lookback. Charts/markers/price-lines/
 tooltips, MAE/MFE/Max DD definitions, and the Reviewed/Valid/Replayed/Notes columns below all
 follow render_stop_target_report.py's own conventions exactly (see that module and
-render_ss_confl_finetune_report.py for full detail).{p1_filter_note}</p>
+render_ss_confl_finetune_report.py for full detail). See the Dynamic filters row in the panel
+above for trade-exclusion toggles you can flip live in the browser, no regen required.</p>
 {pctile_html}
 """
 
@@ -1440,11 +1438,6 @@ if __name__ == "__main__":
     parser.add_argument("--m5-confluence-points", type=float, default=M5_CONFLUENCE_N_POINTS_DEFAULT,
                         help=f"M5 price radius for SS qualification, clustering and entry "
                              f"selection (default {M5_CONFLUENCE_N_POINTS_DEFAULT}pt).")
-    parser.add_argument("--filter-p1-reaction", action=argparse.BooleanOptionalAction, default=False,
-                        help="Invalidate a trade if a DIFFERENT P0 sharing the same P1 "
-                             "(breakout bar, same type) already produced a filled trade that "
-                             "reached its target (i.e. already bounced back to the opposite M5 "
-                             "level) at an earlier retest_time. OFF by default.")
     parser.add_argument("--min-r", type=float, default=MIN_R_DEFAULT,
                         help=f"Minimum reward:risk (target pts / stop pts) required to take "
                              f"the trade at all (default {MIN_R_DEFAULT}).")
