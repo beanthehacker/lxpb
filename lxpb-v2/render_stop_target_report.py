@@ -1479,44 +1479,48 @@ function toggleChart(i) {
   if (opening && !rendered[i]) { _renderStack(i); rendered[i] = true; }
 }
 </script>
+<script src="/js/row-store.js"></script>
 <script>
-// Reviewed / Replayed / Notes tracking -- persisted to this browser's
-// localStorage under a key unique to THIS report (stop/target combo), with
-// each row further keyed by its own trade identity (data-key), so notes
-// don't collide across different stop/target reports.
+// Reviewed / Replayed / Notes tracking -- persisted server-side (Postgres,
+// via /api/rows -- see public/js/row-store.js) under a key unique to THIS
+// report (stop/target combo), with each row further keyed by its own trade
+// identity (data-key), so notes don't collide across different stop/target
+// reports and sync across devices instead of being stuck in one browser.
 const REVIEW_STORAGE_KEY = '__STORAGE_KEY__';
-
-function loadReviewStore() {
-  try { return JSON.parse(localStorage.getItem(REVIEW_STORAGE_KEY) || '{}'); }
-  catch (e) { return {}; }
-}
-function saveReviewStore(store) { localStorage.setItem(REVIEW_STORAGE_KEY, JSON.stringify(store)); }
+const reviewStore = new RowStore(REVIEW_STORAGE_KEY);
 
 function reviewRowState(tr) {
+  const rcb = tr.querySelector('.reviewed-cb');
+  const vcb = tr.querySelector('.valid-cb');
+  const pcb = tr.querySelector('.replayed-cb');
+  const note = tr.querySelector('.trade-note');
   return {
-    reviewed: tr.querySelector('.reviewed-cb').checked,
-    valid: tr.querySelector('.valid-cb').checked,
-    replayed: tr.querySelector('.replayed-cb').checked,
-    notes: tr.querySelector('.trade-note').value,
+    reviewed: rcb ? rcb.checked : false,
+    valid: vcb ? vcb.checked : false,
+    replayed: pcb ? pcb.checked : false,
+    notes: note ? note.value : '',
   };
 }
 function applyReviewRowState(tr, state) {
   if (!state) state = {};
-  tr.querySelector('.reviewed-cb').checked = !!state.reviewed;
-  tr.querySelector('.valid-cb').checked = !!state.valid;
-  tr.querySelector('.replayed-cb').checked = !!state.replayed;
-  tr.querySelector('.trade-note').value = state.notes || '';
+  const rcb = tr.querySelector('.reviewed-cb');
+  const vcb = tr.querySelector('.valid-cb');
+  const pcb = tr.querySelector('.replayed-cb');
+  const note = tr.querySelector('.trade-note');
+  if (rcb) rcb.checked = !!state.reviewed;
+  if (vcb) vcb.checked = !!state.valid;
+  if (pcb) pcb.checked = !!state.replayed;
+  if (note) note.value = state.notes || '';
   tr.classList.toggle('is-reviewed', !!state.reviewed);
   tr.classList.toggle('is-valid', !!state.valid);
   tr.classList.toggle('is-replayed', !!state.replayed);
 }
-function persistReviewRow(tr) {
-  const store = loadReviewStore();
-  store[tr.dataset.key] = reviewRowState(tr);
-  saveReviewStore(store);
-  tr.classList.toggle('is-reviewed', !!store[tr.dataset.key].reviewed);
-  tr.classList.toggle('is-valid', !!store[tr.dataset.key].valid);
-  tr.classList.toggle('is-replayed', !!store[tr.dataset.key].replayed);
+function persistReviewRow(tr, opts) {
+  const state = reviewRowState(tr);
+  reviewStore.set(tr.dataset.key, state, opts);
+  tr.classList.toggle('is-reviewed', !!state.reviewed);
+  tr.classList.toggle('is-valid', !!state.valid);
+  tr.classList.toggle('is-replayed', !!state.replayed);
   updateReviewSummary();
   applyReviewFilters();
 }
@@ -1528,23 +1532,25 @@ function updateReviewSummary() {
   const elV = document.getElementById('sum-valid'); if (elV) elV.textContent = valid;
   const elP = document.getElementById('sum-replayed'); if (elP) elP.textContent = replayed;
 }
-function initReview() {
-  const store = loadReviewStore();
+async function initReview() {
+  await reviewStore.init();
   document.querySelectorAll('.lvl-row').forEach(tr => {
-    applyReviewRowState(tr, store[tr.dataset.key]);
-    tr.querySelectorAll('.reviewed-cb, .valid-cb, .replayed-cb, .trade-note').forEach(el => {
+    applyReviewRowState(tr, reviewStore.get(tr.dataset.key));
+    tr.querySelectorAll('.reviewed-cb, .valid-cb, .replayed-cb').forEach(el => {
       el.addEventListener('change', () => persistReviewRow(tr));
     });
-    tr.querySelector('.trade-note').addEventListener('input', () => persistReviewRow(tr));
+    const noteEl = tr.querySelector('.trade-note');
+    if (noteEl) noteEl.addEventListener('input', () => persistReviewRow(tr, { debounceMs: 500 }));
   });
   updateReviewSummary();
+  applyReviewFilters();
 }
 function csvEscapeReview(v) {
   v = (v === null || v === undefined) ? '' : String(v);
   return /[",\\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
 }
 function exportReviewCsv() {
-  const store = loadReviewStore();
+  const store = reviewStore.getAll();
   const header = ['key', 'reviewed', 'valid', 'replayed', 'notes'];
   const lines = [header.join(',')];
   Object.keys(store).forEach(key => {
@@ -1580,20 +1586,20 @@ function importReviewCsv(evt) {
   const file = evt.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = () => {
+  reader.onload = async () => {
     const lines = reader.result.split(/\\r?\\n/).filter(l => l.length);
     const header = parseReviewCsvLine(lines[0]);
-    const store = loadReviewStore();
+    const entries = {};
     for (let i = 1; i < lines.length; i++) {
       const cols = parseReviewCsvLine(lines[i]);
       const rec = {};
       header.forEach((h, j) => rec[h] = cols[j]);
       if (!rec.key) continue;
-      store[rec.key] = { reviewed: rec.reviewed === '1', valid: rec.valid === '1',
+      entries[rec.key] = { reviewed: rec.reviewed === '1', valid: rec.valid === '1',
                          replayed: rec.replayed === '1', notes: rec.notes || '' };
     }
-    saveReviewStore(store);
-    document.querySelectorAll('.lvl-row').forEach(tr => applyReviewRowState(tr, store[tr.dataset.key]));
+    await reviewStore.bulkSet(entries);
+    document.querySelectorAll('.lvl-row').forEach(tr => applyReviewRowState(tr, reviewStore.get(tr.dataset.key)));
     updateReviewSummary();
     applyReviewFilters();
     evt.target.value = '';
@@ -1601,8 +1607,8 @@ function importReviewCsv(evt) {
   };
   reader.readAsText(file);
 }
-function clearAllReview() {
-  localStorage.removeItem(REVIEW_STORAGE_KEY);
+async function clearAllReview() {
+  await reviewStore.clearAll();
   document.querySelectorAll('.lvl-row').forEach(tr => applyReviewRowState(tr, {}));
   updateReviewSummary();
   applyReviewFilters();
@@ -1631,7 +1637,8 @@ function applyReviewFilters() {
     const isReviewed = tr.classList.contains('is-reviewed');
     const isValid = tr.classList.contains('is-valid');
     const isReplayed = tr.classList.contains('is-replayed');
-    const hasNotes = tr.querySelector('.trade-note').value.trim().length > 0;
+    const noteEl = tr.querySelector('.trade-note');
+    const hasNotes = noteEl ? noteEl.value.trim().length > 0 : false;
     const statusOk = statusOn.includes(isReviewed ? 'reviewed' : 'unreviewed');
     const validOk = validOn.includes(isValid ? 'valid' : 'not_valid');
     const replayOk = replayOn.includes(isReplayed ? 'replayed' : 'not_replayed');
@@ -1652,7 +1659,6 @@ document.querySelectorAll('.f-review-status, .f-review-valid, .f-review-replay, 
 document.querySelectorAll('.f-num-op, .f-num-val')
   .forEach(el => el.addEventListener('input', applyReviewFilters));
 initReview();
-applyReviewFilters();
 </script>
 """
 
@@ -2121,8 +2127,8 @@ hand back before it resolved". Note it spans bid to ask, so it runs about one ti
 give-back you could actually have liquidated at. A \u26a0 beside the Entry price marks a GAPPED ENTRY: that price never traded between
 touch and exit, so the modeled no-slippage fill was never actually available and the row's R is
 not something the strategy could have realised.
-Reviewed/Valid/Replayed/Notes persist in this browser's localStorage (keyed to this
-stop/target report) and can be exported/imported as CSV (top-right buttons).</p>
+Reviewed/Valid/Replayed/Notes persist server-side (keyed to this stop/target report) and
+sync across devices; also exportable/importable as CSV (top-right buttons).</p>
 <div class="summary">
   <div class="box"><strong>{len(trades)}</strong>trades</div>
   <div class="box"><strong>{wins}</strong>wins</div>
@@ -2285,7 +2291,7 @@ if __name__ == "__main__":
     if args.full_year:
         default_name = (f"stop{_fmt_pts(args.stop)}_target{_fmt_pts(args.target)}{ce_tag}"
                         f"_trades_report_2026_full_year.html")
-    out = args.output or os.path.join(_HERE, default_name)
+    out = args.output or os.path.join(_HERE, "public", "reports", default_name)
     render(args.stop, args.target, out, start=start, end=end, limit=limit,
            merged=merged, workers=args.workers, storage_key=skey, title_suffix=suffix,
            candle_exit=args.candle_exit,

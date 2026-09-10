@@ -1543,5 +1543,5 @@ if __name__ == "__main__":
     default_name = f"ss_confl{args.ss_confl_min}_finetune_report.html"
     if args.full_year:
         default_name = f"ss_confl{args.ss_confl_min}_finetune_report_2026_full_year.html"
-    args.output = args.output or os.path.join(_HERE, default_name)
+    args.output = args.output or os.path.join(_HERE, "public", "reports", default_name)
     render(args)

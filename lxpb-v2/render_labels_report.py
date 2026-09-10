@@ -104,7 +104,7 @@ from scidReader import get_scid_df  # noqa: E402
 # real-tick 1s/1min/footprint charts) lives in the single shared
 # ..\data folder (D:\lxpb\data), the repo-wide single source of truth.
 DEFAULT_DATA = os.path.join(_DATA_DIR, "es-h1-continuous-backadjusted.csv")
-DEFAULT_OUTPUT = os.path.join(_HERE, "lxpb_labels_report.html")
+DEFAULT_OUTPUT = os.path.join(_HERE, "public", "reports", "lxpb_labels_report.html")
 
 BARS_BEFORE = 8     # H1 bars of context shown before Phase 0 (formation)
 BARS_AFTER = 8      # H1 bars of context shown after Phase 2 (retest)
@@ -1128,8 +1128,8 @@ same retest H1 bar (rank/size, most-recently-formed level = rank 1) -- {n_cluste
 {len(rows_meta)} rows here belong to such a cluster, collapsing to {n_unique_bars} unique retest
 bars overall. Each feature checkbox (and the overall "Valid" verdict) is pre-checked
 from a computed default -- the small grey hint text explains why -- but the reviewer's tick is
-final and can flip any of them. Labels persist in this browser's localStorage and can be
-exported/imported as CSV (top-right buttons).</p>
+final and can flip any of them. Labels persist server-side and sync across devices; also
+exportable/importable as CSV (top-right buttons).</p>
 <div class="summary">
   <div class="box true"><strong id="sum-total">{len(rows_meta)}</strong>Levels</div>
   <div class="box"><strong id="sum-shown">{len(rows_meta)}</strong>Shown</div>
@@ -1254,11 +1254,15 @@ exported/imported as CSV (top-right buttons).</p>
 
 
 JS_TEMPLATE = """
+<script src="/js/row-store.js"></script>
 <script>
 const CHARTS = __CHARTS_JSON__;
 const ROWS = __ROWS_JSON__;
 const FEATURES = __FEATURES_JSON__;
 const STORAGE_KEY = 'lxpb_labels_v1';
+// Labels persist server-side (Postgres, via /api/rows) instead of browser
+// localStorage, so they sync across devices.
+const labelStore = new RowStore(STORAGE_KEY);
 const rendered = {};
 // Fixed candle width in pixels so charts with few candles show blank
 // space on either side instead of stretching each candle to fill the
@@ -1267,12 +1271,6 @@ const rendered = {};
 // _renderChart -- we manage chart sizing ourselves instead of fighting
 // the user's own zoom with a continuous watchdog).
 const FIXED_BAR_SPACING = 6;
-
-function loadStore() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); }
-  catch (e) { return {}; }
-}
-function saveStore(store) { localStorage.setItem(STORAGE_KEY, JSON.stringify(store)); }
 
 function rowState(tr) {
   const state = { reviewed: tr.querySelector('.reviewed-cb').checked,
@@ -1309,12 +1307,11 @@ function applyRowState(tr, state) {
   tr.classList.toggle('is-invalid', !tr.querySelector('.valid-cb').checked);
 }
 
-function persistRow(tr) {
-  const store = loadStore();
-  store[tr.dataset.key] = rowState(tr);
-  saveStore(store);
-  tr.classList.toggle('is-reviewed', !!store[tr.dataset.key].reviewed);
-  tr.classList.toggle('is-invalid', !store[tr.dataset.key].valid);
+function persistRow(tr, opts) {
+  const state = rowState(tr);
+  labelStore.set(tr.dataset.key, state, opts);
+  tr.classList.toggle('is-reviewed', !!state.reviewed);
+  tr.classList.toggle('is-invalid', !state.valid);
   updateSummary();
 }
 
@@ -1326,17 +1323,18 @@ function updateSummary() {
   document.getElementById('sum-invalid').textContent = invalid;
 }
 
-function initRows() {
-  const store = loadStore();
+async function initRows() {
+  await labelStore.init();
   document.querySelectorAll('.lvl-row').forEach(tr => {
     applyDefaults(tr);
-    applyRowState(tr, store[tr.dataset.key]);
-    tr.querySelectorAll('.reviewed-cb, .valid-cb, .feat-cb, .misc-note').forEach(el => {
+    applyRowState(tr, labelStore.get(tr.dataset.key));
+    tr.querySelectorAll('.reviewed-cb, .valid-cb, .feat-cb').forEach(el => {
       el.addEventListener('change', () => persistRow(tr));
     });
-    tr.querySelector('.misc-note').addEventListener('input', () => persistRow(tr));
+    tr.querySelector('.misc-note').addEventListener('input', () => persistRow(tr, { debounceMs: 500 }));
   });
   updateSummary();
+  applyFilters();
 }
 
 function csvEscape(v) {
@@ -1345,7 +1343,7 @@ function csvEscape(v) {
 }
 
 function exportCsv() {
-  const store = loadStore();
+  const store = labelStore.getAll();
   const featCols = FEATURES.map(f => f.id);
   const header = ['key', 'idx', 'type', 'price', 'formation_time', 'breakout_time',
                    'retest_time', 'reviewed', 'valid'].concat(featCols).concat(['misc']);
@@ -1388,10 +1386,10 @@ function importCsv(evt) {
   const file = evt.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = () => {
+  reader.onload = async () => {
     const lines = reader.result.split(/\\r?\\n/).filter(l => l.length);
     const header = parseCsvLine(lines[0]);
-    const store = loadStore();
+    const entries = {};
     for (let i = 1; i < lines.length; i++) {
       const cols = parseCsvLine(lines[i]);
       const rec = {};
@@ -1402,10 +1400,10 @@ function importCsv(evt) {
       if (header.includes('reviewed')) state.reviewed = rec.reviewed === '1';
       if (header.includes('valid')) state.valid = rec.valid === '1';
       FEATURES.forEach(f => { if (header.includes(f.id)) state[f.id] = rec[f.id] === '1'; });
-      store[key] = state;
+      entries[key] = state;
     }
-    saveStore(store);
-    document.querySelectorAll('.lvl-row').forEach(tr => applyRowState(tr, store[tr.dataset.key]));
+    await labelStore.bulkSet(entries);
+    document.querySelectorAll('.lvl-row').forEach(tr => applyRowState(tr, labelStore.get(tr.dataset.key)));
     updateSummary();
     evt.target.value = '';
     alert('Imported labels from ' + file.name);
@@ -1413,8 +1411,8 @@ function importCsv(evt) {
   reader.readAsText(file);
 }
 
-function clearAll() {
-  localStorage.removeItem(STORAGE_KEY);
+async function clearAll() {
+  await labelStore.clearAll();
   document.querySelectorAll('.lvl-row').forEach(tr => applyDefaults(tr));
   updateSummary();
 }
@@ -1659,7 +1657,6 @@ document.addEventListener('change', function(e) {
 });
 
 initRows();
-applyFilters();
 </script>
 """
 

@@ -9,6 +9,39 @@ lightweight-charts@4 style as `../lxpb-es-vol/render_report.py`) with
 dots/arrows marking each phase, plus checkbox columns for human-judged
 features.
 
+## Deploying (Vercel)
+
+The repo root is also a minimal Next.js app: `/` lists every report under
+`public/reports/` (grouped by family, opens in a new tab), `/reports/*.html`
+serves the reports themselves, and `/api/rows` is the Postgres-backed store
+that replaced each report's old `localStorage` review/label state (so
+Reviewed/Valid/Replayed/Notes-style checkboxes now sync across devices).
+Everything is gated behind Google sign-in for a single allowed email.
+
+**One-time setup, after connecting the GitHub repo to a Vercel project:**
+
+1. **Database** -- in the Vercel dashboard, Storage tab, add a Postgres
+   database (Neon integration). This sets `DATABASE_URL` (and friends) as
+   project env vars automatically. Then, locally: `vercel env pull
+   .env.local` followed by `npm run init-db` (creates the `row_state`
+   table from `db/schema.sql` -- one-off, idempotent).
+2. **Google sign-in** -- in Google Cloud Console, create an OAuth 2.0
+   Client ID (OAuth consent screen: External + Testing, with your Google
+   account added as a test user is enough for single-user use). Authorized
+   redirect URI: `https://<your-vercel-domain>/api/auth/callback/google`.
+   Set these as Vercel project env vars:
+   - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` -- from the OAuth client.
+   - `AUTH_SECRET` -- any random string (`openssl rand -base64 32`).
+   - `ALLOWED_EMAIL` -- the only Google account allowed in (defaults to
+     `nisarg92modi@gmail.com` if unset).
+3. Deploy. `data/`, `sierra-chart/`, `patterns_pure/`, and `*.log` files
+   are excluded from the deployment via `.vercelignore` -- only
+   `public/reports/` and the app code get uploaded.
+
+Every `render_*.py` script now defaults its `--output` into
+`public/reports/` (see per-tool sections below), so regenerating a report
+and redeploying is enough to publish an update -- no manual file moving.
+
 ## Usage
 
 ```
@@ -18,7 +51,7 @@ python render_labels_report.py [options]
 | Option | Default | Meaning |
 |---|---|---|
 | `--data` | `../data/es-h1-continuous-backadjusted.csv` | H1 OHLC CSV to run `detect_lxpb_h1` against -- whole-monorepo canonical, back-adjusted, jump-free continuous series (2015-present; see "ES H1 data" below) |
-| `--output` | `lxpb_labels_report.html` | Output HTML path |
+| `--output` | `public/reports/lxpb_labels_report.html` | Output HTML path |
 | `--title` | auto | Report `<h1>` title |
 | `--n-ticks` | 20 | Confluence radius (ticks) for the "nearby broken-out levels" hint/overlay |
 | `--tick-size` | 0.25 | Tick size used to convert `--n-ticks` to price points |
@@ -35,15 +68,16 @@ Workflow:
    any feature checkbox or the overall "Valid" checkbox that the reviewer
    disagrees with, add misc notes, and click a row (or its ▶ button) to
    expand its chart.
-3. Labels autosave to the browser's `localStorage` (keyed by
+3. Labels autosave server-side, via `/api/rows` (Postgres) -- keyed by
    `type|price|formation_epoch`, so re-running the script with different
    `--limit`/`--start`/`--end` won't collide with previously saved labels
-   for the same underlying levels).
-4. Use **Export labels CSV** any time to save a durable copy (survives
-   browser data clearing / moving machines); **Import labels CSV** merges
-   a previously exported CSV back into `localStorage` (e.g. to resume
-   labeling on a fresh machine, or to combine labels collected across
-   multiple report files/batches).
+   for the same underlying levels, and the same labels show up from any
+   device signed in to the deployed site (see "Deploying" below). When
+   opened as a local file (no `/api/rows` backend), labels are kept only
+   in memory for that page load.
+4. Use **Export labels CSV** any time to save a durable copy; **Import
+   labels CSV** merges a previously exported CSV back in (e.g. to migrate
+   labels collected across multiple report files/batches).
 5. Use the Type/Status/Validity filter chips and the summary counters at
    the top to track review progress.
 
@@ -122,11 +156,11 @@ Workflow:
   template, self-contained, no external Python deps beyond pandas/numpy
   already used by `../lxpb.py`; imports spike/wick helpers from
   `D:\daily-analysis\patterns-pure` via `sys.path`).
-- `lxpb_labels_report.html` -- example generated output (most recent 300
-  completed 2026 retests from the bundled dataset, default args).
-  Regenerate any time; this file is a disposable build artifact, not
-  source of truth (labels live in each browser's `localStorage` / your
-  exported CSV, not in this HTML).
+- `public/reports/lxpb_labels_report.html` -- example generated output
+  (most recent 300 completed 2026 retests from the bundled dataset,
+  default args). Regenerate any time; this file is a disposable build
+  artifact, not source of truth (labels live in Postgres via `/api/rows`
+  when deployed, or your exported CSV, not in this HTML).
 - `../data/es-h1-continuous-backadjusted.csv` -- default input dataset,
   the whole-monorepo canonical ES H1 series, built by
   `../data/build_es_h1_continuous.py`. Covers 2015-01-01 through present.
@@ -333,7 +367,7 @@ outcome in R.
 ### Report
 
 `render_cluster_selection_report.py` writes
-`lxpb_cluster_selection_report.html`, laid out like
+`public/reports/lxpb_cluster_selection_report.html`, laid out like
 `stop2_target2_trades_report.html`: one expandable row per candidate,
 grouped by event, opening into an **H1 chart with the features drawn on
 it** -- the P0 marker spells out the feature values, swing pivots are
@@ -345,7 +379,8 @@ that were never reached centre their tick charts on the second of
 stopped.
 
 Each row has hand-check boxes (`recency_ok`, `swing_ok`, `spike_ok`,
-`wick_ok`, `pick_ok`) and a notes field, persisted to `localStorage` and
+`wick_ok`, `pick_ok`) and a notes field, persisted server-side via
+`/api/rows` (Postgres, syncs across devices when deployed) and
 exportable to CSV so the verdicts can be handed back to correct the
 feature definitions.
 
@@ -353,7 +388,7 @@ feature definitions.
 python render_cluster_selection_report.py [--limit 0] [--start 2026-07-01] [--end 2026-08-31] \
     [--move-bars 3] [--miss-band-pts 10] [--min-cluster-size 2] [--min-retested 2] \
     [--stop 2] [--target 2] [--horizon-hours 6] [--bounce-seconds 300] [--break-pts 2] \
-    [--weights recency=1,swing=1,spike=1,wick=1] [--output lxpb_cluster_selection_report.html]
+    [--weights recency=1,swing=1,spike=1,wick=1] [--output public/reports/lxpb_cluster_selection_report.html]
 ```
 
 `analyze_retest_cluster_selection.py` takes the same analysis flags and

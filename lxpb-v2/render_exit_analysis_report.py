@@ -21,7 +21,7 @@ import analyze_breakout_exits as A
 import analyze_breakout_exits_1min as M
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_OUTPUT = os.path.join(_HERE, "exit_analysis_report.html")
+DEFAULT_OUTPUT = os.path.join(_HERE, "public", "reports", "exit_analysis_report.html")
 
 STOPS = [2, 3, 4, 6, 8, 10, 12, 16, 20]
 TARGETS = [2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 30]
@@ -414,7 +414,7 @@ if __name__ == "__main__":
         limit, merged = None, True
         grid_end = grid_end or "2026-08-31"
         if out == DEFAULT_OUTPUT:
-            out = os.path.join(_HERE, "exit_analysis_report_2026_full_year.html")
+            out = os.path.join(_HERE, "public", "reports", "exit_analysis_report_2026_full_year.html")
     render(out, start=start, end=end, limit=limit, merged=merged,
            workers=args.workers, grid_end=grid_end,
            stops=parse_levels(args.stops) if args.stops else None,

@@ -1,0 +1,12 @@
+# These are huge and irrelevant to the deployed site (build caches, source
+# data, unrelated Sierra Chart / pattern-detection code, run logs) -- keep
+# them out of the upload so `vercel deploy` stays fast and small.
+data/
+sierra-chart/
+patterns_pure/
+__pycache__/
+*.log
+ss_m5_confl2/*.log
+ss_m5_confl2/data/
+ss_m5_confl2/__pycache__/
+.claude/

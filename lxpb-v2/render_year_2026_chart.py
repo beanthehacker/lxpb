@@ -141,5 +141,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Whole-calendar-year 2026 ES H1 chart")
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
-    out = args.output or os.path.join(_HERE, "lxpb_2026_full_year_chart.html")
+    out = args.output or os.path.join(_HERE, "public", "reports", "lxpb_2026_full_year_chart.html")
     render(out)

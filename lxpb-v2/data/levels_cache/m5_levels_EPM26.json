@@ -3,8 +3,8 @@
   "contract": "EPM26",
   "algo_version": 1,
   "rules": "82bbea38623c-mh1",
-  "bars_fingerprint": "26196-ceb2075d61867972",
-  "shape_fingerprint": "26196-a27773088c7780bf",
+  "bars_fingerprint": "26196-d894052ed33ef93b",
+  "shape_fingerprint": "26196-a06da9f09b1aa54f",
   "anchor": 6806.25,
   "state_anchor": 6806.25,
   "n_bars": 26196,
@@ -13,6 +13,6 @@
   "n_levels": 52392,
   "built_how": "rebuild",
   "resolved": "rebuild",
-  "built_seconds": 24.93,
-  "built_at": "2026-09-05T02:51:55.545565+00:00"
+  "built_seconds": 8.0,
+  "built_at": "2026-09-09T21:43:29.636487+00:00"
 }

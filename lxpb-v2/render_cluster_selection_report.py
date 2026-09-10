@@ -60,7 +60,7 @@ if _HERE not in sys.path:
 import analyze_retest_cluster_selection as A  # noqa: E402
 import render_labels_report as R  # noqa: E402
 
-DEFAULT_OUTPUT = os.path.join(_HERE, "lxpb_cluster_selection_report.html")
+DEFAULT_OUTPUT = os.path.join(_HERE, "public", "reports", "lxpb_cluster_selection_report.html")
 
 BARS_BEFORE = 8
 CONTEXT_BARS_AFTER_FORMATION = 3
@@ -556,22 +556,20 @@ long target an ask-side print, stops fill on any side), walked strictly forward 
 
 JS_TEMPLATE = """
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="/js/row-store.js"></script>
 <script>
 const CHARTS = __CHARTS_JSON__;
 const ROWS = __ROWS_JSON__;
 const CHECKS = __CHECKS_JSON__;
 const STORAGE_KEY = 'lxpb_cluster_selection_v1';
+// Labels persist server-side (Postgres, via /api/rows) instead of browser
+// localStorage, so they sync across devices.
+const clusterStore = new RowStore(STORAGE_KEY);
 const rendered = {};
 const FIXED_BAR_SPACING = 6;
 const H1_MAX_BAR_SPACING = 22;
 
 /* ---------------- labeling / persistence ---------------- */
-function loadStore() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); }
-  catch (e) { return {}; }
-}
-function saveStore(s) { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }
-
 function rowState(tr) {
   const st = { reviewed: tr.querySelector('.reviewed-cb').checked,
                misc: tr.querySelector('.misc-note').value };
@@ -609,10 +607,9 @@ function markFlags(tr) {
   tr.classList.toggle('is-reviewed', !!tr.querySelector('.reviewed-cb').checked);
   tr.classList.toggle('is-invalid', flagged);
 }
-function persistRow(tr) {
-  const store = loadStore();
-  store[tr.dataset.key] = rowState(tr);
-  saveStore(store);
+function persistRow(tr, opts) {
+  const state = rowState(tr);
+  clusterStore.set(tr.dataset.key, state, opts);
   markFlags(tr);
   updateSummary();
 }
@@ -622,17 +619,18 @@ function updateSummary() {
   document.getElementById('sum-flagged').textContent =
     document.querySelectorAll('.lvl-row.is-invalid').length;
 }
-function initRows() {
-  const store = loadStore();
+async function initRows() {
+  await clusterStore.init();
   document.querySelectorAll('.lvl-row').forEach(tr => {
     applyDefaults(tr);
-    applyRowState(tr, store[tr.dataset.key]);
-    tr.querySelectorAll('.reviewed-cb, .chk-cb, .misc-note').forEach(el => {
+    applyRowState(tr, clusterStore.get(tr.dataset.key));
+    tr.querySelectorAll('.reviewed-cb, .chk-cb').forEach(el => {
       el.addEventListener('change', () => persistRow(tr));
     });
-    tr.querySelector('.misc-note').addEventListener('input', () => persistRow(tr));
+    tr.querySelector('.misc-note').addEventListener('input', () => persistRow(tr, { debounceMs: 500 }));
   });
   updateSummary();
+  applyFilters();
 }
 
 function csvEscape(v) {
@@ -646,7 +644,7 @@ const EXPORT_COMPUTED = ['event_id', 'type', 'price', 'formation_time', 'breakou
   'is_swing_lxpb', 'is_spike_pp', 'is_spike_lxpb', 'large_wick', 'wick_pct', 'score',
   'selected', 'filled', 'fill_time', 'immediate_bounce', 'mfe', 'mae', 'held', 'outcome', 'r'];
 function exportCsv() {
-  const store = loadStore();
+  const store = clusterStore.getAll();
   const chkCols = CHECKS.map(c => c.id);
   const header = ['key', 'idx'].concat(EXPORT_COMPUTED).concat(['reviewed']).concat(chkCols).concat(['misc']);
   const lines = [header.join(',')];
@@ -686,10 +684,10 @@ function importCsv(evt) {
   const file = evt.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = () => {
+  reader.onload = async () => {
     const lines = reader.result.split(/\\r?\\n/).filter(l => l.length);
     const header = parseCsvLine(lines[0]);
-    const store = loadStore();
+    const entries = {};
     for (let i = 1; i < lines.length; i++) {
       const cols = parseCsvLine(lines[i]);
       const rec = {};
@@ -698,18 +696,18 @@ function importCsv(evt) {
       const st = { misc: rec.misc || '' };
       if (header.includes('reviewed')) st.reviewed = rec.reviewed === '1';
       CHECKS.forEach(c => { if (header.includes(c.id)) st[c.id] = rec[c.id] === '1'; });
-      store[rec.key] = st;
+      entries[rec.key] = st;
     }
-    saveStore(store);
-    document.querySelectorAll('.lvl-row').forEach(tr => applyRowState(tr, store[tr.dataset.key]));
+    await clusterStore.bulkSet(entries);
+    document.querySelectorAll('.lvl-row').forEach(tr => applyRowState(tr, clusterStore.get(tr.dataset.key)));
     updateSummary();
     evt.target.value = '';
     alert('Imported labels from ' + file.name);
   };
   reader.readAsText(file);
 }
-function clearAll() {
-  localStorage.removeItem(STORAGE_KEY);
+async function clearAll() {
+  await clusterStore.clearAll();
   document.querySelectorAll('.lvl-row').forEach(tr => {
     applyDefaults(tr);
     tr.querySelector('.misc-note').value = '';
@@ -917,7 +915,6 @@ function toggleChart(i) {
 
 document.querySelectorAll('.f-cb').forEach(cb => cb.addEventListener('change', applyFilters));
 initRows();
-applyFilters();
 </script>
 """
 
