@@ -107,6 +107,7 @@ import render_stop_target_report as SR           # noqa: E402
 import render_ss_confl_finetune_report as SF      # noqa: E402
 import analyze_breakout_exits_1min as M           # noqa: E402
 import lxpb_levels_cache as LC                    # noqa: E402
+import trade_management as TM                     # noqa: E402
 
 SS_CONFL_MIN_DEFAULT = 2
 M5_CONFLUENCE_N_POINTS_DEFAULT = 5.0  # same-side M5 confluence radius: selection + entry refinement
@@ -474,12 +475,36 @@ def process_cluster(cluster, args):
              "retest_time": touch_time_alt.tz_convert("UTC").tz_localize(None),
              "stop_dist": stop_pts, "target_dist": target_pts}
     resolved = SR.resolve_trades([trade], {0: bars}, stop=None, target=None)[0]
+    managed = TM.resolve_managed_trade(trade, bars, cluster[0]["seg_idx"], level_type,
+                                       ledger=m5_ledger)
     result.update({
         "filled": True, "touch_time_alt": touch_time_alt, "resolved": resolved,
         "favorable_pts": resolved.get("favorable_pts"), "adverse_pts": resolved.get("adverse_pts"),
         "giveback_pts": resolved.get("giveback_pts"), "entry_gapped": resolved.get("entry_gapped", False),
+        "mgmt": _mgmt_summary(resolved, managed, stop_pts),
     })
     return result
+
+
+def _mgmt_summary(resolved, managed, stop_pts):
+    """Per-row trade-management summary for the report's dynamic toggle
+    (see the 'Trade management' checkbox in _finish_report): mirrors the
+    baseline (unmanaged) r/outcome/pnl/exit_time when the rules never
+    actually changed anything for this trade (managed is None -- a short
+    trade, rule 1 is long-only -- or fired no events), else the managed
+    values. `fired` tells the JS whether swapping to these values would
+    even change anything (kept explicit rather than relying on float
+    equality between baseline and managed R)."""
+    if not managed or not (managed.get("trail_events") or managed.get("rr_floor_fired")):
+        r = resolved.get("r")
+        return {"r": r, "outcome": resolved.get("outcome"), "exit_time": resolved.get("exit_time"),
+                "pnl_pts": (r * stop_pts) if r is not None else None, "fired": False,
+                "trail_events": [], "rr_floor_fired": False}
+    r = managed.get("r")
+    return {"r": r, "outcome": managed.get("outcome"), "exit_time": managed.get("exit_time"),
+            "pnl_pts": (r * stop_pts) if r is not None else None, "fired": True,
+            "trail_events": managed.get("trail_events") or [],
+            "rr_floor_fired": managed.get("rr_floor_fired", False)}
 
 
 def _annotate_p0_p1_p2(chart_m5, row_for_chart, is_long):
@@ -530,6 +555,46 @@ def _annotate_p0_p1_p2(chart_m5, row_for_chart, is_long):
     chart_m5["markers"].sort(key=lambda m: m["time"])
 
 
+def _annotate_mgmt_events(chart_m5, res, is_long):
+    """Mark fired trade-management events (rule 1 stop trail, rule 2
+    RR-floor exit -- see trade_management.py) on the M5 pane, snapped to
+    the nearest bar at-or-before their own time (same convention
+    _annotate_p0_p1_p2 uses). No-op if chart_m5 is None or nothing fired
+    for this trade."""
+    mgmt = res.get("mgmt") or {}
+    if chart_m5 is None or not chart_m5["candles"] or not mgmt.get("fired"):
+        return
+    times = [c["time"] for c in chart_m5["candles"]]
+
+    def snap(ts):
+        ts = pd.Timestamp(ts)
+        if ts.tzinfo is not None:
+            ts = ts.tz_convert("UTC").tz_localize(None)
+        target = R._to_epoch_utc(ts)
+        i = bisect.bisect_right(times, target) - 1
+        return times[i] if i >= 0 else None
+
+    new_markers = []
+    for trigger_time, new_stop_price in mgmt.get("trail_events") or []:
+        t = snap(trigger_time)
+        if t is not None:
+            new_markers.append({
+                "time": t, "position": "belowBar" if is_long else "aboveBar",
+                "color": "#22d3ee", "shape": "arrowUp" if is_long else "arrowDown",
+                "text": f"Stop → {new_stop_price:.2f}",
+            })
+    if mgmt.get("rr_floor_fired") and mgmt.get("exit_time") is not None:
+        t = snap(mgmt["exit_time"])
+        if t is not None:
+            new_markers.append({
+                "time": t, "position": "aboveBar" if is_long else "belowBar",
+                "color": "#fb923c", "shape": "circle", "text": "RR FLOOR EXIT",
+            })
+    if new_markers:
+        chart_m5["markers"].extend(new_markers)
+        chart_m5["markers"].sort(key=lambda m: m["time"])
+
+
 def build_chart_stack_for_row(res):
     """M5 + 1s-trio + 1min + footprint chart stack for a filled, in-R trade
     -- no H1 pane exists in this strategy. Reuses
@@ -560,6 +625,7 @@ def build_chart_stack_for_row(res):
         chart_m5["title"] += (f"  |  R {res['r_multiple']:.2f}  |  entry via "
                               f"{res['alt_source']} ({res['group_n']} in group)")
         _annotate_p0_p1_p2(chart_m5, row_for_chart, res["is_long"])
+        _annotate_mgmt_events(chart_m5, res, res["is_long"])
     execution_charts, fp = SF.build_execution_charts({**res, "row": row_for_chart})
     return {"m5": chart_m5, **execution_charts}, fp
 
@@ -1123,6 +1189,25 @@ def _render_row(idx, res, chart_stacks, fps):
         r_for_js = "" if r_val is None else f"{r_val:.6f}"
         pnl_for_js = "" if pnl_pts is None else f"{pnl_pts:.6f}"
 
+        mgmt = res.get("mgmt") or {}
+        mgmt_r_for_js = "" if mgmt.get("r") is None else f"{mgmt['r']:.6f}"
+        mgmt_pnl_for_js = "" if mgmt.get("pnl_pts") is None else f"{mgmt['pnl_pts']:.6f}"
+        mgmt_outcome_for_js = mgmt.get("outcome") or ""
+        mgmt_fired_for_js = "1" if mgmt.get("fired") else "0"
+        mgmt_badge = ""
+        if mgmt.get("fired"):
+            mgmt_bits = []
+            if mgmt.get("trail_events"):
+                mgmt_bits.append(f"stop trailed x{len(mgmt['trail_events'])}")
+            if mgmt.get("rr_floor_fired"):
+                mgmt_bits.append("RR-floor exit")
+            mgmt_r_str = f"{mgmt['r']:+.2f}R" if mgmt.get("r") is not None else "?"
+            mgmt_badge = (f'<span class="dyn-tag-badge mgmt-tag-badge" '
+                          f'title="Trade management ({", ".join(mgmt_bits)}) would change this '
+                          f'trade to {mgmt_r_str} ({mgmt.get("outcome")}). Toggle the Trade '
+                          f'management checkbox in the panel above to use it in the summary '
+                          f'stats.">MGMT {mgmt_r_str}</span>')
+
         chart_stack, fp = chart_stacks[idx], fps[idx]
         fp_narrow_html = fp.get("narrow")
         fp_wide_html = fp.get("wide")
@@ -1138,6 +1223,8 @@ def _render_row(idx, res, chart_stacks, fps):
 <tr class="lvl-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
     data-dyn-tags="{dyn_tags_attr}" data-r="{r_for_js}" data-pnl-pts="{pnl_for_js}"
     data-outcome="{outcome_for_js}"
+    data-mgmt-r="{mgmt_r_for_js}" data-mgmt-pnl-pts="{mgmt_pnl_for_js}"
+    data-mgmt-outcome="{mgmt_outcome_for_js}" data-mgmt-fired="{mgmt_fired_for_js}"
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
@@ -1148,7 +1235,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td title="{stop_title}">{res['stop_price']:.2f}<span class="src-tag m5">{stop_source}</span></td>
   <td title="{target_title}">{res['target_price']:.2f}<span class="src-tag m5">m5_opposite</span></td>
   <td>{rr_avail:.2f}</td>
-  <td class="{outcome_cls}">{outcome_label}{dyn_badges}</td>
+  <td class="{outcome_cls}">{outcome_label}{dyn_badges}{mgmt_badge}</td>
   <td class="left">{exit_str}</td><td>{exit_px_str}</td>
   <td class="{pnl_cls}">{pnl_str}</td>
   <td class="bad">{mae_str}</td><td class="good">{mfe_str}</td><td>{gb_str}</td>
@@ -1292,6 +1379,19 @@ convention.">Dynamic filters</span>
     <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="globex_eth_open" checked>
       Exclude Globex/ETH open fills (15:00-15:05 PT)</label>
   </div>
+  <div class="filter-row">
+    <span class="filter-label" title="Live, in-browser toggle for the plug-n-play trade-management
+rules in trade_management.py (symmetric across direction): rule 1 trails the stop to one tick
+beyond a qualifying large-body M5 thrust candle's own extreme (below the low for a long, above
+the high for a short); rule 2 exits at market whenever remaining reward/remaining risk (using
+whatever the CURRENT stop is, post-trail) drops to 0.2 or below. Every filled trade already has
+both baseline and managed outcomes precomputed -- this checkbox swaps win rate / avg R / total R
+/ total PnL above to the managed numbers instantly, no regen required. Rows where management
+actually changed the outcome carry an 'MGMT +-N.NNR' badge next to Outcome regardless of whether
+the box is checked.">Trade management</span>
+    <label class="chip"><input type="checkbox" id="mgmt-thrust-trail">
+      Apply thrust-trail + RR-floor management</label>
+  </div>
 </div>
 """
 
@@ -1369,6 +1469,7 @@ td.merged-h1-levels { max-width:220px; white-space:normal; }
 tr.lvl-row.dyn-hidden, tr.chart-row.dyn-hidden { display:none !important; }
 .dyn-tag-badge { display:inline-block; margin-left:6px; padding:1px 6px; font-size:0.72em;
                 border-radius:3px; background:#4a3010; color:#fbbf24; cursor:help; }
+.mgmt-tag-badge { background:#0e3a4a; color:#67e8f9; }
 </style>
 """
 JS = SR.JS + """
@@ -1396,6 +1497,8 @@ function activeDynExcludeTags() {
 }
 function recomputeDynStats() {
   const excludeTags = activeDynExcludeTags();
+  const mgmtCb = document.getElementById('mgmt-thrust-trail');
+  const useMgmt = !!(mgmtCb && mgmtCb.checked);
   let n = 0, wins = 0, sumR = 0, sumPnl = 0;
   document.querySelectorAll('#lvl-table tbody tr.lvl-row:not(.unfilled-row)').forEach(tr => {
     const tags = (tr.dataset.dynTags || '').split(' ').filter(Boolean);
@@ -1404,12 +1507,20 @@ function recomputeDynStats() {
     const chartRow = document.getElementById('chart-row-' + tr.dataset.idx);
     if (chartRow) chartRow.classList.toggle('dyn-hidden', excluded);
     if (excluded) return;
-    const rVal = parseFloat(tr.dataset.r);
-    const pnl = parseFloat(tr.dataset.pnlPts);
+    // Trade management (see trade_management.py): every filled long row
+    // already carries a precomputed managed outcome in data-mgmt-* --
+    // fired='1' means the rules actually changed something for that row.
+    // Unfired rows fall through to baseline either way, so this swap is
+    // safe even without the fired check, but keeping it explicit avoids
+    // depending on baseline/managed floats matching bit-for-bit.
+    const useRow = useMgmt && tr.dataset.mgmtFired === '1';
+    const rVal = parseFloat(useRow ? tr.dataset.mgmtR : tr.dataset.r);
+    const pnl = parseFloat(useRow ? tr.dataset.mgmtPnlPts : tr.dataset.pnlPts);
+    const outcome = useRow ? tr.dataset.mgmtOutcome : tr.dataset.outcome;
     if (!isNaN(rVal)) {
       n += 1;
       sumR += rVal;
-      if (tr.dataset.outcome === 'target') wins += 1;
+      if (outcome === 'target') wins += 1;
     }
     if (!isNaN(pnl)) sumPnl += pnl;
   });
@@ -1423,6 +1534,8 @@ function recomputeDynStats() {
   setText('sum-total-pnl', (sumPnl >= 0 ? '+' : '') + sumPnl.toFixed(1));
 }
 document.querySelectorAll('.f-dyn-exclude').forEach(cb => cb.addEventListener('change', recomputeDynStats));
+const mgmtToggleCb = document.getElementById('mgmt-thrust-trail');
+if (mgmtToggleCb) mgmtToggleCb.addEventListener('change', recomputeDynStats);
 recomputeDynStats();
 </script>
 """
