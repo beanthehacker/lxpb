@@ -17,7 +17,7 @@ python render_labels_report.py [options]
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--data` | `../data/es-h1-continuous-backadjusted.csv` | H1 OHLC CSV to run `detect_lxpb_h1` against -- whole-monorepo canonical, back-adjusted, jump-free continuous series (2015-present; see "ES H1 data" below) |
+| `--data` | none (the display H1 series) | H1 OHLC CSV to run `detect_lxpb_h1` against. Defaults to `es_h1_display.load()` -- TradingView's own continuous ES1! exports, the only canonical H1 source; see "ES H1 data" below |
 | `--output` | `lxpb_labels_report.html` | Output HTML path |
 | `--title` | auto | Report `<h1>` title |
 | `--n-ticks` | 20 | Confluence radius (ticks) for the "nearby broken-out levels" hint/overlay |
@@ -127,19 +127,24 @@ Workflow:
   Regenerate any time; this file is a disposable build artifact, not
   source of truth (labels live in each browser's `localStorage` / your
   exported CSV, not in this HTML).
-- `../data/es-h1-continuous-backadjusted.csv` -- default input dataset,
-  the whole-monorepo canonical ES H1 series, built by
-  `../data/build_es_h1_continuous.py`. Covers 2015-01-01 through present.
+- `../lxpb-v2/data/*CME_MINI_ES1!, 60.csv` -- the default input, TradingView's
+  own continuous ES1! H1 exports, merged by `../es_h1_display.py`. See
+  "ES H1 data" below.
 
 ## ES H1 data
 
-This repo previously had (and label-review previously defaulted to) its
-own locally-built, *non*-back-adjusted continuous splice, separate from
-what the rest of the monorepo used. That has been retired: label-review
-and every other tool in this monorepo (`../lxpb.py`, `../lxpb-es-vol/*`)
-now share **one canonical, back-adjusted, jump-free** continuous ES H1
-series: `../data/es-h1-continuous-backadjusted.csv`, built by
-`../data/build_es_h1_continuous.py`.
+**H1 bars come from TradingView's own continuous ES1! exports and from
+nothing else** -- see "TradingView continuous series only" in
+`../lxpb-v2/CLAUDE.md`. `.scid` data is never resampled into H1 bars, and
+where the exports stop, the series stops. `../es_h1_display.py` merges them
+and refuses to combine two back-adjustment vintages.
+
+Two earlier defaults are retired. First, this repo's own locally-built
+*non*-back-adjusted splice. Then `../data/es-h1-continuous-backadjusted.csv`,
+which took a frozen TradingView export as its base and *extended* it with
+resampled front-month `.scid` bars -- two vendors' feeds joined at an
+arbitrary date, which is exactly what the convention now forbids. Its
+builder `../data/build_es_h1_continuous.py` is retired with it.
 
 Background on why back-adjustment was originally a problem, and how it's
 now handled correctly:

@@ -50,7 +50,7 @@ python render_labels_report.py [options]
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--data` | `../data/es-h1-continuous-backadjusted.csv` | H1 OHLC CSV to run `detect_lxpb_h1` against -- whole-monorepo canonical, back-adjusted, jump-free continuous series (2015-present; see "ES H1 data" below) |
+| `--data` | none (the display H1 series) | H1 OHLC CSV to run `detect_lxpb_h1` against. Defaults to `render_labels_report._display_h1()` -- TradingView's own continuous ES1! exports (`DISPLAY_H1_PATHS`), the only canonical H1 source; see "ES H1 data" below |
 | `--output` | `public/reports/lxpb_labels_report.html` | Output HTML path |
 | `--title` | auto | Report `<h1>` title |
 | `--n-ticks` | 20 | Confluence radius (ticks) for the "nearby broken-out levels" hint/overlay |
@@ -161,56 +161,78 @@ Workflow:
   default args). Regenerate any time; this file is a disposable build
   artifact, not source of truth (labels live in Postgres via `/api/rows`
   when deployed, or your exported CSV, not in this HTML).
-- `../data/es-h1-continuous-backadjusted.csv` -- default input dataset,
-  the whole-monorepo canonical ES H1 series, built by
-  `../data/build_es_h1_continuous.py`. Covers 2015-01-01 through present.
+- `data/*CME_MINI_ES1!, 60.csv` (`DISPLAY_H1_PATHS`) -- the default input,
+  TradingView's own continuous ES1! H1 exports. `../data/*, 5_e8128.csv`
+  (`DISPLAY_M5_PATHS`) are the M5 equivalent. See "ES H1 data" below.
 
 ## ES H1 data
 
-This repo previously had (and label-review previously defaulted to) its
-own locally-built, *non*-back-adjusted continuous splice, separate from
-what the rest of the monorepo used. That has been retired: label-review
-and every other tool in this monorepo (`../lxpb.py`, `../lxpb-es-vol/*`)
-now share **one canonical, back-adjusted, jump-free** continuous ES H1
-series: `../data/es-h1-continuous-backadjusted.csv`, built by
-`../data/build_es_h1_continuous.py`.
+**H1 and M5 bars come from TradingView's own continuous ES1! exports and from
+nothing else.** `.scid` data is never resampled into H1 or M5 bars -- not to
+extend history, not to fill a hole. Where the exports stop, the series stops.
+The full rule, and why, is in `CLAUDE.md`; this section is the background.
 
-Background on why back-adjustment was originally a problem, and how it's
-now handled correctly:
+The two loaders are `render_labels_report._display_h1()` and `_display_m5()`,
+merging `DISPLAY_H1_PATHS` / `DISPLAY_M5_PATHS` newest-wins. To extend or
+repair coverage, add another export to those lists -- that is the only
+supported fix.
 
-`../data/es-h1-2015-14aug2026.csv` is a TradingView "ES1!"
-**back-adjusted** continuous contract export: every *re-export*
-recalculates all historical bars relative to whichever contract is
-currently front-month, so re-exporting it periodically and swapping the
-file makes old absolute price levels silently drift over time (verified
-by diffing two export vintages ~16 months apart for identical
-timestamps: average +280pt / up to +412pt difference on the same bar).
-That drift-on-re-export behavior was the actual bug -- **not** the fact
-that the data is back-adjusted (back-adjustment itself is normal/correct
-for strategy backtesting: it trades absolute historical price accuracy
-for zero artificial jumps at each contract roll).
+### Why back-adjustment needs care
 
-The fix: treat that TradingView export as a **frozen, one-time snapshot**
-(internally self-consistent -- every roll in that single file is
-adjusted relative to the same anchor date) rather than something to
-re-export and swap out, and only ever *extend* it forward with fresh,
-**real, unadjusted** front-month `.scid` data (which needs no
-back-adjustment math at all, since the current/front contract always
-carries a +0 offset by definition). `../data/build_es_h1_continuous.py`
-does exactly this:
+`ES1!` is not a real contract: TradingView splices the quarterly chain into
+one series and shifts every older segment by that roll's spread, so the chart
+has no gap at a roll. Back-adjustment itself is normal and correct for
+backtesting -- it trades absolute historical price accuracy for zero
+artificial jumps. The hazard is that **those spreads are recomputed on every
+re-export**, so the same historical bar sits at a different absolute price in
+two different exports (verified by diffing two vintages ~16 months apart:
+average +280pt, up to +412pt on the same bar). Mixing two vintages in one
+series plants a step change that no roll explains.
 
-1. Takes `../data/es-h1-2015-14aug2026.csv` as-is for all history through
-   its own last bar (2026-08-14).
-2. Appends real H1 bars built from the local Sierra Chart
-   `F.US.EPU26.scid` file (current front contract, read via
-   `D:\acheron\AcheronUtils\scidReader.py`) for every bar after that.
-3. Re-run any time new `.scid` data lands to keep the tail current; once
-   the front contract itself rolls (U26->Z26 in Sep 2026), add the new
-   quarter's symbol to `FRONT_CONTRACTS` in that script (see its
-   docstring for the reverse-engineered TradingView roll-timing rule --
-   3 business days before 3rd-Friday expiry, 17:00 CT session open --
-   confirmed bar-for-bar against real `.scid` overlap data for both 2026
-   rolls).
+`_assert_one_vintage` now checks every overlap between exports in a list and
+raises on disagreement, so this cannot happen silently. Three more guards run
+before any caller sees a series: `_assert_no_roll_gaps` (no unexplained jump
+at a roll instant), `_assert_shares_h1_scale` (M5 on the same scale as H1),
+and `_report_series_gaps` (prints, does not raise, any hole longer than a
+holiday weekend -- the state machine walks straight across a hole as though
+its two sides were adjacent bars).
+
+### What was retired (2026-09-10)
+
+`../data/es-h1-continuous-backadjusted.csv` and its builder
+`../data/build_es_h1_continuous.py` took the frozen `es-h1-2015-14aug2026.csv`
+export as a historical base and *extended* it with resampled front-month
+`.scid` bars. That is exactly the construction now banned: two vendors' feeds
+joined at an arbitrary date. Nothing in `lxpb-v2` reads it any more.
+
+The same reasoning removed the `.scid` fallback that used to fill gaps in the
+M5 series, and the numbers justify it. The old fallback forward-filled every
+empty five-minute slot into a flat doji, and each phantom bar registered an
+LXPB level: **70% of the M5 retests reported for Jul-Aug 2026 (3,084 of 4,388)
+had a P0 formed on a bar that never traded**, 2,760 of them on a Saturday or
+Sunday. The same window on TradingView-only bars yields 322 real retests.
+
+### Mapping `.scid` onto the continuous scale
+
+`.scid` remains the source for second- and tick-level work: real fills, exit
+resolution, the 1s/1min panes, bid/ask volume, footprints. Raw tick prices are
+mapped **onto** the continuous scale by adding `_offset_for_ts`, never the
+reverse.
+
+Those offsets are measured at load by `_measure_scid_offset` -- the mode of
+(TradingView close - raw `.scid` close) per contract, restricted by
+`_front_month_start` to the span where that contract was genuinely front
+month. The restriction matters: a quarterly trades thinly at its own
+calendar-spread distance for months before going front, so measuring over
+EPH26's whole file gives 60% agreement versus 99.8% over its front-month span.
+Current values are EPH26 +112.75, EPM26 +62.25, EPU26 +0.00. There are no
+hardcoded offset constants any more, and no "vintage delta" correction on top
+of them; only `B26`'s roll TIMING rule is still used.
+
+Sanity check after any data change: reconstruct an H1 bar from `.scid` and
+compare. Open and close must match exactly; high/low legitimately differ by up
+to one tick because the raw Sierra feed includes spread-leg/block fills that
+TradingView filters out.
 
 ### 2026-only reconstruction (`build_es_h1_2026_backadjusted.py`)
 
@@ -553,12 +575,12 @@ reconstructing it from the 22% that happened to survive.
 import lxpb_levels_cache as LC
 
 lv   = LC.h1_levels()                    # whole H1 series
-lv   = LC.m5_levels(seg_idx)             # per contract segment
-lv   = LC.m5_levels_for_ts(ts)           # segment resolved from a timestamp
+lv   = LC.m5_levels()                    # one continuous M5 ledger, all rollovers
+lv   = LC.m5_levels_for_ts(ts)           # same thing; `ts` is ignored, kept for callers
 
 live = LC.levels_live_as_of(lv, ts, type_="LLPB")
 sig  = LC.retests(lv)                    # the trade population
-bars = LC.m5_bars_for_contract(seg_idx)  # whole-contract M5 OHLC, cached
+bars = LC.m5_bars_continuous()           # continuous M5 OHLC, cached
 ```
 
 `levels_live_as_of` treats a level as live over **`[formation_time,
@@ -568,7 +590,7 @@ death_time)`** — one consumed exactly at `ts` is *not* live at `ts` — and ad
 Build/refresh everything and print a summary:
 
 ```
-python lxpb_levels_cache.py --build-h1 --build-m5 all --stats
+python lxpb_levels_cache.py --build-h1 --build-m5 --stats
 ```
 
 Cache files land in `data/levels_cache/`. H1 is ~0.7 MB / ~3 s to build; M5 is

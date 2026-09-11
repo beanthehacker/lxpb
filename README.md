@@ -29,9 +29,17 @@ confirmed bugs relative to the corrected version (see below).
 ## Usage
 
 ```bash
-python lxpb.py --data data/es-h1-continuous-backadjusted.csv
+python lxpb.py --data "lxpb-v2/data/24aug-CME_MINI_ES1!, 60.csv"
 python lxpb.py --data data/nq-h1-4apr2021-11apr2025.csv --output retests.csv
 ```
+
+`lxpb.py` runs the detector over whatever CSV you hand it. For any
+structural/backtest work in `lxpb-v2`, go through
+`lxpb_levels_cache.h1_levels()` / `m5_levels()` instead, which run over the
+TradingView continuous exports — see "TradingView continuous series only" in
+`lxpb-v2/CLAUDE.md`. In particular `data/es-h1-continuous-backadjusted.csv`
+(a frozen TradingView export extended with resampled `.scid` bars) is retired
+and should not be used as an input.
 
 ## Algorithm — step by step
 

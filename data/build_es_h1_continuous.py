@@ -1,4 +1,19 @@
 """
+RETIRED 2026-09-10 -- DO NOT RUN, AND DO NOT USE ITS OUTPUT.
+
+This script builds `es-h1-continuous-backadjusted.csv` by taking a frozen
+TradingView export as a historical base and *extending* it with resampled
+front-month `.scid` bars. That joins two vendors' feeds at an arbitrary date,
+which is exactly what the "TradingView continuous series only" convention in
+`lxpb-v2/CLAUDE.md` now forbids: H1 and M5 bars come from TradingView's own
+continuous exports and nothing else, and where those exports stop, the series
+stops.
+
+Nothing reads its output any more. Use `es_h1_display.load()` at the repo
+root, or `render_labels_report._display_h1()` inside lxpb-v2. The file and
+this script are kept only so the older reports in git history remain
+reproducible. Everything below describes the retired design.
+
 Build the SINGLE canonical, back-adjusted, jump-free continuous ES H1
 dataset for the whole monorepo (lxpb.py, lxpb-es-vol/*, label-review) --
 replacing the various stale/duplicate H1 files previously used

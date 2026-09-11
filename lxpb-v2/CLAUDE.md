@@ -13,6 +13,13 @@ The two loaders are `render_labels_report._display_h1()` and `_display_m5()`
 coverage, add another TradingView export to those lists. That is the only
 supported fix.
 
+**This rule is repo-wide, not just `lxpb-v2`.** `label-review` and
+`retest-vol-scalp` follow it too, through `../es_h1_display.py` — a smaller
+loader over the same export list, for subprojects that deliberately avoid
+importing lxpb-v2's report modules. Keep the two export lists in step.
+`data/es-h1-continuous-backadjusted.csv` and its builder
+`data/build_es_h1_continuous.py` are retired; nothing reads them.
+
 `lxpb_levels_cache.h1_levels()` runs the state machine once over the H1
 series and `m5_levels()` once over `m5_bars_continuous()` (which is
 `_display_m5()`). One ledger per timeframe, spanning every rollover; neither

@@ -14,7 +14,7 @@ Builds a single narrative HTML page (lxpb_fade_report.html) that:
      illustrated, and the 30-minute MFE peak.
 
 Data: lxpb_fade_features.csv (STEP 2 output), lxpb_fade_bucket_analysis.csv
-(STEP 3 output), ../data/es-h1-continuous-backadjusted.csv (H1 context),
+(STEP 3 output), the TradingView continuous H1 exports (es_h1_display),
 ../lxpb-es-vol/ES_full_1s.csv (1s candles/bid/ask for the example windows).
 
 Run: python render_fade_report.py
@@ -32,8 +32,11 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_HERE, ".."))
 sys.path.insert(0, _REPO_ROOT)
 import lxpb as L  # noqa: E402
+import es_h1_display  # noqa: E402
 
-H1_CSV = os.path.join(_REPO_ROOT, "data", "es-h1-continuous-backadjusted.csv")
+# H1 context comes from the TradingView continuous exports (es_h1_display) --
+# see "TradingView continuous series only" in lxpb-v2/CLAUDE.md. Previously
+# data/es-h1-continuous-backadjusted.csv, now retired.
 CSV_1S = os.path.join(_REPO_ROOT, "lxpb-es-vol", "ES_full_1s.csv")
 FEATURES_CSV = os.path.join(_HERE, "lxpb_fade_features.csv")
 BUCKETS_CSV = os.path.join(_HERE, "lxpb_fade_bucket_analysis.csv")
@@ -111,7 +114,7 @@ EXAMPLES = [
 
 def load_data():
     print("Loading H1 data ...")
-    h1 = L.load_ohlc_data(H1_CSV)
+    h1 = es_h1_display.load()
     print(f"  {len(h1)} bars")
     print("Loading 1s data (this can take ~40-60s) ...")
     df1s = pd.read_csv(CSV_1S, parse_dates=["Time_PT"])
