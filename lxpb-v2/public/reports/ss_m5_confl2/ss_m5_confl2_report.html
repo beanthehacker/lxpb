@@ -171,6 +171,11 @@ tr.lvl-row.dyn-hidden, tr.chart-row.dyn-hidden { display:none !important; }
 .mgmt-tag-badge { background:#0e3a4a; color:#67e8f9; }
 .liq-tag-badge { background:#3f1d2e; color:#fda4af; }
 .swerve-tag-badge { background:#1e3a2f; color:#86efac; }
+/* Notes box: this report is reviewed with long, written-out notes per trade,
+   so it ships far larger than the shared 160x34 default in
+   render_stop_target_report.CSS (left alone, for every other report) and
+   resizes in both directions rather than only vertically. */
+textarea.trade-note { width:360px; height:150px; resize:both; }
 </style>
 
 </head><body>
