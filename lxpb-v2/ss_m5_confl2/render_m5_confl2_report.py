@@ -52,19 +52,33 @@ the target are ALL M5 LXPB structure:
      low for a long) -- render_ss_confl_finetune_report.dynamic_stop,
      unchanged.
 
-  5. TARGET = THE NEAREST CONSOLIDATION AREA BUILT BETWEEN THIS LEVEL'S
-     OWN P1 AND P2 (`_pick_targets`, this module). Exit where the market
-     last spent real time on its way away from this level: the nearest
-     congestion area on the favourable side, 1..20 points from the fill,
-     lying wholly after the level's breakout candle and wholly before its
-     retest bar. If that area still holds an UNTESTED opposite-type M5
-     P0 -- one whose own price sits inside the area's band and that has
-     never been retested -- that P0's own price is the target (src tag
-     consol_p0); otherwise the target is the
-     area's NEAR edge: its LOW for a long, its HIGH for a short (src tag
-     consol_edge). `--target-mode opposite-m5` restores the original rule
-     (newest live opposite-type M5 level whose P1 broke >=2 same-type P0s,
-     render_ss_confl_finetune_report.dynamic_target).
+  5. TARGET = TWO RULES, BOTH READING THE LEVEL'S OWN P1..P2 WINDOW
+     (`_pick_targets`). Both ask the same question -- what did the market
+     build while this level was waiting to be retested -- and both take
+     only structure lying wholly after the level's breakout candle and
+     wholly before its retest bar, 1..20 points away on the favourable side:
+
+       * CONSOLIDATION AREA (m5_structure.py, src tags consol_p0 /
+         consol_edge): the nearest congestion area in that window -- where
+         the market last spent real time on its way away from this level.
+         If the area still holds an UNTESTED opposite-type M5 P0 -- one
+         whose own price sits inside the area's band and that has never
+         been retested -- that P0's own price is the target; otherwise the
+         target is the area's NEAR edge, its LOW for a long and its HIGH
+         for a short.
+       * OPPOSITE M5 LEVEL (`_opposite_m5_target`, src tag m5_opposite):
+         the most recently formed live opposite-type M5 level whose own P1
+         broke >=2 same-type P0s -- the original rule
+         (render_ss_confl_finetune_report.dynamic_target), plus the P1..P2
+         window.
+
+     BOTH rules run for every trade, whatever --target-mode says, and each
+     is a LIVE CHECKBOX in the report: unticking one re-resolves every row
+     against the other (or demotes it to a dimmed NO TARGET row) with no
+     regen, because each rule's whole outcome is precomputed per row (see
+     _mode_payload). With both on -- the default -- a trade takes whichever
+     rule offers the FARTHER target. --target-mode only sets which boxes
+     start ticked.
 
   6. NO FALLBACKS, BUT SUB-MIN-R TRADES ARE MEASURED, NOT DISCARDED. Unlike
      the H1 report (which falls back to a fixed stop/target when no
@@ -1185,6 +1199,69 @@ def build_chart_stack_for_row(res):
     return {"m5": chart_m5, **execution_charts}, fp
 
 
+def _build_unfilled_chart_stack(res, args):
+    """Best-effort chart stack for a row that never became a trade, whatever
+    the fail_reason -- the report always ships every row's charts, not just
+    filled ones (a NO TRADE row still needs to be reviewable, same principle
+    as render_ss_confl_finetune_report's own unfilled rows).
+
+    alt_price/level_type/own_price/entry_m5_level and row_d['retest_time']
+    are all set before process_cluster's very first early return, so this
+    works identically no matter which stage failed. Reuses
+    render_stop_target_report.build_m5_chart with a stub 'resolved' (no
+    fabricated touch or exit -- same convention as build_unfilled_chart_stack
+    in render_ss_confl_finetune_report.py) for the structural M5 pane, and
+    SF.build_fill_window_chart for a 1-minute pane spanning the whole
+    fill-search window so a reviewer can see what price actually did.
+
+    No stop/target price lines: unlike the H1 finetune report, this
+    strategy has no fixed fallback stop/target to draw as 'nominal' lines,
+    and neither was ever computed for a no-trade row -- inventing one would
+    be exactly the kind of fabricated bracket CLAUDE.md warns against, so
+    the lines are stripped instead. No trio/footprint either: both need a
+    real tick-level touch instant, which a no-trade row never had."""
+    row_d = res["row"]
+    level_type = res["level_type"]
+    alt_price = res["alt_price"]
+    window_start = pd.to_datetime(row_d["retest_time"], utc=True)
+    window_end = window_start + pd.Timedelta(hours=args.max_alt_fill_hours)
+    resolved_stub = {"outcome": "no_data", "exit_time": None, "r": None, "touch_time": None}
+
+    row_for_chart = row_d.copy()
+    row_for_chart["price"] = alt_price
+    for col in ("retest_time", "breakout_time"):
+        ts = pd.Timestamp(row_for_chart[col])
+        if ts.tzinfo is not None:
+            row_for_chart[col] = ts.tz_convert("UTC").tz_localize(None)
+    chart_m5 = SR.build_m5_chart(
+        row_for_chart, resolved_stub, 1.0, 1.0,
+        level_price=res["own_price"], entry_level=res["entry_m5_level"],
+        p1_bar_width=P1_BAR_WIDTH, p1_label="M5",
+        bars_before_retest=2 * SR.M5_BARS_BEFORE_RETEST,
+        bars_after_exit=2 * SR.M5_BARS_AFTER_EXIT,
+        fill_window=(window_start, window_end))
+    if chart_m5 is not None:
+        chart_m5["priceLines"] = []
+        chart_m5["title"] += (f"  |  entry via {res['alt_source']} "
+                              f"({res['group_n']} in group)  |  "
+                              f"{_fail_reason_label(res.get('fail_reason'))} "
+                              f"(no stop/target -- never computed)")
+
+    fill_window = SF.build_fill_window_chart(
+        window_start, alt_price, level_type, args.max_alt_fill_hours,
+        res.get("fail_reason"))
+    if fill_window is not None:
+        # build_fill_window_chart's own title says "refined H1 retest" --
+        # right for its native H1-finetune caller, wrong here (this
+        # strategy has no H1 leg at all; window_start IS the M5 retest).
+        fill_window["title"] = fill_window["title"].replace(
+            "refined H1 retest", "M5 retest")
+    chart_stack = {"m5": chart_m5, "trio": None, "oneMin": fill_window}
+    note = "<p class='note'>(no trade -- no tick-level touch to build a footprint from)</p>"
+    fp = {"narrow": note, "wide": note}
+    return chart_stack, fp
+
+
 # --------------------------------------------------------------------------
 # Parallel per-cluster processing -- process_cluster/build_chart_stack_for_row
 # are the .scid-tick-backed heavy lifting (find_alt_fill's real-tick scan,
@@ -1248,7 +1325,7 @@ def _run_cluster_chunk_subprocess(spec):
         if res["filled"]:
             chart_stack, fp = build_chart_stack_for_row(res)
         else:
-            chart_stack, fp = None, None
+            chart_stack, fp = _build_unfilled_chart_stack(res, args)
         out[pos] = (res, chart_stack, fp)
     with open(spec["out_path"], "wb") as f:
         pickle.dump(out, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -1260,8 +1337,14 @@ def process_clusters(clusters, args):
     otherwise splits into contract-pure chunks (_chunk_clusters_by_contract)
     and runs each chunk in its own child process, polling like
     render_stop_target_report._build_records_parallel. Returns (results,
-    chart_stacks, fps) -- three lists in original cluster order;
-    chart_stacks[i]/fps[i] are None for an unfilled cluster."""
+    chart_stacks, fps) -- three lists in original cluster order. An
+    unfilled cluster's chart_stacks[i]/fps[i] come from
+    _build_unfilled_chart_stack rather than build_chart_stack_for_row (no
+    resolved trade to chart, but still real market structure -- see that
+    function's own docstring), built in the SAME process as this cluster's
+    own tick scan (process_cluster's find_alt_fill) so it reuses the warm
+    render_labels_report._load_contract cache instead of reloading .scid
+    data cold in the parent after a worker exits."""
     n = len(clusters)
     if args.workers <= 1 or n <= 1:
         results, chart_stacks, fps = [], [], []
@@ -1276,7 +1359,7 @@ def process_clusters(clusters, args):
             if res["filled"]:
                 chart_stack, fp = build_chart_stack_for_row(res)
             else:
-                chart_stack, fp = None, None
+                chart_stack, fp = _build_unfilled_chart_stack(res, args)
             results.append(res)
             chart_stacks.append(chart_stack)
             fps.append(fp)
@@ -1605,6 +1688,11 @@ def _compute_report_stats(filled):
 
 
 def render(args):
+    # Which target rules start ticked (see _pick_targets). Normally set by
+    # __main__ from --target-mode; defaulted here so an importing caller can
+    # hand render() a plain namespace.
+    if not getattr(args, "default_target_modes", None):
+        args.default_target_modes = TARGET_MODES
     if not np.isfinite(args.min_r) or args.min_r < 0:
         raise ValueError("--min-r must be finite and non-negative")
     if not np.isfinite(args.max_alt_fill_hours) or args.max_alt_fill_hours <= 0:
@@ -1646,7 +1734,10 @@ def render(args):
     for r in results:
         if not r["filled"]:
             continue
-        for tag in r.get("dyn_tags", ()):
+        # Row-level tags plus the ACTIVE target rule's own (r_below_min and
+        # eod_flat live per rule now -- see _resolve_target_mode).
+        tags = list(r.get("dyn_tags", ())) + r["modes"][r["active_mode"]]["dyn_tags"]
+        for tag in tags:
             tag_counts[tag] = tag_counts.get(tag, 0) + 1
     for tag, n in sorted(tag_counts.items(), key=lambda kv: -kv[1]):
         if tag == "p1_reacted":
@@ -1674,6 +1765,101 @@ def render(args):
                    pctile_html, rows_html, charts, radius, args.output)
 
 
+GAP_FLAG_HTML = ('<span class="gap-flag" title="Entry price never traded between touch '
+                 'and exit -- price gapped through the level, so this fill was not '
+                 'actually available.">⚠</span>')
+
+
+def _mode_badges(res, mode):
+    """The badges belonging to ONE target rule's own outcome: its sub-min-R
+    tag, its end-of-day flat tag, and its trade-management summary. All three
+    differ between the rules on the same row, so they are swapped along with
+    the rest of the cells (see _mode_payload)."""
+    m = res["modes"][mode]
+    out = ""
+    if "r_below_min" in m["dyn_tags"]:
+        out += (f'<span class="dyn-tag-badge" title="Dynamic filter '
+                f'‘r_below_min’: the bracket on offer just before entry was only '
+                f'R {m["r_multiple"]:.2f}. The trade is still shown and resolved; it is left '
+                f'out of the headline stats by default.">R &lt; MIN</span>')
+    if "eod_flat" in m["dyn_tags"]:
+        out += ('<span class="dyn-tag-badge" title="This trade was still open at '
+                '12:44 PT and was flattened at market under the end-of-day rule '
+                '(trade_management.py rule 3) instead of reaching its stop or '
+                'target.">EOD FLAT</span>')
+    mgmt = m["mgmt"] or {}
+    if mgmt.get("fired"):
+        bits = []
+        if mgmt.get("trail_events"):
+            bits.append(f"stop trailed x{len(mgmt['trail_events'])}")
+        if mgmt.get("rr_floor_fired"):
+            bits.append("RR-floor exit")
+        mgmt_r_str = f"{mgmt['r']:+.2f}R" if mgmt.get("r") is not None else "?"
+        out += (f'<span class="dyn-tag-badge mgmt-tag-badge" '
+                f'title="Trade management ({", ".join(bits)}) would change this '
+                f'trade to {mgmt_r_str} ({mgmt.get("outcome")}). Toggle the Trade '
+                f'management checkbox in the panel above to use it in the summary '
+                f'stats.">MGMT {mgmt_r_str}</span>')
+    return out
+
+
+def _mode_payload(res, mode):
+    """Everything about a row that CHANGES when it switches target rule, as
+    one JSON-able blob per rule: the cell HTML the browser swaps in, and the
+    numbers recomputeDynStats() reads back off the row afterwards. The stop,
+    the entry and the fill are rule-independent and are never touched.
+
+    'dist' is what decides which rule wins when both are on (the FARTHEST
+    target -- see _active_mode; the browser applies the same rule)."""
+    m = res["modes"][mode]
+    resolved = m["resolved"]
+    mgmt = m["mgmt"] or {}
+    info = m["target_info"] or {}
+    outcome_label, outcome_cls = SF._outcome_label(resolved)
+    r_val = resolved.get("r")
+    pnl_pts = (r_val * res["stop_pts"]) if r_val is not None else None
+    exit_px = resolved.get("exit_price")
+
+    def fmt(v):
+        return f"{v:.2f}" if v is not None else "-"
+
+    return {
+        "dist": m["target_pts"],
+        "tgt": (f'{m["target_price"]:.2f}<span class="src-tag m5">'
+                f'{info.get("src", "m5_opposite")}</span>'),
+        "tgtTitle": _target_title(info),
+        "rr": f'{m["r_multiple"]:.2f}',
+        "outcomeLabel": outcome_label,
+        "outcomeCls": outcome_cls,
+        "modeBadges": _mode_badges(res, mode),
+        "exit": (R._to_pt_str(resolved["exit_time"])
+                 if resolved.get("exit_time") is not None else "-"),
+        "exitPx": (f"{exit_px:.2f}" if resolved.get("outcome") != "no_hit"
+                   and exit_px is not None else "-"),
+        "pnl": format(pnl_pts, "+.2f") if pnl_pts is not None else "-",
+        "pnlCls": ("good" if (pnl_pts is not None and pnl_pts > 0)
+                   else ("bad" if (pnl_pts is not None and pnl_pts < 0) else "")),
+        "mae": fmt(resolved.get("adverse_pts")),
+        "mfe": fmt(resolved.get("favorable_pts")),
+        "gb": fmt(resolved.get("giveback_pts")),
+        "gap": GAP_FLAG_HTML if resolved.get("entry_gapped") else "",
+        "r": "" if r_val is None else f"{r_val:.6f}",
+        "pnlPts": "" if pnl_pts is None else f"{pnl_pts:.6f}",
+        "outcome": resolved.get("outcome") or "",
+        "mgmtR": "" if mgmt.get("r") is None else f"{mgmt['r']:.6f}",
+        "mgmtPnl": "" if mgmt.get("pnl_pts") is None else f"{mgmt['pnl_pts']:.6f}",
+        "mgmtOutcome": mgmt.get("outcome") or "",
+        "mgmtFired": "1" if mgmt.get("fired") else "0",
+        "tags": " ".join(m["dyn_tags"]),
+    }
+
+
+def _attr_json(obj):
+    """`obj` as JSON safe to sit inside a double-quoted HTML attribute."""
+    return (json.dumps(obj).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
 def _render_row(idx, res, chart_stacks, fps):
     """Builds (chart_entry_for_json, row_html) for one result row. A FILLED
     row carrying dynamic-filter tags (res['dyn_tags'], e.g. 'p1_reacted' --
@@ -1696,43 +1882,92 @@ def _render_row(idx, res, chart_stacks, fps):
             own_cell = f'{res["own_price"]:.2f}'
 
         if not res["filled"]:
+            # No trade, for whatever reason -- still a row the user wants to
+            # review, not a dead end: every column is shown (real value where
+            # process_cluster actually got far enough to compute one, '-'
+            # where it never could), the row is still clickable for its
+            # charts (chart_stacks[idx]/fps[idx] come from
+            # _build_unfilled_chart_stack, not None), and the review
+            # checkboxes/notes still work. Only .unfilled-row's CSS (faint
+            # + italic) marks it as not-a-trade -- nothing here is disabled.
             reason = res.get("fail_reason", "")
             rr_note = (f' (R {res["r_multiple"]:.2f})' if reason.startswith("r_below_")
                        and res.get("r_multiple") is not None else "")
+            row_key = f"{level_type}_{res['alt_price']:.2f}_{retest_str}".replace(" ", "_")
+            touch_time_alt = res.get("touch_time_alt")
+            entry_touch_str = R._to_pt_str(touch_time_alt) if touch_time_alt is not None else "-"
+            alt_cell = (f'{res["alt_price"]:.2f}'
+                       f'<span class="src-tag {res["alt_source"]}">{res["alt_source"]}</span>')
+            if res.get("stop_price") is not None:
+                stop_cell = (f'{res["stop_price"]:.2f}'
+                            f'<span class="src-tag m5">{res.get("stop_source", "")}</span>')
+            else:
+                stop_cell = "-"
+
+            chart_stack, fp = chart_stacks[idx], fps[idx]
+            fp_narrow_html = fp.get("narrow")
+            fp_wide_html = fp.get("wide")
+            fp_section = (
+                f'<div class="chart-row-2col footprint-outer-row">'
+                f'<div class="footprint-pair">'
+                f'<div class="chart-cell footprint-cell">{fp_narrow_html}</div>'
+                f'<div class="chart-cell footprint-cell">{fp_wide_html}</div>'
+                f'</div></div>'
+            )
+
             row_html = f"""
-<tr class="lvl-row unfilled-row {type_cls}" data-idx="{idx}">
+<tr class="lvl-row unfilled-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
+    onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
-  <td colspan="{N_COLS - 5}">{_fail_reason_label(reason)}{rr_note}</td>
+  <td>{alt_cell}</td>
+  <td class="left">{entry_touch_str}</td>
+  <td>{stop_cell}</td>
+  <td class="tgt-cell">-</td>
+  <td class="rr-cell">-</td>
+  <td class="outcome-cell"><span class="outcome-label">{_fail_reason_label(reason)}{rr_note}</span></td>
+  <td class="left exit-cell">-</td><td class="exitpx-cell">-</td>
+  <td class="pnl-cell">-</td>
+  <td class="mae-cell">-</td><td class="mfe-cell">-</td><td class="gb-cell">-</td>
+  <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
+  <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb"></td>
+  <td class="replayed-cell" onclick="event.stopPropagation();"><input type="checkbox" class="replayed-cb"></td>
+  <td class="left" onclick="event.stopPropagation();"><textarea class="trade-note" placeholder="notes..."></textarea></td>
+  <td class="expand-cell"><button class="expand-btn" data-idx="{idx}"
+      onclick="event.stopPropagation();toggleChart({idx})">▶</button></td>
+</tr>
+<tr class="chart-row hidden" data-idx="{idx}" id="chart-row-{idx}">
+  <td colspan="{N_COLS}"><div class="chart-stack">
+    <div class="chart-row-2col chart-row-solo">
+      <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-{idx}"></div><div class="chart-ph" id="cm5-{idx}"></div></div>
+    </div>
+    <div class="chart-row-2col">
+      <div class="chart-col-1s">
+        <div class="chart-cell"><div class="chart-title" id="tc-{idx}"></div><div class="chart-ph" id="cc-{idx}"></div></div>
+        <div class="chart-cell"><div class="chart-title" id="tb-{idx}">Bid Volume</div><div class="chart-ph" id="cb-{idx}"></div></div>
+        <div class="chart-cell"><div class="chart-title" id="ta-{idx}">Ask Volume</div><div class="chart-ph" id="ca-{idx}"></div></div>
+      </div>
+      <div class="chart-col-1m">
+        <div class="chart-cell"><div class="chart-title" id="t1m-{idx}"></div><div class="chart-ph" id="c1m-{idx}"></div></div>
+      </div>
+    </div>
+    {fp_section}
+  </div></td>
 </tr>"""
-            return None, row_html
+            return chart_stack, row_html
 
-        resolved = res["resolved"]
-        outcome_label, outcome_cls = SF._outcome_label(resolved)
-        r_val = resolved.get("r")
-        rr_avail = res["r_multiple"]
-        pnl_pts = (r_val * res["stop_pts"]) if r_val is not None else None
-        pnl_str = format(pnl_pts, '+.2f') if pnl_pts is not None else "-"
-        pnl_cls = "good" if (pnl_pts is not None and pnl_pts > 0) else (
-            "bad" if (pnl_pts is not None and pnl_pts < 0) else "")
-        exit_str = R._to_pt_str(resolved["exit_time"]) if resolved.get("exit_time") is not None else "-"
-        exit_px = resolved.get("exit_price")
-        exit_px_str = (f"{exit_px:.2f}" if resolved.get("outcome") != "no_hit"
-                       and exit_px is not None else "-")
+        # One payload per target rule that found a target: the page ships
+        # every rule's outcome and the browser swaps between them live (see
+        # the 'Target rules' block in JS). The server renders the ACTIVE
+        # rule's cells, so the page is correct before any JS runs.
+        payloads = {mode: _mode_payload(res, mode) for mode in res["modes"]}
+        active_mode = res["active_mode"]
+        act = payloads[active_mode]
         entry_touch_str = R._to_pt_str(res["touch_time_alt"])
-        mae_str = f"{res['adverse_pts']:.2f}" if res.get("adverse_pts") is not None else "-"
-        mfe_str = f"{res['favorable_pts']:.2f}" if res.get("favorable_pts") is not None else "-"
-        gb_str = f"{res['giveback_pts']:.2f}" if res.get("giveback_pts") is not None else "-"
         src_cls = f"src-tag {res['alt_source']}"
         improved_flag = " &uarr;" if res["improved"] else ""
-        gap_flag = ('<span class="gap-flag" title="Entry price never traded between touch '
-                    'and exit -- price gapped through the level, so this fill was not '
-                    'actually available.">\u26a0</span>' if res.get("entry_gapped") else "")
-        target_info = res.get("target_info") or {}
-        target_src = target_info.get("src", "m5_opposite")
-        target_title = _target_title(target_info)
         stop_level = res["stop_m5_level"]
         stop_source = res.get("stop_source", "m5_thrust")
         if stop_source == "m5_p0_spike":
@@ -1766,11 +2001,13 @@ def _render_row(idx, res, chart_stacks, fps):
 
         row_key = f"{level_type}_{res['alt_price']:.2f}_{entry_touch_str}".replace(" ", "_")
 
-        dyn_tags = list(res.get("dyn_tags") or [])
-        active_mode = res.get("active_mode")
-        if active_mode:
-            dyn_tags += res["modes"][active_mode]["dyn_tags"]
+        # Row-level tags (the same under every target rule) vs the active
+        # rule's own tags: the browser recombines the two halves when it
+        # switches rule, so they ship separately.
+        base_tags = list(res.get("dyn_tags") or [])
+        dyn_tags = base_tags + res["modes"][active_mode]["dyn_tags"]
         dyn_tags_attr = " ".join(dyn_tags)
+        base_tags_attr = " ".join(base_tags)
         dyn_badges = ""
         if "p1_reacted" in dyn_tags:
             cutoff_str = R._to_pt_str(res["p1_reaction_cutoff"])
@@ -1784,11 +2021,6 @@ def _render_row(idx, res, chart_stacks, fps):
                           f'daily Globex/ETH reopen window (15:00-15:05 PT) -- excluded by default. '
                           f'Toggle the Dynamic filters checkbox in the panel above to include '
                           f'it.">GLOBEX OPEN</span>')
-        if "r_below_min" in dyn_tags:
-            dyn_badges += (f'<span class="dyn-tag-badge" title="Dynamic filter '
-                          f'‘r_below_min’: the bracket on offer just before entry was only '
-                          f'R {rr_avail:.2f}. The trade is still shown and resolved; it is left '
-                          f'out of the headline stats by default.">R &lt; MIN</span>')
         if "low_liquidity" in dyn_tags:
             dyn_badges += (f'<span class="dyn-tag-badge liq-tag-badge" title="Dynamic filter '
                           f'‘low_liquidity’: the tape was measurably illiquid at this fill '
@@ -1812,33 +2044,7 @@ def _render_row(idx, res, chart_stacks, fps):
                           f'level was available to move to, so this trade is NOT taken. It is '
                           f'shown at its original entry so it can still be reviewed, and left out '
                           f'of the headline stats by default.">SWERVE BLOCKED</span>')
-        if "eod_flat" in dyn_tags:
-            dyn_badges += (f'<span class="dyn-tag-badge" title="This trade was still open at '
-                          f'12:44 PT and was flattened at market under the end-of-day rule '
-                          f'(trade_management.py rule 3) instead of reaching its stop or '
-                          f'target.">EOD FLAT</span>')
-        outcome_for_js = resolved.get("outcome") or ""
-        r_for_js = "" if r_val is None else f"{r_val:.6f}"
-        pnl_for_js = "" if pnl_pts is None else f"{pnl_pts:.6f}"
-
-        mgmt = res.get("mgmt") or {}
-        mgmt_r_for_js = "" if mgmt.get("r") is None else f"{mgmt['r']:.6f}"
-        mgmt_pnl_for_js = "" if mgmt.get("pnl_pts") is None else f"{mgmt['pnl_pts']:.6f}"
-        mgmt_outcome_for_js = mgmt.get("outcome") or ""
-        mgmt_fired_for_js = "1" if mgmt.get("fired") else "0"
-        mgmt_badge = ""
-        if mgmt.get("fired"):
-            mgmt_bits = []
-            if mgmt.get("trail_events"):
-                mgmt_bits.append(f"stop trailed x{len(mgmt['trail_events'])}")
-            if mgmt.get("rr_floor_fired"):
-                mgmt_bits.append("RR-floor exit")
-            mgmt_r_str = f"{mgmt['r']:+.2f}R" if mgmt.get("r") is not None else "?"
-            mgmt_badge = (f'<span class="dyn-tag-badge mgmt-tag-badge" '
-                          f'title="Trade management ({", ".join(mgmt_bits)}) would change this '
-                          f'trade to {mgmt_r_str} ({mgmt.get("outcome")}). Toggle the Trade '
-                          f'management checkbox in the panel above to use it in the summary '
-                          f'stats.">MGMT {mgmt_r_str}</span>')
+        modes_attr = _attr_json(payloads)
 
         chart_stack, fp = chart_stacks[idx], fps[idx]
         fp_narrow_html = fp.get("narrow")
@@ -1853,24 +2059,25 @@ def _render_row(idx, res, chart_stacks, fps):
 
         row_html = f"""
 <tr class="lvl-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
-    data-dyn-tags="{dyn_tags_attr}" data-r="{r_for_js}" data-pnl-pts="{pnl_for_js}"
-    data-outcome="{outcome_for_js}"
-    data-mgmt-r="{mgmt_r_for_js}" data-mgmt-pnl-pts="{mgmt_pnl_for_js}"
-    data-mgmt-outcome="{mgmt_outcome_for_js}" data-mgmt-fired="{mgmt_fired_for_js}"
+    data-dyn-tags="{dyn_tags_attr}" data-base-tags="{base_tags_attr}"
+    data-r="{act['r']}" data-pnl-pts="{act['pnlPts']}" data-outcome="{act['outcome']}"
+    data-mgmt-r="{act['mgmtR']}" data-mgmt-pnl-pts="{act['mgmtPnl']}"
+    data-mgmt-outcome="{act['mgmtOutcome']}" data-mgmt-fired="{act['mgmtFired']}"
+    data-mode="{active_mode}" data-modes="{modes_attr}"
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
-  <td>{res['alt_price']:.2f}{gap_flag}<span class="{src_cls}">{res['alt_source']}{improved_flag}</span>{chase_flag}</td>
+  <td>{res['alt_price']:.2f}<span class="gap-slot">{act['gap']}</span><span class="{src_cls}">{res['alt_source']}{improved_flag}</span>{chase_flag}</td>
   <td class="left">{entry_touch_str}</td>
   <td title="{stop_title}">{res['stop_price']:.2f}<span class="src-tag m5">{stop_source}</span></td>
-  <td title="{target_title}">{res['target_price']:.2f}<span class="src-tag m5">{target_src}</span></td>
-  <td>{rr_avail:.2f}</td>
-  <td class="{outcome_cls}">{outcome_label}{dyn_badges}{mgmt_badge}</td>
-  <td class="left">{exit_str}</td><td>{exit_px_str}</td>
-  <td class="{pnl_cls}">{pnl_str}</td>
-  <td class="bad">{mae_str}</td><td class="good">{mfe_str}</td><td>{gb_str}</td>
+  <td class="tgt-cell" title="{act['tgtTitle']}">{act['tgt']}</td>
+  <td class="rr-cell">{act['rr']}</td>
+  <td class="outcome-cell {act['outcomeCls']}"><span class="outcome-label">{act['outcomeLabel']}</span><span class="row-badges">{dyn_badges}</span><span class="mode-badges">{act['modeBadges']}</span></td>
+  <td class="left exit-cell">{act['exit']}</td><td class="exitpx-cell">{act['exitPx']}</td>
+  <td class="pnl-cell {act['pnlCls']}">{act['pnl']}</td>
+  <td class="mae-cell bad">{act['mae']}</td><td class="mfe-cell good">{act['mfe']}</td><td class="gb-cell">{act['gb']}</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
   <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb"></td>
   <td class="replayed-cell" onclick="event.stopPropagation();"><input type="checkbox" class="replayed-cb"></td>
@@ -1913,19 +2120,22 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
         if args.pegged_entry else
         "Entry is a plain static limit order (no chasing).")
     target_lead_sentence = (
-        f"TARGET = the nearest consolidation area on the favourable side that was built "
-        f"BETWEEN THIS LEVEL'S OWN P1 AND P2 -- wholly after its breakout candle and wholly "
-        f"before its retest bar "
-        f"({MIN_DYNAMIC_TARGET_PTS:g}&ndash;{MAX_DYNAMIC_TARGET_PTS:g} points from the fill, "
-        f"a run of &ge;{args.consol_min_bars} M5 bars inside a "
+        f"TARGET = two rules, both reading only what the market built BETWEEN THIS LEVEL'S OWN "
+        f"P1 AND P2 (wholly after its breakout candle, wholly before its retest bar) and both "
+        f"bounded to {MIN_DYNAMIC_TARGET_PTS:g}&ndash;{MAX_DYNAMIC_TARGET_PTS:g} points from "
+        f"the fill on the favourable side. (1) CONSOLIDATION AREA: the nearest congestion area "
+        f"in that window (a run of &ge;{args.consol_min_bars} M5 bars inside a "
         f"&le;{args.consol_max_height:g}pt band with efficiency ratio &lt; "
-        f"{args.consol_max_er:g}): the untested opposite-type M5 P0 still sitting inside that "
-        f"area (src tag consol_p0) if there is one, else the area's near edge -- its low for a "
-        f"long, its high for a short (src tag consol_edge)."
-        if args.target_mode == "consolidation" else
-        f"TARGET = the MOST RECENTLY FORMED (P0) live opposite-type M5 level on the favourable "
-        f"side, {MIN_DYNAMIC_TARGET_PTS:g}&ndash;{MAX_DYNAMIC_TARGET_PTS:g} points from the "
-        f"fill, whose P1 candle broke at least two distinct same-type P0 levels.")
+        f"{args.consol_max_er:g}) -- the untested opposite-type M5 P0 still sitting inside it "
+        f"(src tag consol_p0) if there is one, else the area's near edge, its low for a long "
+        f"and its high for a short (src tag consol_edge). (2) OPPOSITE M5 LEVEL: the most "
+        f"recently formed live opposite-type M5 level whose P1 candle broke at least two "
+        f"distinct same-type P0s (src tag m5_opposite). Both are precomputed for every trade "
+        f"and both are live checkboxes in the Target rules row of the panel above: untick one "
+        f"and every row re-resolves against the other, or becomes a dimmed NO TARGET row if "
+        f"that was its only one. With both ticked (the default here: "
+        f"{' + '.join(args.default_target_modes)}) a trade takes whichever rule offers the "
+        f"FARTHER target.")
     reason_html = "".join(
         f'<div class="box"><strong>{n}</strong>{reason}</div>'
         for reason, n in sorted(reason_counts.items(), key=lambda kv: -kv[1]))
@@ -1937,14 +2147,8 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
   <div class="box"><strong>{len(clusters)}</strong>confluence clusters</div>
   <div class="box"><strong>&plusmn;{radius}pt</strong>M5 confluence radius</div>
   <div class="box"><strong>{args.min_r:.2f}</strong>min R (below: tagged, not skipped)</div>
-  <div class="box true"><strong id="sum-win-rate">{stats['win_rate']:.1f}%</strong>win rate
-    <span id="sum-win-rate-n">({stats['n']})</span></div>
   <div class="box"><strong id="sum-avg-r">{stats['avg_r']:.2f}</strong>avg R</div>
-  <div class="box"><strong id="sum-total-r">{stats['total_r']:.1f}</strong>total R</div>
-  <div class="box"><strong id="sum-total-pnl">{total_pnl_pts:+.1f}</strong>total PnL (pts)</div>
   <div class="box"><strong>{improved_n}</strong>/{len(filled)} entry improved over own level</div>
-  <div class="box"><strong>{max_win_mae:.2f}</strong>max MAE (win)</div>
-  <div class="box"><strong>{max_loss_mfe:.2f}</strong>max MFE (loss)</div>
   <div class="box"><strong>{gapped_entries}</strong>gapped entry</div>
   {reason_html}
   <div class="box"><strong id="sum-shown">{len(filled)}</strong>shown</div>
@@ -1958,6 +2162,11 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
     <button class="btn" onclick="if(confirm('Clear ALL saved Reviewed/Valid/Replayed/Notes in this browser for this report?')) clearAllReview();">\U0001f5d1 Clear all</button>
   </div>
 </div>
+"""
+    # The strategy write-up and the excursion percentiles are reference
+    # material, not something to scroll past on the way to the trades, so they
+    # live in their own tab (see SR.tab_bar_html / SR.TABS_JS).
+    pctile_tab_html = f"""
 <p class="lead">M5-native strategy: the trade signal, entry, stop and target are ALL M5 LXPB
 structure -- there is no H1 level anywhere in this report. SELECT: every M5 LXPB retest in
 [{args.start}, {args.end}] with SAME-SIDE M5 confluence (other M5 levels of the SAME type,
@@ -1976,7 +2185,7 @@ for LLPB shorts, or one tick below the LOWEST breakout-candle low for LHPB longs
 below the thrust candle), among live same-side M5 levels within
 &plusmn;{DYNAMIC_STOP_RADIUS_PTS:g} points of the actual fill. {target_lead_sentence} NO FALLBACKS: if no qualifying
 stop or target exists there is no trade at all (see the summary boxes above for the
-skip-reason breakdown) -- this differs from render_ss_confl_finetune_report.py, whose
+skip-reason breakdown in the Trades tab) -- this differs from render_ss_confl_finetune_report.py, whose
 H1-anchored strategy always falls back to a fixed stop/target. A bracket below R
 {args.min_r:g} IS taken, resolved and charted, tagged r_below_min and excluded from the
 headline stats by default. ENTRY AND TRADE BLOCKS: a confirmed M5 swing within
@@ -1991,10 +2200,25 @@ at market before 12:45 PT (EOD FLAT) and no entry is taken from then until the G
 immediately before the fill's M5 bar, with no fixed lookback. Charts/markers/price-lines/
 tooltips, MAE/MFE/Max DD definitions, and the Reviewed/Valid/Replayed/Notes columns below all
 follow render_stop_target_report.py's own conventions exactly (see that module and
-render_ss_confl_finetune_report.py for full detail). See the Dynamic filters row in the panel
-above for trade-exclusion toggles you can flip live in the browser, no regen required.</p>
+render_ss_confl_finetune_report.py for full detail). See the Dynamic filters row of the
+Trades tab for trade-exclusion toggles you can flip live in the browser, no regen required.</p>
 {pctile_html}
 """
+
+    # Trade-level numbers, printed against the table they describe. Every one
+    # of them is rewritten by recomputeDynStats as the dynamic filters, target
+    # rules and trade-management toggle change which rows count, so what the
+    # strip shows always matches the rows on screen.
+    stats_bar_html = SR.trade_stats_bar_html([
+        (f"{stats['n']}", "trades taken", "sum-trades", False),
+        (f"{stats['win_rate']:.1f}%", "win rate", "sum-win-rate", True),
+        (f"{stats['wins']}", "wins", "sum-wins", False),
+        (f"{stats['losses']}", "losses", "sum-losses", False),
+        (f"{stats['total_r']:.1f}", "total R", "sum-total-r", False),
+        (f"{total_pnl_pts:+.1f}", "total PnL (pts)", "sum-total-pnl", False),
+        (f"{max_win_mae:.2f}", "max MAE (win)", "sum-max-win-mae", False),
+        (f"{max_loss_mfe:.2f}", "max MFE (loss)", "sum-max-loss-mfe", False),
+    ])
 
     filter_panel = """
 <div class="filter-panel">
@@ -2057,6 +2281,19 @@ docstring in render_m5_confl2_report.py for the full convention.">Dynamic filter
       Only</label>
   </div>
   <div class="filter-row">
+    <span class="filter-label" title="Which TARGET RULE each trade exits on -- live, in the
+browser, with no Python regen. Every trade ships with BOTH rules' brackets and outcomes
+precomputed, so unticking a rule re-resolves each row against whatever the other rule offered:
+a trade can become a NO TARGET row (dimmed, dropped from the stats) if the rule it was using
+was the only one that found a target. With both ticked, each trade uses whichever rule offers
+the FARTHER target. Untick both and no trade has a target at all. The charts below always draw
+the bracket the page was GENERATED with -- regen to chart a different default.">Target rules</span>
+    <label class="chip"><input type="checkbox" class="f-target-mode" data-mode="consolidation" __CONSOL_CHECKED__>
+      Consolidation area (P1&hellip;P2)</label>
+    <label class="chip"><input type="checkbox" class="f-target-mode" data-mode="opposite-m5" __OPP_CHECKED__>
+      Opposite M5 level (P1&hellip;P2)</label>
+  </div>
+  <div class="filter-row">
     <span class="filter-label" title="Live, in-browser toggle for the plug-n-play trade-management
 rules in trade_management.py (symmetric across direction): rule 1 trails the stop to one tick
 beyond a qualifying M5 breakout candle's own extreme (below the low for a long, above
@@ -2073,11 +2310,12 @@ the box is checked.">Trade management</span>
 """
 
     target_col_title = (
-        "The untested opposite-type M5 P0 still inside the nearest consolidation area built "
-        "between this level's own P1 and P2 (consol_p0), else that area's near edge -- low for "
-        "a long, high for a short "
-        "(consol_edge)" if args.target_mode == "consolidation" else
-        "Newest eligible opposite M5 P0 sharing P1 with another P0")
+        "Whichever target rule is ticked in the Target rules row above, and with both ticked "
+        "the one offering the FARTHER target. consol_p0: an untested opposite-type M5 P0 still "
+        "sitting inside a consolidation area built between this level's own P1 and P2. "
+        "consol_edge: that area's near edge instead -- low for a long, high for a short. "
+        "m5_opposite: the newest live opposite M5 level sharing its P1 with another P0, formed "
+        "in the same P1..P2 window.")
     head = (f"<th class=\"left\">#</th><th class=\"left\">Type</th>"
             f"<th class=\"left\">M5 retest</th>"
             f"<th class=\"left\" title=\"Distinct M5 prices merged into this trade, "
@@ -2112,16 +2350,28 @@ the box is checked.">Trade management</span>
 {CSS}
 </head><body>
 <h1>M5-native SS Confl. &ge; {args.ss_confl_min} strategy report{title_suffix}</h1>
+{SR.tab_bar_html([("trades", "Trades"), ("pctile", "Excursion percentiles")])}
+<div class="tab-panel" id="tab-trades">
 {summary_html}
-{filter_panel.replace("__MIN_R__", f"{args.min_r:g}")}
+{filter_panel.replace("__MIN_R__", f"{args.min_r:g}")
+   .replace("__CONSOL_CHECKED__",
+            "checked" if "consolidation" in args.default_target_modes else "")
+   .replace("__OPP_CHECKED__",
+            "checked" if "opposite-m5" in args.default_target_modes else "")}
+{stats_bar_html}
 <div class="table-wrap"><table id="lvl-table">
 <thead><tr>{head}</tr></thead>
 <tbody>
 {"".join(rows_html)}
 </tbody>
 </table></div>
+</div>
+<div class="tab-panel tab-hidden" id="tab-pctile">
+{pctile_tab_html}
+</div>
 {JS.replace("__CHARTS_JSON__", json.dumps(charts))
    .replace("__STORAGE_KEY__", storage_key)}
+{SR.TABS_JS}
 </body></html>
 """
     with open(output_path, "w", encoding="utf-8") as f:
@@ -2160,6 +2410,11 @@ tr.lvl-row.dyn-hidden, tr.chart-row.dyn-hidden { display:none !important; }
    second column beside it. */
 .chart-row-2col.chart-row-solo { grid-template-columns: 1fr; }
 .mgmt-tag-badge { background:#0e3a4a; color:#67e8f9; }
+/* A row whose target rule is switched off in the browser (see applyTargetModes
+   in JS): still listed, still clickable for its charts, but it is not a trade
+   under the rules currently ticked, so it is dimmed and left out of the
+   stats -- the same treatment an unfilled row gets from Python. */
+tr.lvl-row.no-target-row td { color:var(--text-faint); font-style:italic; }
 .liq-tag-badge { background:#3f1d2e; color:#fda4af; }
 .swerve-tag-badge { background:#1e3a2f; color:#86efac; }
 /* Notes box: this report is reviewed with long, written-out notes per trade,
@@ -2200,12 +2455,107 @@ function activeDynExcludeTags() {
 function activeDynIsolateTags() {
   return Array.from(document.querySelectorAll('.f-dyn-isolate:checked')).map(cb => cb.dataset.tag);
 }
+// ---------------------------------------------------------------------
+// Target rules -- the OTHER kind of live toggle. A dynamic filter only
+// hides rows; a target rule CHANGES them, so each row ships every rule's
+// own bracket and outcome in data-modes (see _mode_payload in
+// render_m5_confl2_report.py) and this swaps the affected cells in place:
+// target, R, outcome, exit, PnL, MAE/MFE/giveback, the gap flag, the
+// target-dependent badges, and the data-* numbers recomputeDynStats()
+// reads back afterwards. Entry, fill and stop never change -- they do not
+// depend on the target.
+//
+// With both rules ticked a row trades whichever offers the FARTHER target
+// (the same rule _active_mode applies server-side). With the row's only
+// available rule unticked it becomes a NO TARGET row: dimmed, and dropped
+// from the stats exactly like a Python-side no-trade.
+// ---------------------------------------------------------------------
+function activeTargetModes() {
+  return Array.from(document.querySelectorAll('.f-target-mode:checked')).map(cb => cb.dataset.mode);
+}
+function setCell(tr, sel, html, cls) {
+  const td = tr.querySelector(sel);
+  if (!td) return;
+  td.innerHTML = html;
+  if (cls !== undefined) td.className = cls;
+}
+function applyTargetModes() {
+  const on = activeTargetModes();
+  document.querySelectorAll('#lvl-table tbody tr.lvl-row').forEach(tr => {
+    if (!tr.dataset.modes) return;          // unfilled row: no bracket at all
+    const modes = JSON.parse(tr.dataset.modes);
+    let pick = null;
+    on.forEach(m => {
+      const p = modes[m];
+      if (p && (pick === null || p.dist > modes[pick].dist)) pick = m;
+    });
+    const baseTags = tr.dataset.baseTags || '';
+    if (pick === null) {
+      tr.classList.add('no-target-row');
+      tr.dataset.mode = '';
+      tr.dataset.dynTags = baseTags;
+      tr.dataset.r = ''; tr.dataset.pnlPts = ''; tr.dataset.outcome = '';
+      tr.dataset.mgmtR = ''; tr.dataset.mgmtPnlPts = ''; tr.dataset.mgmtOutcome = '';
+      tr.dataset.mgmtFired = '0';
+      setCell(tr, '.tgt-cell', '-', 'tgt-cell');
+      const tgt = tr.querySelector('.tgt-cell');
+      if (tgt) tgt.title = 'No target under the target rules currently ticked';
+      setCell(tr, '.rr-cell', '-', 'rr-cell');
+      setCell(tr, '.outcome-cell',
+              '<span class="outcome-label">NO TARGET (rule off)</span>'
+              + '<span class="row-badges"></span><span class="mode-badges"></span>',
+              'outcome-cell');
+      setCell(tr, '.exit-cell', '-', 'left exit-cell');
+      setCell(tr, '.exitpx-cell', '-', 'exitpx-cell');
+      setCell(tr, '.pnl-cell', '-', 'pnl-cell');
+      setCell(tr, '.mae-cell', '-', 'mae-cell');
+      setCell(tr, '.mfe-cell', '-', 'mfe-cell');
+      setCell(tr, '.gb-cell', '-', 'gb-cell');
+      setCell(tr, '.gap-slot', '');
+      return;
+    }
+    const p = modes[pick];
+    tr.classList.remove('no-target-row');
+    tr.dataset.mode = pick;
+    tr.dataset.dynTags = (baseTags + ' ' + (p.tags || '')).trim();
+    tr.dataset.r = p.r; tr.dataset.pnlPts = p.pnlPts; tr.dataset.outcome = p.outcome;
+    tr.dataset.mgmtR = p.mgmtR; tr.dataset.mgmtPnlPts = p.mgmtPnl;
+    tr.dataset.mgmtOutcome = p.mgmtOutcome; tr.dataset.mgmtFired = p.mgmtFired;
+    setCell(tr, '.tgt-cell', p.tgt, 'tgt-cell');
+    const tgt = tr.querySelector('.tgt-cell');
+    if (tgt) tgt.title = p.tgtTitle;
+    setCell(tr, '.rr-cell', p.rr, 'rr-cell');
+    const outcomeCell = tr.querySelector('.outcome-cell');
+    if (outcomeCell) {
+      outcomeCell.className = 'outcome-cell ' + (p.outcomeCls || '');
+      const lbl = outcomeCell.querySelector('.outcome-label');
+      if (lbl) lbl.innerHTML = p.outcomeLabel;
+      const mb = outcomeCell.querySelector('.mode-badges');
+      if (mb) mb.innerHTML = p.modeBadges;
+    }
+    setCell(tr, '.exit-cell', p.exit, 'left exit-cell');
+    setCell(tr, '.exitpx-cell', p.exitPx, 'exitpx-cell');
+    setCell(tr, '.pnl-cell', p.pnl, 'pnl-cell ' + (p.pnlCls || ''));
+    setCell(tr, '.mae-cell', p.mae, 'mae-cell bad');
+    setCell(tr, '.mfe-cell', p.mfe, 'mfe-cell good');
+    setCell(tr, '.gb-cell', p.gb, 'gb-cell');
+    setCell(tr, '.gap-slot', p.gap);
+  });
+}
 function recomputeDynStats() {
+  applyTargetModes();
   const excludeTags = activeDynExcludeTags();
   const isolateTags = activeDynIsolateTags();
   const mgmtCb = document.getElementById('mgmt-thrust-trail');
   const useMgmt = !!(mgmtCb && mgmtCb.checked);
-  let n = 0, wins = 0, sumR = 0, sumPnl = 0;
+  let n = 0, wins = 0, sumR = 0, sumPnl = 0, maxWinMae = 0, maxLossMfe = 0;
+  // MAE/MFE live only in their cells, and applyTargetModes (called above) has
+  // already rewritten those for whichever target rule is ticked, so reading
+  // the cell is reading the excursion of the bracket actually in force.
+  const cellNum = (tr, sel) => {
+    const c = tr.querySelector(sel);
+    return c ? parseFloat(c.textContent) : NaN;
+  };
   document.querySelectorAll('#lvl-table tbody tr.lvl-row').forEach(tr => {
     const tags = (tr.dataset.dynTags || '').split(' ').filter(Boolean);
     const hidden = isolateTags.length > 0
@@ -2214,7 +2564,8 @@ function recomputeDynStats() {
     tr.classList.toggle('dyn-hidden', hidden);
     const chartRow = document.getElementById('chart-row-' + tr.dataset.idx);
     if (chartRow) chartRow.classList.toggle('dyn-hidden', hidden);
-    if (hidden || tr.classList.contains('unfilled-row')) return;
+    if (hidden || tr.classList.contains('unfilled-row')
+        || tr.classList.contains('no-target-row')) return;
     // Trade management (see trade_management.py): every filled long row
     // already carries a precomputed managed outcome in data-mgmt-* --
     // fired='1' means the rules actually changed something for that row.
@@ -2228,20 +2579,31 @@ function recomputeDynStats() {
     if (!isNaN(rVal)) {
       n += 1;
       sumR += rVal;
-      if (outcome === 'target') wins += 1;
+      if (outcome === 'target') {
+        wins += 1;
+        const mae = cellNum(tr, '.mae-cell');
+        if (!isNaN(mae) && mae > maxWinMae) maxWinMae = mae;
+      } else if (outcome === 'stop') {
+        const mfe = cellNum(tr, '.mfe-cell');
+        if (!isNaN(mfe) && mfe > maxLossMfe) maxLossMfe = mfe;
+      }
     }
     if (!isNaN(pnl)) sumPnl += pnl;
   });
   const winRate = n ? (wins / n * 100) : 0;
   const avgR = n ? (sumR / n) : 0;
   const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+  setText('sum-trades', String(n));
   setText('sum-win-rate', winRate.toFixed(1) + '%');
-  setText('sum-win-rate-n', '(' + n + ')');
+  setText('sum-wins', String(wins));
+  setText('sum-losses', String(n - wins));
   setText('sum-avg-r', avgR.toFixed(2));
   setText('sum-total-r', sumR.toFixed(1));
   setText('sum-total-pnl', (sumPnl >= 0 ? '+' : '') + sumPnl.toFixed(1));
+  setText('sum-max-win-mae', maxWinMae.toFixed(2));
+  setText('sum-max-loss-mfe', maxLossMfe.toFixed(2));
 }
-document.querySelectorAll('.f-dyn-exclude, .f-dyn-isolate').forEach(cb => cb.addEventListener('change', recomputeDynStats));
+document.querySelectorAll('.f-dyn-exclude, .f-dyn-isolate, .f-target-mode').forEach(cb => cb.addEventListener('change', recomputeDynStats));
 const mgmtToggleCb = document.getElementById('mgmt-thrust-trail');
 if (mgmtToggleCb) mgmtToggleCb.addEventListener('change', recomputeDynStats);
 recomputeDynStats();
