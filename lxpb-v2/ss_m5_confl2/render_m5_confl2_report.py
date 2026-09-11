@@ -1052,6 +1052,69 @@ def build_chart_stack_for_row(res):
     return {"m5": chart_m5, **execution_charts}, fp
 
 
+def _build_unfilled_chart_stack(res, args):
+    """Best-effort chart stack for a row that never became a trade, whatever
+    the fail_reason -- the report always ships every row's charts, not just
+    filled ones (a NO TRADE row still needs to be reviewable, same principle
+    as render_ss_confl_finetune_report's own unfilled rows).
+
+    alt_price/level_type/own_price/entry_m5_level and row_d['retest_time']
+    are all set before process_cluster's very first early return, so this
+    works identically no matter which stage failed. Reuses
+    render_stop_target_report.build_m5_chart with a stub 'resolved' (no
+    fabricated touch or exit -- same convention as build_unfilled_chart_stack
+    in render_ss_confl_finetune_report.py) for the structural M5 pane, and
+    SF.build_fill_window_chart for a 1-minute pane spanning the whole
+    fill-search window so a reviewer can see what price actually did.
+
+    No stop/target price lines: unlike the H1 finetune report, this
+    strategy has no fixed fallback stop/target to draw as 'nominal' lines,
+    and neither was ever computed for a no-trade row -- inventing one would
+    be exactly the kind of fabricated bracket CLAUDE.md warns against, so
+    the lines are stripped instead. No trio/footprint either: both need a
+    real tick-level touch instant, which a no-trade row never had."""
+    row_d = res["row"]
+    level_type = res["level_type"]
+    alt_price = res["alt_price"]
+    window_start = pd.to_datetime(row_d["retest_time"], utc=True)
+    window_end = window_start + pd.Timedelta(hours=args.max_alt_fill_hours)
+    resolved_stub = {"outcome": "no_data", "exit_time": None, "r": None, "touch_time": None}
+
+    row_for_chart = row_d.copy()
+    row_for_chart["price"] = alt_price
+    for col in ("retest_time", "breakout_time"):
+        ts = pd.Timestamp(row_for_chart[col])
+        if ts.tzinfo is not None:
+            row_for_chart[col] = ts.tz_convert("UTC").tz_localize(None)
+    chart_m5 = SR.build_m5_chart(
+        row_for_chart, resolved_stub, 1.0, 1.0,
+        level_price=res["own_price"], entry_level=res["entry_m5_level"],
+        p1_bar_width=P1_BAR_WIDTH, p1_label="M5",
+        bars_before_retest=2 * SR.M5_BARS_BEFORE_RETEST,
+        bars_after_exit=2 * SR.M5_BARS_AFTER_EXIT,
+        fill_window=(window_start, window_end))
+    if chart_m5 is not None:
+        chart_m5["priceLines"] = []
+        chart_m5["title"] += (f"  |  entry via {res['alt_source']} "
+                              f"({res['group_n']} in group)  |  "
+                              f"{_fail_reason_label(res.get('fail_reason'))} "
+                              f"(no stop/target -- never computed)")
+
+    fill_window = SF.build_fill_window_chart(
+        window_start, alt_price, level_type, args.max_alt_fill_hours,
+        res.get("fail_reason"))
+    if fill_window is not None:
+        # build_fill_window_chart's own title says "refined H1 retest" --
+        # right for its native H1-finetune caller, wrong here (this
+        # strategy has no H1 leg at all; window_start IS the M5 retest).
+        fill_window["title"] = fill_window["title"].replace(
+            "refined H1 retest", "M5 retest")
+    chart_stack = {"m5": chart_m5, "trio": None, "oneMin": fill_window}
+    note = "<p class='note'>(no trade -- no tick-level touch to build a footprint from)</p>"
+    fp = {"narrow": note, "wide": note}
+    return chart_stack, fp
+
+
 # --------------------------------------------------------------------------
 # Parallel per-cluster processing -- process_cluster/build_chart_stack_for_row
 # are the .scid-tick-backed heavy lifting (find_alt_fill's real-tick scan,
@@ -1115,7 +1178,7 @@ def _run_cluster_chunk_subprocess(spec):
         if res["filled"]:
             chart_stack, fp = build_chart_stack_for_row(res)
         else:
-            chart_stack, fp = None, None
+            chart_stack, fp = _build_unfilled_chart_stack(res, args)
         out[pos] = (res, chart_stack, fp)
     with open(spec["out_path"], "wb") as f:
         pickle.dump(out, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -1127,8 +1190,14 @@ def process_clusters(clusters, args):
     otherwise splits into contract-pure chunks (_chunk_clusters_by_contract)
     and runs each chunk in its own child process, polling like
     render_stop_target_report._build_records_parallel. Returns (results,
-    chart_stacks, fps) -- three lists in original cluster order;
-    chart_stacks[i]/fps[i] are None for an unfilled cluster."""
+    chart_stacks, fps) -- three lists in original cluster order. An
+    unfilled cluster's chart_stacks[i]/fps[i] come from
+    _build_unfilled_chart_stack rather than build_chart_stack_for_row (no
+    resolved trade to chart, but still real market structure -- see that
+    function's own docstring), built in the SAME process as this cluster's
+    own tick scan (process_cluster's find_alt_fill) so it reuses the warm
+    render_labels_report._load_contract cache instead of reloading .scid
+    data cold in the parent after a worker exits."""
     n = len(clusters)
     if args.workers <= 1 or n <= 1:
         results, chart_stacks, fps = [], [], []
@@ -1143,7 +1212,7 @@ def process_clusters(clusters, args):
             if res["filled"]:
                 chart_stack, fp = build_chart_stack_for_row(res)
             else:
-                chart_stack, fp = None, None
+                chart_stack, fp = _build_unfilled_chart_stack(res, args)
             results.append(res)
             chart_stacks.append(chart_stack)
             fps.append(fp)
@@ -1561,18 +1630,81 @@ def _render_row(idx, res, chart_stacks, fps):
             own_cell = f'{res["own_price"]:.2f}'
 
         if not res["filled"]:
+            # No trade, for whatever reason -- still a row the user wants to
+            # review, not a dead end: every column is shown (real value where
+            # process_cluster actually got far enough to compute one, '-'
+            # where it never could), the row is still clickable for its
+            # charts (chart_stacks[idx]/fps[idx] come from
+            # _build_unfilled_chart_stack, not None), and the review
+            # checkboxes/notes still work. Only .unfilled-row's CSS (faint
+            # + italic) marks it as not-a-trade -- nothing here is disabled.
             reason = res.get("fail_reason", "")
             rr_note = (f' (R {res["r_multiple"]:.2f})' if reason.startswith("r_below_")
                        and res.get("r_multiple") is not None else "")
+            row_key = f"{level_type}_{res['alt_price']:.2f}_{retest_str}".replace(" ", "_")
+            touch_time_alt = res.get("touch_time_alt")
+            entry_touch_str = R._to_pt_str(touch_time_alt) if touch_time_alt is not None else "-"
+            alt_cell = (f'{res["alt_price"]:.2f}'
+                       f'<span class="src-tag {res["alt_source"]}">{res["alt_source"]}</span>')
+            if res.get("stop_price") is not None:
+                stop_cell = (f'{res["stop_price"]:.2f}'
+                            f'<span class="src-tag m5">{res.get("stop_source", "")}</span>')
+            else:
+                stop_cell = "-"
+
+            chart_stack, fp = chart_stacks[idx], fps[idx]
+            fp_narrow_html = fp.get("narrow")
+            fp_wide_html = fp.get("wide")
+            fp_section = (
+                f'<div class="chart-row-2col footprint-outer-row">'
+                f'<div class="footprint-pair">'
+                f'<div class="chart-cell footprint-cell">{fp_narrow_html}</div>'
+                f'<div class="chart-cell footprint-cell">{fp_wide_html}</div>'
+                f'</div></div>'
+            )
+
             row_html = f"""
-<tr class="lvl-row unfilled-row {type_cls}" data-idx="{idx}">
+<tr class="lvl-row unfilled-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
+    onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
-  <td colspan="{N_COLS - 5}">{_fail_reason_label(reason)}{rr_note}</td>
+  <td>{alt_cell}</td>
+  <td class="left">{entry_touch_str}</td>
+  <td>{stop_cell}</td>
+  <td class="tgt-cell">-</td>
+  <td class="rr-cell">-</td>
+  <td class="outcome-cell"><span class="outcome-label">{_fail_reason_label(reason)}{rr_note}</span></td>
+  <td class="left exit-cell">-</td><td class="exitpx-cell">-</td>
+  <td class="pnl-cell">-</td>
+  <td class="mae-cell">-</td><td class="mfe-cell">-</td><td class="gb-cell">-</td>
+  <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
+  <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb"></td>
+  <td class="replayed-cell" onclick="event.stopPropagation();"><input type="checkbox" class="replayed-cb"></td>
+  <td class="left" onclick="event.stopPropagation();"><textarea class="trade-note" placeholder="notes..."></textarea></td>
+  <td class="expand-cell"><button class="expand-btn" data-idx="{idx}"
+      onclick="event.stopPropagation();toggleChart({idx})">▶</button></td>
+</tr>
+<tr class="chart-row hidden" data-idx="{idx}" id="chart-row-{idx}">
+  <td colspan="{N_COLS}"><div class="chart-stack">
+    <div class="chart-row-2col chart-row-solo">
+      <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-{idx}"></div><div class="chart-ph" id="cm5-{idx}"></div></div>
+    </div>
+    <div class="chart-row-2col">
+      <div class="chart-col-1s">
+        <div class="chart-cell"><div class="chart-title" id="tc-{idx}"></div><div class="chart-ph" id="cc-{idx}"></div></div>
+        <div class="chart-cell"><div class="chart-title" id="tb-{idx}">Bid Volume</div><div class="chart-ph" id="cb-{idx}"></div></div>
+        <div class="chart-cell"><div class="chart-title" id="ta-{idx}">Ask Volume</div><div class="chart-ph" id="ca-{idx}"></div></div>
+      </div>
+      <div class="chart-col-1m">
+        <div class="chart-cell"><div class="chart-title" id="t1m-{idx}"></div><div class="chart-ph" id="c1m-{idx}"></div></div>
+      </div>
+    </div>
+    {fp_section}
+  </div></td>
 </tr>"""
-            return None, row_html
+            return chart_stack, row_html
 
         resolved = res["resolved"]
         outcome_label, outcome_cls = SF._outcome_label(resolved)
