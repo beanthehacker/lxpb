@@ -23,7 +23,10 @@ mirror images of each other -- see each rule's own docstring):
   swing or a spike candle (lxpb.py's own is_swing/is_spike), 2 if every
   member has a "slight" wick (< 10% of that candle's own range), 3
   otherwise. No requirement on the breakout candle's own body size --
-  any candle closing past enough still-live P0s qualifies.
+  any candle closing past enough still-live P0s qualifies. The stop only
+  ever moves TOWARDS the target, and nothing pins it to the losing side
+  of entry: when the breakout candle's own low (LHPB) already sits above
+  entry, the trail parks the stop in profit.
 
   Rule 2 -- RR-floor exit. At every M5 candle close after entry, the
   remaining reward (target - current close) divided by the remaining risk
@@ -211,9 +214,11 @@ def thrust_trail_events(level_type, start_time, end_time, ledger=None, m5_bars=N
     as a chronological list of `(trigger_time, new_stop_price)` --
     `trigger_time` is the breakout bar's own CLOSE (formation_time + one M5
     bar), not its open, since the group isn't confirmed until the bar
-    actually closes; `new_stop_price` is in adjusted/display scale -- one
-    tick beyond the breakout bar's own low (LHPB/long) or high (LLPB/
-    short), same scale as the ledger's own `breakout_low`/`breakout_high`.
+    actually closes, and the window is applied to that close, so a breakout
+    candle already in progress at `start_time` still counts;
+    `new_stop_price` is in adjusted/display scale -- one tick beyond the
+    breakout bar's own low (LHPB/long) or high (LLPB/short), same scale as
+    the ledger's own `breakout_low`/`breakout_high`.
     No body-size ("thrust") requirement on the breakout candle itself --
     only `_group_threshold`'s own sibling-count/quality tiers gate this;
     any candle that closes past enough still-live P0s qualifies regardless
@@ -228,7 +233,13 @@ def thrust_trail_events(level_type, start_time, end_time, ledger=None, m5_bars=N
 
     sub = ledger[ledger["type"] == level_type].copy()
     sub["breakout_time"] = pd.to_datetime(sub["breakout_time"], utc=True)
-    sub = sub[(sub["breakout_time"] > start_time) & (sub["breakout_time"] <= end_time)]
+    # Window on the event's own TRIGGER (the breakout bar's close), not on
+    # the bar's open: a breakout candle that was still in progress at entry
+    # closes AFTER it, and that close is a perfectly good trail. Filtering
+    # on `breakout_time` would silently drop every event in the first M5
+    # bar of the trade.
+    sub["trigger_time"] = sub["breakout_time"] + pd.Timedelta(minutes=5)
+    sub = sub[(sub["trigger_time"] > start_time) & (sub["trigger_time"] <= end_time)]
     if sub.empty:
         return []
 
@@ -285,7 +296,12 @@ def resolve_managed_trade(trade, bars, level_type, ledger=None, m5_bars=None, eo
               if eod else None)
 
     fired_trail = []
-    current_stop_pts = stop_pts0
+    # The live stop is carried as a PRICE in adjusted scale, the same scale
+    # the trail events themselves arrive in. Holding it as a signed distance
+    # instead makes "tighter" mean "smaller number", which flips sign the
+    # moment the stop crosses entry into profit and invites a guard that
+    # rejects exactly the trails worth taking.
+    current_stop_price_adj = entry_adj - sign * stop_pts0
     ev_cursor = 0
     n_bars = len(bars)
     outcome = exact_time = exact_price = None
@@ -306,22 +322,26 @@ def resolve_managed_trade(trade, bars, level_type, ledger=None, m5_bars=None, eo
 
         while ev_cursor < len(trail_events) and trail_events[ev_cursor][0] <= bar_time:
             _, new_stop_price_adj = trail_events[ev_cursor]
-            candidate_pts = sign * (entry_adj - new_stop_price_adj)
-            # Monotonic tightening only -- an event that would widen (or
-            # not improve) the stop is simply not applied.
-            if 0 < candidate_pts < current_stop_pts:
-                current_stop_pts = candidate_pts
+            # Monotonic: the stop only ever moves TOWARDS the target -- up
+            # for a long, down for a short. That is the whole test. Whether
+            # the new stop still sits on the losing side of entry is not a
+            # separate question: crossing entry into profit is just another
+            # step in the same direction, and an event pointing the other
+            # way (or landing on the same price) is simply not applied.
+            if sign * (new_stop_price_adj - current_stop_price_adj) > 0:
+                current_stop_price_adj = new_stop_price_adj
                 fired_trail.append(trail_events[ev_cursor])
             ev_cursor += 1
 
-        stop_price_raw = raw_entry - sign * current_stop_pts
+        stop_price_raw = current_stop_price_adj - offset
         if is_long:
             stop_hit, target_hit = lows[b_idx] <= stop_price_raw, highs[b_idx] >= target_price_raw
         else:
             stop_hit, target_hit = highs[b_idx] >= stop_price_raw, lows[b_idx] <= target_price_raw
         if stop_hit or target_hit:
             o, et, ep = M._pin_exact_exit(
-                sym, bar_time, offset, entry_adj, current_stop_pts, target_pts, is_long,
+                sym, bar_time, offset, entry_adj,
+                sign * (entry_adj - current_stop_price_adj), target_pts, is_long,
                 not_before=touch_time)
             if o is not None:
                 outcome, exact_time, exact_price = o, et, ep
@@ -335,7 +355,6 @@ def resolve_managed_trade(trade, bars, level_type, ledger=None, m5_bars=None, eo
             m5_close_time = bar_time - pd.Timedelta(minutes=5)
             if m5_close_time in m5_bars.index:
                 close_adj = float(m5_bars.loc[m5_close_time, "close"])
-                current_stop_price_adj = entry_adj - sign * current_stop_pts
                 remaining_reward = sign * (target_price_adj - close_adj)
                 remaining_risk = sign * (close_adj - current_stop_price_adj)
                 if remaining_risk > 0 and remaining_reward / remaining_risk <= RR_FLOOR_MIN_RR:
