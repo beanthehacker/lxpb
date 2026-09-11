@@ -36,7 +36,7 @@ being independently toggleable, since rule 2's own risk measurement depends
 on whatever rule 1 has already done to the stop by that point.
 
 Price-scale note: the M5 ledger (`lxpb_levels_cache.m5_levels`) and
-`lxpb_levels_cache.m5_bars_for_contract` are both in the ADJUSTED/display
+`lxpb_levels_cache.m5_bars_continuous` are both in the ADJUSTED/display
 scale (same scale as a trade's own `entry`/`fill_price`). `resolve_trades`'
 per-trade 1-minute `bars` are RAW (un-continuous-adjusted) scale. This
 module follows `render_stop_target_report.resolve_trades`'s own convention:
@@ -116,7 +116,7 @@ def _recent_avg_range(m5_bars, breakout_time, n):
     return float((prior["high"] - prior["low"]).mean())
 
 
-def thrust_trail_events(seg_idx, level_type, start_time, end_time, ledger=None, m5_bars=None):
+def thrust_trail_events(level_type, start_time, end_time, ledger=None, m5_bars=None):
     """Every qualifying thrust-P1 stop-trail event in (start_time, end_time],
     as a chronological list of `(trigger_time, new_stop_price)` --
     `trigger_time` is the breakout bar's own CLOSE (formation_time + one M5
@@ -126,10 +126,10 @@ def thrust_trail_events(seg_idx, level_type, start_time, end_time, ledger=None, 
     short), same scale as the ledger's own `breakout_low`/`breakout_high`."""
     if level_type not in ("LHPB", "LLPB"):
         raise ValueError(f"unknown level_type {level_type!r}")
-    ledger = LC.m5_levels(seg_idx, verbose=False) if ledger is None else ledger
+    ledger = LC.m5_levels(verbose=False) if ledger is None else ledger
     if ledger is None or ledger.empty:
         return []
-    m5_bars = LC.m5_bars_for_contract(seg_idx) if m5_bars is None else m5_bars
+    m5_bars = LC.m5_bars_continuous() if m5_bars is None else m5_bars
     start_time, end_time = _norm_utc(start_time), _norm_utc(end_time)
 
     sub = ledger[ledger["type"] == level_type].copy()
@@ -165,7 +165,7 @@ def thrust_trail_events(seg_idx, level_type, start_time, end_time, ledger=None, 
 # Combined sequential resolver (rule 1 + rule 2)
 # --------------------------------------------------------------------------
 
-def resolve_managed_trade(trade, bars, seg_idx, level_type, ledger=None, m5_bars=None):
+def resolve_managed_trade(trade, bars, level_type, ledger=None, m5_bars=None):
     """Sequential twin of `SR.resolve_trades`' single-trade path (same
     tick-accurate stop/target pinning) that ALSO runs the active management
     rules above -- symmetric across direction via a single `sign` (+1 long,
@@ -193,8 +193,8 @@ def resolve_managed_trade(trade, bars, seg_idx, level_type, ledger=None, m5_bars
     target_price_raw = raw_entry + sign * target_pts
     target_price_adj = entry_adj + sign * target_pts
 
-    m5_bars = LC.m5_bars_for_contract(seg_idx) if m5_bars is None else m5_bars
-    trail_events = thrust_trail_events(seg_idx, level_type, touch_time, bars.index[-1],
+    m5_bars = LC.m5_bars_continuous() if m5_bars is None else m5_bars
+    trail_events = thrust_trail_events(level_type, touch_time, bars.index[-1],
                                        ledger=ledger, m5_bars=m5_bars)
 
     fired_trail = []

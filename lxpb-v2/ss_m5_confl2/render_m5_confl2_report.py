@@ -480,8 +480,7 @@ def process_cluster(cluster, args):
              "retest_time": touch_time_alt.tz_convert("UTC").tz_localize(None),
              "stop_dist": stop_pts, "target_dist": target_pts}
     resolved = SR.resolve_trades([trade], {0: bars}, stop=None, target=None)[0]
-    managed = TM.resolve_managed_trade(trade, bars, cluster[0]["seg_idx"], level_type,
-                                       ledger=m5_ledger)
+    managed = TM.resolve_managed_trade(trade, bars, level_type, ledger=m5_ledger)
     result.update({
         "filled": True, "touch_time_alt": touch_time_alt, "resolved": resolved,
         "favorable_pts": resolved.get("favorable_pts"), "adverse_pts": resolved.get("adverse_pts"),
