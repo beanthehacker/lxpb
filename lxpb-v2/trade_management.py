@@ -31,6 +31,16 @@ mirror images of each other -- see each rule's own docstring):
   it) is compared to RR_FLOOR_MIN_RR; at or below that floor, the trade
   exits at market.
 
+  Rule 3 -- END-OF-DAY FLAT (`eod_exit_signal` / `entry_blocked`). No
+  position is carried past the end of the trading day: an open trade is
+  closed at market before `EOD_FLAT_PT` (12:45 Pacific), and no new entry
+  is taken from that instant until the Globex/ETH reopen. Unlike rules 1
+  and 2 this is NOT part of the optional management toggle -- it is a hard
+  constraint on the strategy itself, so `resolve_with_eod` applies it to
+  the BASELINE resolution too and both numbers in the report already have
+  it. See `eod_exit_signal` for the exact instant and why the order goes
+  out a minute early.
+
 Both rules share one sequential walk (`resolve_managed_trade`) rather than
 being independently toggleable, since rule 2's own risk measurement depends
 on whatever rule 1 has already done to the stop by that point.
@@ -61,6 +71,97 @@ SLIGHT_WICK_RATIO = 0.10        # a P0's own wick < 10% of its range is "slight"
 
 # Rule 2 -- RR-floor exit
 RR_FLOOR_MIN_RR = 0.2
+
+# Rule 3 -- end-of-day flat. Pacific times of day (the whole repo reports in
+# PT -- render_labels_report._to_pt_str), converted per timestamp so DST is
+# handled by the zone, never by a fixed UTC offset.
+EOD_FLAT_PT = pd.Timedelta(hours=12, minutes=45)   # no position may be open at/after this
+EOD_EXIT_LEAD = pd.Timedelta(minutes=1)            # so the market order's FILL lands before it
+SESSION_REOPEN_PT = pd.Timedelta(hours=15)         # Globex/ETH reopen (18:00 ET); entries resume
+_PT = "America/Los_Angeles"
+
+
+def _pt_tod(ts):
+    """Pacific time-of-day of an instant, as a Timedelta since PT midnight."""
+    pt = _norm_utc(ts).tz_convert(_PT)
+    return pd.Timedelta(hours=pt.hour, minutes=pt.minute, seconds=pt.second,
+                        microseconds=pt.microsecond, nanoseconds=pt.nanosecond)
+
+
+def entry_blocked(ts):
+    """True if no NEW entry may be taken at `ts`: the last 15 minutes of the
+    day session (from EOD_FLAT_PT) through the Globex/ETH reopen. ES is
+    closed for most of that span anyway (13:00-15:00 PT); what this rule
+    really forbids is opening a position that could not be closed before
+    EOD_FLAT_PT, and the reopen is where a fresh day's trading resumes."""
+    return EOD_FLAT_PT <= _pt_tod(ts) < SESSION_REOPEN_PT
+
+
+def eod_exit_signal(entry_ts):
+    """The instant the flattening MARKET order is sent for a trade entered
+    at `entry_ts`: the first `EOD_FLAT_PT - EOD_EXIT_LEAD` (12:44 PT) that
+    falls strictly after the entry. A trade opened during the evening
+    Globex session is therefore flattened before the NEXT day's 12:45 PT,
+    not held into it.
+
+    The order goes out one minute early on purpose: the requirement is that
+    the position is CLOSED before 12:45 PT, and a market order sent at
+    12:45:00 would fill after it."""
+    entry_ts = _norm_utc(entry_ts)
+    signal_tod = EOD_FLAT_PT - EOD_EXIT_LEAD
+    pt_day = entry_ts.tz_convert(_PT).normalize()
+    for extra_days in (0, 1):
+        # tz_localize on the naive wall-clock, so a DST transition day keeps
+        # its real 12:44 PT rather than drifting by an hour.
+        candidate = ((pt_day + pd.Timedelta(days=extra_days)).tz_localize(None)
+                     + signal_tod).tz_localize(_PT).tz_convert("UTC")
+        if candidate > entry_ts:
+            return candidate
+    raise AssertionError("unreachable: tomorrow's 12:44 PT is always after entry")
+
+
+def resolve_with_eod(trade, bars):
+    """BASELINE (unmanaged) resolution of one trade, under rule 3.
+
+    Runs `SR.resolve_trades`' own tick-accurate machinery over the trade's
+    bars TRUNCATED at its end-of-day signal, so any stop or target the trade
+    really reached first still resolves exactly as it would have without
+    this rule. Only a trade still open at the signal is changed: it is
+    flattened at the prevailing bid/ask (`SR._market_fill`, the same fill
+    model rule 2 uses), outcome "eod_flat", with a real, variable, signed R.
+
+    Returns the same shape `SR.resolve_trades(...)[0]` does."""
+    if bars is None or bars.empty:
+        return SR.resolve_trades([trade], {0: bars}, stop=None, target=None)[0]
+    touch_time = bars.attrs.get("touch_time")
+    eod_ts = eod_exit_signal(touch_time if touch_time is not None else bars.index[0])
+    if bars.index[-1] < eod_ts:
+        return SR.resolve_trades([trade], {0: bars}, stop=None, target=None)[0]
+
+    cut = bars[bars.index < eod_ts]
+    if cut.empty:
+        return {"outcome": "no_data", "r": None, "exit_time": None, "touch_time": touch_time}
+    cut.attrs["touch_time"] = touch_time      # attrs do not survive a boolean mask
+    resolved = SR.resolve_trades([trade], {0: cut}, stop=None, target=None)[0]
+    if resolved.get("outcome") != "no_hit":
+        return resolved
+
+    is_long = bool(trade["is_long"])
+    sign = 1.0 if is_long else -1.0
+    entry_adj = float(trade["entry"])
+    stop_pts = float(trade["stop_dist"])
+    offset, sym = R._offset_for_ts(pd.Timestamp(trade["retest_time"], tz="UTC"))
+    fill_ts, fill_raw = SR._market_fill(sym, eod_ts, is_long)
+    if fill_raw is None:
+        return resolved                       # no tape left at all -- keep the no_hit
+    exit_price = fill_raw + offset
+    favorable_pts, adverse_pts, entry_traded = SR._compute_excursion(
+        cut, touch_time, fill_ts, entry_adj - offset, is_long, sym, offset)
+    return {"outcome": "eod_flat", "r": sign * (exit_price - entry_adj) / stop_pts,
+            "exit_time": fill_ts, "exit_price": exit_price, "touch_time": touch_time,
+            "favorable_pts": favorable_pts, "adverse_pts": adverse_pts,
+            "giveback_pts": SR._compute_giveback(touch_time, fill_ts, is_long),
+            "entry_gapped": entry_traded is False}
 
 
 # --------------------------------------------------------------------------
@@ -148,7 +249,7 @@ def thrust_trail_events(level_type, start_time, end_time, ledger=None, m5_bars=N
 # Combined sequential resolver (rule 1 + rule 2)
 # --------------------------------------------------------------------------
 
-def resolve_managed_trade(trade, bars, level_type, ledger=None, m5_bars=None):
+def resolve_managed_trade(trade, bars, level_type, ledger=None, m5_bars=None, eod=True):
     """Sequential twin of `SR.resolve_trades`' single-trade path (same
     tick-accurate stop/target pinning) that ALSO runs the active management
     rules above -- symmetric across direction via a single `sign` (+1 long,
@@ -167,7 +268,7 @@ def resolve_managed_trade(trade, bars, level_type, ledger=None, m5_bars=None):
     target_pts = float(trade["target_dist"])
     if bars is None or bars.empty:
         return {"outcome": "no_data", "r": None, "exit_time": None, "touch_time": None,
-                "trail_events": [], "rr_floor_fired": False}
+                "trail_events": [], "rr_floor_fired": False, "eod_flat_fired": False}
 
     touch_time = bars.attrs.get("touch_time")
     offset, sym = R._offset_for_ts(pd.Timestamp(trade["retest_time"], tz="UTC"))
@@ -180,6 +281,9 @@ def resolve_managed_trade(trade, bars, level_type, ledger=None, m5_bars=None):
     trail_events = thrust_trail_events(level_type, touch_time, bars.index[-1],
                                        ledger=ledger, m5_bars=m5_bars)
 
+    eod_ts = (eod_exit_signal(touch_time if touch_time is not None else bars.index[0])
+              if eod else None)
+
     fired_trail = []
     current_stop_pts = stop_pts0
     ev_cursor = 0
@@ -189,6 +293,16 @@ def resolve_managed_trade(trade, bars, level_type, ledger=None, m5_bars=None):
 
     for b_idx in range(n_bars):
         bar_time = bars.index[b_idx]
+
+        # Rule 3 (end-of-day flat) is checked BEFORE this bar's own stop/
+        # target: the flattening order goes out at eod_ts exactly, which is
+        # a minute boundary, so anything this bar's range would have hit
+        # happens strictly after the order was already sent.
+        if eod_ts is not None and bar_time >= eod_ts:
+            fill_ts, fill_raw = SR._market_fill(sym, eod_ts, is_long)
+            if fill_raw is not None:
+                outcome, exact_time, exact_price = "eod_flat", fill_ts, fill_raw + offset
+                break
 
         while ev_cursor < len(trail_events) and trail_events[ev_cursor][0] <= bar_time:
             _, new_stop_price_adj = trail_events[ev_cursor]
@@ -234,11 +348,12 @@ def resolve_managed_trade(trade, bars, level_type, ledger=None, m5_bars=None):
     if outcome is None:
         last_time = bars.index[-1]
         return {"outcome": "no_hit", "r": None, "exit_time": last_time, "exit_price": entry_adj,
-                "touch_time": touch_time, "trail_events": fired_trail, "rr_floor_fired": False}
+                "touch_time": touch_time, "trail_events": fired_trail, "rr_floor_fired": False,
+                "eod_flat_fired": False}
 
     if outcome == "target":
         r = target_pts / stop_pts0
-    else:  # "stop" or "rr_floor" -- real, variable, signed R
+    else:  # "stop", "rr_floor" or "eod_flat" -- real, variable, signed R
         r = sign * (exact_price - entry_adj) / stop_pts0
 
     favorable_pts, adverse_pts, entry_traded = SR._compute_excursion(
@@ -247,4 +362,5 @@ def resolve_managed_trade(trade, bars, level_type, ledger=None, m5_bars=None):
     return {"outcome": outcome, "r": r, "exit_time": exact_time, "exit_price": exact_price,
             "touch_time": touch_time, "favorable_pts": favorable_pts, "adverse_pts": adverse_pts,
             "giveback_pts": giveback_pts, "entry_gapped": entry_traded is False,
-            "trail_events": fired_trail, "rr_floor_fired": rr_floor_fired}
+            "trail_events": fired_trail, "rr_floor_fired": rr_floor_fired,
+            "eod_flat_fired": outcome == "eod_flat"}

@@ -891,6 +891,19 @@ def _outcome_label(resolved):
         return "LOSS", "bad"
     if o == "no_hit":
         return "NO-HIT", ""
+    # Variable-R outcomes (an exit that is neither the bracket's stop nor its
+    # target): the candle rule in render_stop_target_report.resolve_trades,
+    # and trade_management.py's own RR-floor and end-of-day-flat exits. Each
+    # is coloured by the sign of the R it actually returned, since any of
+    # them can end a trade at a profit, at breakeven, or at a loss.
+    r = resolved.get("r")
+    cls = "" if r is None or abs(r) < 1e-9 else ("good" if r > 0 else "bad")
+    if o == "eod_flat":
+        return "EOD FLAT", cls
+    if o == "rr_floor":
+        return "RR FLOOR", cls
+    if o == "candle":
+        return "CANDLE", cls
     return "NO DATA", ""
 
 

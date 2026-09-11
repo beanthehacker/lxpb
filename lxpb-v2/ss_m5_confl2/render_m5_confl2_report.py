@@ -52,18 +52,57 @@ the target are ALL M5 LXPB structure:
      low for a long) -- render_ss_confl_finetune_report.dynamic_stop,
      unchanged.
 
-  5. TARGET = THE NEAREST-QUALIFYING OPPOSITE M5 LEVEL. The newest live
-     opposite-type M5 level (P1 shared by >=2 P0s), 1..20 points from the
-     fill -- render_ss_confl_finetune_report.dynamic_target, unchanged.
+  5. TARGET = THE NEAREST PREVIOUS CONSOLIDATION AREA (`_pick_target`,
+     m5_structure.py). Exit where the market last spent real time: the
+     nearest completed congestion area on the favourable side, 1..20 points
+     from the fill. If that area still holds an UNTESTED opposite-type M5
+     P0 -- one whose own price sits inside the area's band and that has
+     never been retested -- that P0's own price is the target (src tag
+     consol_p0); otherwise the target is the
+     area's NEAR edge: its LOW for a long, its HIGH for a short (src tag
+     consol_edge). `--target-mode opposite-m5` restores the original rule
+     (newest live opposite-type M5 level whose P1 broke >=2 same-type P0s,
+     render_ss_confl_finetune_report.dynamic_target).
 
-  6. NO FALLBACKS. Unlike the H1 report (which falls back to a fixed
-     stop/target when no qualifying M5 structure exists), THIS strategy has
-     no fixed bracket at all: if step 4 or step 5 finds nothing, there is no
-     trade. And if a bracket IS found but its reward:risk (target points /
-     stop points, fixed at entry, independent of how the trade resolves) is
-     below `--min-r` (default 1.0), there is still no trade -- a sub-1R
-     setup is skipped outright rather than taken and marked a probable
-     loser.
+  6. NO FALLBACKS, BUT SUB-MIN-R TRADES ARE MEASURED, NOT DISCARDED. Unlike
+     the H1 report (which falls back to a fixed stop/target when no
+     qualifying M5 structure exists), THIS strategy has no fixed bracket at
+     all: if step 4 or step 5 finds nothing, there is no trade. A bracket
+     whose reward:risk (target points / stop points, fixed at entry) comes
+     out below `--min-r` (default 1.0) IS still taken, resolved and charted
+     -- tagged `r_below_min`, and dropped from the headline stats by the
+     report's own dynamic filter, which ships checked. The target is only
+     knowable just before entry, so what those setups actually did is worth
+     being able to look at.
+
+  7. TRADE BLOCKS AND ENTRY ADJUSTMENTS. Three further rules, each of which
+     TAGS its trades for the report's live dynamic filters rather than
+     silently deleting them (see _apply_p1_reaction_filter's docstring for
+     that convention):
+
+       * SWERVED (`_swerve_entry`). A confirmed M5 swing low (long) or
+         swing high (short) within `--swerve-tol-pts` of the planned entry,
+         formed while the level waited between its own P1 and P2, means the
+         order is resting on a price the market already turned away from
+         once and that everyone else can see as well; it is moved past the
+         swing to the nearest other live same-side M5 level within
+         `--swerve-max-move-pts` (tag `swerved`). With no such level
+         available the trade is NOT taken (tag `swerve_blocked`, excluded by
+         default) but is still resolved and charted at its original entry.
+
+       * NEWS / THIN BOOK (liquidity.py). The quoted spread measured off
+         the real tape in the minutes before the fill decides whether the
+         book had thinned out past anything normal trade produces -- which
+         catches scheduled releases (FOMC/NFP/CPI/PPI) and unscheduled
+         headline shocks alike, and re-enables trading by itself once the
+         spread comes back in. Tag `low_liquidity`, excluded by default.
+
+       * END OF DAY (trade_management.py rule 3). No position is carried
+         overnight: an open trade is flattened at market before 12:45 PT
+         (outcome `eod_flat`), and a fill that would have landed at or after
+         12:45 PT is no trade at all (`eod_entry_blocked`). This one is a
+         hard rule, not a filter -- it is in the baseline and the managed
+         numbers both.
 
 Every filled, in-R trade is resolved with the exact same tick-accurate
 machinery the rest of this repo depends on
@@ -108,6 +147,8 @@ import render_ss_confl_finetune_report as SF      # noqa: E402
 import analyze_breakout_exits_1min as M           # noqa: E402
 import lxpb_levels_cache as LC                    # noqa: E402
 import trade_management as TM                     # noqa: E402
+import m5_structure as MS                         # noqa: E402
+import liquidity as LQ                            # noqa: E402
 
 SS_CONFL_MIN_DEFAULT = 2
 M5_CONFLUENCE_N_POINTS_DEFAULT = 5.0  # same-side M5 confluence radius: selection + entry refinement
@@ -116,6 +157,23 @@ MAX_DYNAMIC_TARGET_PTS = SF.MAX_DYNAMIC_TARGET_PTS
 DYNAMIC_STOP_RADIUS_PTS = SF.DYNAMIC_STOP_RADIUS_PTS
 MAX_ALT_FILL_HOURS_DEFAULT = SF.MAX_ALT_FILL_HOURS_DEFAULT
 MIN_R_DEFAULT = 1.0
+TARGET_MODE_DEFAULT = "consolidation"
+CONSOL_MIN_BARS_DEFAULT = MS.MIN_BARS_DEFAULT
+CONSOL_MAX_HEIGHT_DEFAULT = MS.MAX_HEIGHT_PTS_DEFAULT
+CONSOL_MAX_ER_DEFAULT = MS.MAX_ER_DEFAULT
+SWERVE_TOL_PTS_DEFAULT = 1.0          # a swing this close to the planned entry triggers the move
+SWERVE_LOOKBACK_HOURS_DEFAULT = 24.0  # how far back before the retest swings are looked for
+# Furthest a swerved entry may be moved. This MUST exceed
+# --m5-confluence-points to be able to do anything at all: the planned entry
+# is already the most extreme price in a pool built from every live same-side
+# level within that radius, so the nearest same-side level beyond it is
+# always at least one radius away. Measured over Jul-Aug 2026 the nearest one
+# is a median 30pt away, so most swerves block rather than move -- which is
+# the rule working, not failing.
+SWERVE_MAX_MOVE_PTS_DEFAULT = 10.0
+SWERVE_SWING_K_DEFAULT = MS.SWING_K_DEFAULT
+LIQ_WINDOW_MINUTES_DEFAULT = LQ.WINDOW_MINUTES_DEFAULT
+LIQ_WIDE_SPREAD_SHARE_DEFAULT = LQ.WIDE_SPREAD_SHARE_MAX_DEFAULT
 PEG_STEP_DEFAULT = SF.PEG_STEP_DEFAULT
 PEG_CAP_DEFAULT = SF.PEG_CAP_DEFAULT
 P1_BAR_WIDTH = pd.Timedelta(minutes=5)  # this strategy's own P1 is an M5 bar, not H1
@@ -376,6 +434,138 @@ def _dynamic_stop_m5(level_type, alt_price, is_long, entry_level_info,
     return stop_price, stop_row, "m5_thrust"
 
 
+# --------------------------------------------------------------------------
+# Target selection -- PREVIOUS CONSOLIDATION AREAS (m5_structure.py)
+#
+# The original rule (SF.dynamic_target, still available via
+# --target-mode opposite-m5) took the newest live opposite-type M5 level
+# whose P1 broke >= 2 same-type P0s, 1..20pt away. It is a single PRICE,
+# with no notion of whether anything is actually resting there now.
+#
+# The consolidation rule instead exits where the market last spent real
+# time: the nearest PREVIOUS congestion area in the trade's own favourable
+# direction (see m5_structure.consolidation_areas for the definition). If
+# that area still holds an UNTESTED opposite-type M5 P0 -- one whose own
+# price sits inside the area's band and that has never been retested --
+# that P0's own price is the target (src tag consol_p0). Otherwise the target
+# is the area's NEAR EDGE: its LOW for a long and its HIGH for a short (src tag
+# consol_edge): the first price of the zone the trade reaches, not the far
+# side it may never get through. The same 1..20pt band bounds both.
+# --------------------------------------------------------------------------
+
+def _pick_target(m5_ledger, level_type, price, is_long, touch_time, args):
+    """(target_price, target_info) for one trade under args.target_mode, or
+    (None, None) for no qualifying target (which is still a real "no trade"
+    -- this strategy has no fixed fallback bracket).
+
+    target_info carries 'src' plus whichever of 'area'/'level' that source
+    used, so the row and the chart can both show WHERE the target came
+    from."""
+    if args.target_mode == "opposite-m5":
+        target_price, target_row = SF.dynamic_target(m5_ledger, level_type, price,
+                                                     is_long, touch_time)
+        if target_price is None:
+            return None, None
+        return target_price, {"src": "m5_opposite", "level": target_row.to_dict(), "area": None}
+
+    opposite_type = "LLPB" if level_type == "LHPB" else "LHPB"
+    # "Untested still" == broken out and never retested since, as of the last
+    # completed M5 candle before entry -- exactly _live_m5_before_entry's own
+    # query (min_breakout_levels=1: the shared-P1 requirement belongs to the
+    # opposite-M5 rule, not to this one, where the consolidation area itself
+    # is the evidence that the price matters).
+    live_opposite = SF._live_m5_before_entry(m5_ledger, opposite_type, touch_time)
+    areas = consolidation_areas_for(args)
+    return MS.consolidation_target(areas, live_opposite, price, is_long,
+                                   MS.entry_cutoff(touch_time),
+                                   MIN_DYNAMIC_TARGET_PTS, MAX_DYNAMIC_TARGET_PTS)
+
+
+def consolidation_areas_for(args):
+    """m5_structure.consolidation_areas under this run's own CLI settings
+    (memoised there, so this is one walk per process)."""
+    return MS.consolidation_areas(min_bars=args.consol_min_bars,
+                                  max_height=args.consol_max_height,
+                                  max_er=args.consol_max_er)
+
+
+# --------------------------------------------------------------------------
+# "SWERVED" entry -- step past a swing sitting on the planned entry
+#
+# A confirmed swing low (for a LONG) or swing high (for a SHORT) within
+# +/-`--swerve-tol-pts` of the fine-tuned entry -- formed while the level was
+# waiting to be retested, i.e. between its own P1 and its P2 -- is a price
+# the market has already turned away from once, and one every other
+# participant can see too, so a resting order there is at the back of a
+# long queue and in front of whatever is hunting it. When that happens the
+# order is moved PAST the swing -- lower for a long, higher for a short --
+# to the nearest OTHER live same-side M5 LXPB level within
+# `--swerve-max-move-pts`, skipping any candidate that has the same problem.
+#
+# If no such level exists the trade is not taken (tag `swerve_blocked`);
+# it is still processed and charted at its ORIGINAL entry so the report can
+# show what the untaken trade would have done -- see the dynamic-filter
+# convention in _apply_p1_reaction_filter's docstring.
+# --------------------------------------------------------------------------
+
+def _swerve_entry(m5_ledger, level_type, is_long, conf, row_d, args):
+    """Swerve-rule verdict for one cluster, as a dict (or None when the rule
+    is off). MUTATES `conf` in place when the entry actually moves, so every
+    downstream user of conf -- the fill scan, the spike-P0 stop override
+    (_entry_level_row), the M5 chart's own entry-level ray -- follows the
+    moved entry rather than the planned one.
+
+    Keys: swings (the (time, price) pivots that triggered it), moved (bool),
+    planned_price, price (the entry in force afterwards), level (the ledger
+    row moved to, if any), blocked (bool -- triggered but nowhere to move).
+
+    The window searched is the level's OWN wait -- from its P1 breakout bar
+    to its retest -- since that is exactly the span over which price could
+    have come back towards the entry and turned away without reaching it.
+    `--swerve-lookback-hours` caps it, for the levels that sit broken out
+    for weeks before anything comes back."""
+    if not args.swerve:
+        return None
+    planned = float(conf["alt_price"])
+    retest_time = pd.to_datetime(row_d["retest_time"], utc=True)
+    breakout_time = pd.to_datetime(row_d["breakout_time"], utc=True)
+    lo_ts = max(breakout_time, retest_time - pd.Timedelta(hours=args.swerve_lookback_hours))
+    swings = MS.swings_near(planned, args.swerve_tol_pts, lo_ts, retest_time,
+                            is_low=is_long, k=args.swerve_swing_k)
+    if not swings:
+        return None
+
+    out = {"swings": swings, "moved": False, "blocked": False,
+           "planned_price": planned, "price": planned, "level": None}
+    cand = SF._live_m5_before_entry(m5_ledger, level_type, retest_time)
+    if cand.empty:
+        out["blocked"] = True
+        return out
+    beyond = (cand["price"] < planned) if is_long else (cand["price"] > planned)
+    cand = cand[beyond & ((cand["price"] - planned).abs() <= args.swerve_max_move_pts)]
+    if cand.empty:
+        out["blocked"] = True
+        return out
+    # Nearest first: an order moved further than it has to be is a worse
+    # entry, not a better one.
+    cand = cand.assign(_dist=(cand["price"] - planned).abs()).sort_values("_dist")
+    for _, lv in cand.iterrows():
+        price = float(lv["price"])
+        if MS.swings_near(price, args.swerve_tol_pts, lo_ts, retest_time,
+                          is_low=is_long, k=args.swerve_swing_k):
+            continue   # same problem one level down -- keep stepping
+        out.update({"moved": True, "price": price, "level": lv.to_dict()})
+        conf["alt_price"] = price
+        conf["alt_source"] = "m5"
+        conf["entry_m5_level"] = lv.to_dict()
+        conf["alt_formation_time"] = pd.Timestamp(lv["formation_time"])
+        conf["alt_end_time"] = (retest_time if pd.isna(lv["death_time"])
+                                else min(pd.Timestamp(lv["death_time"]), retest_time))
+        return out
+    out["blocked"] = True
+    return out
+
+
 GLOBEX_OPEN_START_PT = pd.Timedelta(hours=15)
 GLOBEX_OPEN_END_PT = pd.Timedelta(hours=15, minutes=5)
 
@@ -409,6 +599,7 @@ def process_cluster(cluster, args):
                            reverse=(level_type == "LLPB"))
 
     conf = cluster_confluence(cluster)
+    swerve = _swerve_entry(m5_ledger, level_type, is_long, conf, row_d, args)
     alt_price, alt_source, group_n = conf["alt_price"], conf["alt_source"], conf["group_n"]
 
     cluster_member_formations = sorted(
@@ -423,8 +614,12 @@ def process_cluster(cluster, args):
         "alt_formation_time": conf["alt_formation_time"], "alt_end_time": conf["alt_end_time"],
         "entry_m5_level": conf["entry_m5_level"],
         "improved": abs(alt_price - own_price) > 1e-9,
+        "swerve": swerve,
+        "dyn_tags": [],
         "filled": False,
     }
+    if swerve is not None:
+        result["dyn_tags"].append("swerved" if swerve["moved"] else "swerve_blocked")
 
     window_start = pd.to_datetime(row_d["retest_time"], utc=True)
     touch_time_alt, fill_price = SF.find_alt_fill(
@@ -432,6 +627,15 @@ def process_cluster(cluster, args):
         pegged=args.pegged_entry, peg_step=args.peg_step, peg_cap=args.peg_cap)
     if touch_time_alt is None:
         result["fail_reason"] = "unfilled_within_window"
+        return result
+    # End-of-day flat, entry half (trade_management.py rule 3): a resting
+    # order is CANCELLED at the cutoff, so a fill that would have landed
+    # inside the blocked window is not a trade at all -- it is never re-sent
+    # after the reopen either, since by then the retest that justified it is
+    # hours old.
+    if args.eod_flat and TM.entry_blocked(touch_time_alt):
+        result["fail_reason"] = "eod_entry_blocked"
+        result["touch_time_alt"] = touch_time_alt
         return result
     result["fill_price"] = fill_price
     chase = fill_price - alt_price if is_long else alt_price - fill_price
@@ -444,10 +648,24 @@ def process_cluster(cluster, args):
         result["fail_reason"] = "no_tick_data_after_fill"
         return result
 
-    target_price, target_row = SF.dynamic_target(m5_ledger, level_type, fill_price, is_long,
-                                                  touch_time_alt)
+    # Liquidity gate (liquidity.py): measured off the real tape in the
+    # minutes before this fill, so scheduled releases (FOMC/NFP/CPI/PPI) and
+    # unscheduled headline shocks are both caught, and trading re-enables by
+    # itself once the quoted spread comes back in. Tags rather than skips --
+    # the row and its charts stay in the report behind a dynamic filter (on
+    # by default) so a "skipped for news" trade can still be reviewed.
+    if args.liquidity_gate:
+        blocked, liq = LQ.gate(touch_time_alt, window_minutes=args.liq_window_minutes,
+                               wide_spread_share_max=args.liq_wide_spread_share)
+        result["liquidity"] = liq
+        if blocked:
+            result["dyn_tags"].append("low_liquidity")
+
+    target_price, target_info = _pick_target(m5_ledger, level_type, fill_price, is_long,
+                                             touch_time_alt, args)
     if target_price is None:
-        result["fail_reason"] = "no_m5_target"
+        result["fail_reason"] = ("no_consol_target" if args.target_mode == "consolidation"
+                                 else "no_m5_target")
         return result
     target_pts = abs(target_price - fill_price)
 
@@ -466,21 +684,29 @@ def process_cluster(cluster, args):
     r_multiple = target_pts / stop_pts
     result["target_price"] = target_price
     result["target_pts"] = target_pts
-    result["target_m5_level"] = target_row.to_dict()
+    result["target_info"] = target_info
     result["stop_price"] = stop_price
     result["stop_pts"] = stop_pts
     result["stop_m5_level"] = stop_row.to_dict()
     result["stop_source"] = stop_source
     result["r_multiple"] = r_multiple
+    # A sub-min-R bracket is no longer skipped outright: the target is only
+    # knowable just before entry, and seeing what those trades actually did
+    # is the point of measuring them. They are TAGGED instead, and the
+    # report's own dynamic filter drops them from the headline stats by
+    # default -- untick it to fold them back in.
     if r_multiple < args.min_r:
-        result["fail_reason"] = f"r_below_{args.min_r:g}"
-        return result
+        result["dyn_tags"].append("r_below_min")
 
     trade = {"type": level_type, "entry": fill_price, "is_long": is_long,
              "retest_time": touch_time_alt.tz_convert("UTC").tz_localize(None),
              "stop_dist": stop_pts, "target_dist": target_pts}
-    resolved = SR.resolve_trades([trade], {0: bars}, stop=None, target=None)[0]
-    managed = TM.resolve_managed_trade(trade, bars, level_type, ledger=m5_ledger)
+    resolved = (TM.resolve_with_eod(trade, bars) if args.eod_flat
+                else SR.resolve_trades([trade], {0: bars}, stop=None, target=None)[0])
+    managed = TM.resolve_managed_trade(trade, bars, level_type, ledger=m5_ledger,
+                                       eod=args.eod_flat)
+    if resolved.get("outcome") == "eod_flat":
+        result["dyn_tags"].append("eod_flat")
     result.update({
         "filled": True, "touch_time_alt": touch_time_alt, "resolved": resolved,
         "favorable_pts": resolved.get("favorable_pts"), "adverse_pts": resolved.get("adverse_pts"),
@@ -692,6 +918,79 @@ def _annotate_mgmt_events(chart_m5, res, is_long):
         chart_m5["markers"].sort(key=lambda m: m["time"])
 
 
+def _snapper(chart_m5):
+    """A `snap(ts) -> chart bar time` helper for one M5 chart, or None if the
+    chart has no candles. Same at-or-before convention every other annotator
+    in this module uses (the pane is compressed, so an arbitrary instant may
+    not have its own bar)."""
+    if chart_m5 is None or not chart_m5["candles"]:
+        return None
+    times = [c["time"] for c in chart_m5["candles"]]
+
+    def snap(ts):
+        ts = pd.Timestamp(ts)
+        if ts.tzinfo is not None:
+            ts = ts.tz_convert("UTC").tz_localize(None)
+        i = bisect.bisect_right(times, R._to_epoch_utc(ts)) - 1
+        return times[i] if i >= 0 else None
+    return snap
+
+
+CONSOL_ZONE_COLOR = "#a78bfa"   # the target's own consolidation area (violet)
+SWERVE_COLOR = "#86efac"        # the swing that moved the entry, and the planned entry it left
+
+
+def _annotate_target_zone(chart_m5, res):
+    """Draw the consolidation area the target came from as two dashed price
+    lines (its high and its low) -- see _pick_target. The target price line
+    itself is already drawn by build_m5_chart; these show the ZONE it sits
+    in, which is what makes a consol_edge target readable as an edge rather
+    than an arbitrary price. No-op for --target-mode opposite-m5, which has
+    no zone.
+
+    Price lines, not markers on the area's own bars: the pane is anchored on
+    the trade, and the area that supplies a target is essentially always
+    older than the pane's own first bar (0 of 110 trades over Jul-Aug 2026
+    had one inside it). Each line's title carries the area's own start time
+    and length, which is the part a reviewer needs."""
+    info = res.get("target_info") or {}
+    area = info.get("area")
+    if chart_m5 is None or not area:
+        return
+    for key in ("high", "low"):
+        chart_m5.setdefault("priceLines", []).append({
+            "price": area[key], "color": CONSOL_ZONE_COLOR, "lineWidth": 1, "lineStyle": 2,
+            "title": (f"consolidation {key} ({area['n_bars']} M5 bars from "
+                      f"{R._to_pt_str(area['start_time'])})"),
+        })
+
+
+def _annotate_swerve(chart_m5, res, is_long):
+    """Mark the swing(s) that triggered the swerve rule and, when the entry
+    actually moved, the planned entry price it was moved off -- see
+    _swerve_entry. No-op when the rule never triggered for this trade."""
+    sw = res.get("swerve")
+    snap = _snapper(chart_m5)
+    if not sw or snap is None:
+        return
+    chart_m5.setdefault("priceLines", []).append({
+        "price": sw["planned_price"], "color": SWERVE_COLOR, "lineWidth": 1, "lineStyle": 2,
+        "title": ("planned entry -- swerve blocked, not taken" if sw["blocked"]
+                  else f"planned entry (swerved to {sw['price']:.2f})"),
+    })
+    new_markers = []
+    for ts, px in sw["swings"]:
+        t = snap(ts)
+        if t is not None:
+            new_markers.append({
+                "time": t, "position": "belowBar" if is_long else "aboveBar",
+                "color": SWERVE_COLOR, "shape": "circle",
+                "text": f"swing {px:.2f}"})
+    if new_markers:
+        chart_m5["markers"].extend(new_markers)
+        chart_m5["markers"].sort(key=lambda m: m["time"])
+
+
 def build_chart_stack_for_row(res):
     """M5 + 1s-trio + 1min + footprint chart stack for a filled, in-R trade
     -- no H1 pane exists in this strategy. Reuses
@@ -747,6 +1046,8 @@ def build_chart_stack_for_row(res):
         _annotate_candidates(chart_m5, row_for_chart, res["is_long"], sibling_group,
                             res["cluster_member_formations"])
         _annotate_mgmt_events(chart_m5, res, res["is_long"])
+        _annotate_target_zone(chart_m5, res)
+        _annotate_swerve(chart_m5, res, res["is_long"])
     execution_charts, fp = SF.build_execution_charts({**res, "row": row_for_chart})
     return {"m5": chart_m5, **execution_charts}, fp
 
@@ -954,7 +1255,7 @@ def _naive_bracket_touch(bars, entry_adj, is_long, stop_pts, target_pts, offset)
     return "no_hit"
 
 
-def _resolve_raw_retest(m5_ledger, row_d):
+def _resolve_raw_retest(m5_ledger, row_d, args):
     """(outcome, touch_time) for one RAW 'departed' M5 level -- a clean
     retest OR a consumed_early death (see _seg_departed_levels) -- not
     fine-tuned, not fill-window-searched: row_d['touch_time'] itself is the
@@ -963,9 +1264,9 @@ def _resolve_raw_retest(m5_ledger, row_d):
     from a real trade's own resolution). Returns (None, None) if no
     qualifying target/stop exists or there's no tick data to check
     against, same 'no trade' cases process_cluster itself would hit.
-    dynamic_target/_dynamic_stop_m5 still pick the SAME bracket a real
-    trade on this P0 alone would have used -- only the touch-vs-fill
-    distinction differs."""
+    _pick_target/_dynamic_stop_m5 still pick the SAME bracket a real trade
+    on this P0 alone would have used (including this run's own
+    --target-mode) -- only the touch-vs-fill distinction differs."""
     level_type = row_d["type"]
     is_long = level_type == "LHPB"
     price = float(row_d["price"])
@@ -973,7 +1274,7 @@ def _resolve_raw_retest(m5_ledger, row_d):
     if touch_time.tzinfo is None:
         touch_time = touch_time.tz_localize("UTC")
 
-    target_price, _ = SF.dynamic_target(m5_ledger, level_type, price, is_long, touch_time)
+    target_price, _ = _pick_target(m5_ledger, level_type, price, is_long, touch_time, args)
     if target_price is None:
         return None, None
     stop_price, _, _ = _dynamic_stop_m5(
@@ -993,7 +1294,7 @@ def _resolve_raw_retest(m5_ledger, row_d):
     return outcome, touch_time
 
 
-def _p1_group_reaction_cutoffs(relevant_keys, departed):
+def _p1_group_reaction_cutoffs(relevant_keys, departed, args):
     """{(seg_idx, type, breakout_time): earliest reacting touch_time} for
     every relevant_keys entry whose FULL P1 group (every DEPARTED M5 level
     -- clean retest or consumed_early, see _seg_departed_levels -- sharing
@@ -1030,7 +1331,7 @@ def _p1_group_reaction_cutoffs(relevant_keys, departed):
             continue
         group = group.sort_values("touch_time")
         for _, row_d in group.iterrows():
-            outcome, touch_time = _resolve_raw_retest(m5_ledger, row_d)
+            outcome, touch_time = _resolve_raw_retest(m5_ledger, row_d, args)
             if outcome == "target":
                 cutoffs[(seg_idx_by_key[key2], level_type, key2[1])] = touch_time
                 break
@@ -1103,11 +1404,32 @@ def _fail_reason_label(reason):
         return f"NO TRADE (R below {reason.split('_below_', 1)[1]})"
     return {
         "unfilled_within_window": "UNFILLED (entry never reached)",
+        "eod_entry_blocked": "NO TRADE (entry blocked -- end of day)",
+        "no_consol_target": "NO TRADE (no qualifying previous consolidation target)",
         "no_tick_data_after_fill": "NO DATA after fill",
         "no_m5_target": "NO TRADE (no qualifying M5 opposite target)",
         "no_m5_stop": "NO TRADE (no qualifying M5 breakout-candle stop)",
         "degenerate_stop": "NO TRADE (degenerate stop)",
     }.get(reason, reason.replace("_", " "))
+
+
+def _target_title(info):
+    """Tooltip for the Target cell, per target source (see _pick_target)."""
+    if not info:
+        return "no target info"
+    area, level = info.get("area"), info.get("level")
+    if info.get("src") == "m5_opposite":
+        return (f"Newest eligible M5 {level['type']} P0: "
+                f"{R._to_pt_str(level['formation_time'])}; shared P1: "
+                f"{R._to_pt_str(level['breakout_time'])}")
+    where = (f"Previous consolidation area {R._to_pt_str(area['start_time'])} &rarr; "
+             f"{R._to_pt_str(area['end_time'])} ({area['n_bars']} M5 bars, "
+             f"{area['low']:.2f}-{area['high']:.2f}, ER {area['er']:.2f})")
+    if info.get("src") == "consol_p0":
+        return (f"{where}; still holds an untested M5 {level['type']} P0 "
+                f"{float(level['price']):.2f} formed "
+                f"{R._to_pt_str(level['formation_time'])} -- that P0 is the target")
+    return f"{where}; no untested opposite P0 left inside it, so the target is its near edge"
 
 
 def _compute_report_stats(filled):
@@ -1175,7 +1497,7 @@ def render(args):
                           pd.Timestamp(anchor_row["breakout_time"])))
     print(f"p1_reacted: checking {len(relevant_keys)} distinct P1 group(s) "
           f"for an already-reacted sibling P0...", flush=True)
-    p1_cutoffs = _p1_group_reaction_cutoffs(relevant_keys, departed)
+    p1_cutoffs = _p1_group_reaction_cutoffs(relevant_keys, departed, args)
 
     results, chart_stacks, fps = process_clusters(clusters, args)
     results = _apply_p1_reaction_filter(results, p1_cutoffs)
@@ -1185,9 +1507,17 @@ def render(args):
           f"default -- toggle the Dynamic filters checkbox in the report to exclude "
           f"them)", flush=True)
     results = _apply_globex_open_filter(results)
-    n_globex_tagged = sum(1 for r in results if "globex_eth_open" in r.get("dyn_tags", ()))
-    print(f"{n_globex_tagged} trade(s) tagged 'globex_eth_open' (excluded from the report's "
-          f"default view -- untick the Dynamic filters checkbox to include them)", flush=True)
+    tag_counts = {}
+    for r in results:
+        if not r["filled"]:
+            continue
+        for tag in r.get("dyn_tags", ()):
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    for tag, n in sorted(tag_counts.items(), key=lambda kv: -kv[1]):
+        if tag == "p1_reacted":
+            continue  # already reported above, with its own P1-group detail
+        print(f"{n} filled trade(s) tagged '{tag}' -- toggle its Dynamic filters checkbox "
+              f"in the report to include/exclude it", flush=True)
 
     filled = [r for r in results if r["filled"]]
     skipped = [r for r in results if not r["filled"]]
@@ -1265,10 +1595,9 @@ def _render_row(idx, res, chart_stacks, fps):
         gap_flag = ('<span class="gap-flag" title="Entry price never traded between touch '
                     'and exit -- price gapped through the level, so this fill was not '
                     'actually available.">\u26a0</span>' if res.get("entry_gapped") else "")
-        target_level = res["target_m5_level"]
-        target_title = (f"Newest eligible M5 {target_level['type']} P0: "
-                        f"{R._to_pt_str(target_level['formation_time'])}; shared P1: "
-                        f"{R._to_pt_str(target_level['breakout_time'])}")
+        target_info = res.get("target_info") or {}
+        target_src = target_info.get("src", "m5_opposite")
+        target_title = _target_title(target_info)
         stop_level = res["stop_m5_level"]
         stop_source = res.get("stop_source", "m5_thrust")
         if stop_source == "m5_p0_spike":
@@ -1317,6 +1646,39 @@ def _render_row(idx, res, chart_stacks, fps):
                           f'daily Globex/ETH reopen window (15:00-15:05 PT) -- excluded by default. '
                           f'Toggle the Dynamic filters checkbox in the panel above to include '
                           f'it.">GLOBEX OPEN</span>')
+        if "r_below_min" in dyn_tags:
+            dyn_badges += (f'<span class="dyn-tag-badge" title="Dynamic filter '
+                          f'‘r_below_min’: the bracket on offer just before entry was only '
+                          f'R {rr_avail:.2f}. The trade is still shown and resolved; it is left '
+                          f'out of the headline stats by default.">R &lt; MIN</span>')
+        if "low_liquidity" in dyn_tags:
+            dyn_badges += (f'<span class="dyn-tag-badge liq-tag-badge" title="Dynamic filter '
+                          f'‘low_liquidity’: the tape was measurably illiquid at this fill '
+                          f'({LQ.describe(res.get("liquidity"))}) -- a news/thin-book window. '
+                          f'The strategy skips these; they are left out of the headline stats by '
+                          f'default.">NEWS / THIN</span>')
+        if "swerved" in dyn_tags:
+            sw = res["swerve"]
+            sw_str = ", ".join(f"{px:.2f} @ {R._to_pt_str(t)}" for t, px in sw["swings"][:3])
+            dyn_badges += (f'<span class="dyn-tag-badge swerve-tag-badge" title="Dynamic filter '
+                          f'‘swerved’: a confirmed M5 swing sat on the planned entry '
+                          f'{sw["planned_price"]:.2f} ({sw_str}), so the order was moved to the '
+                          f'next live M5 {level_type} level at {sw["price"]:.2f}.">'
+                          f'SWERVED {sw["planned_price"]:.2f}&rarr;{sw["price"]:.2f}</span>')
+        if "swerve_blocked" in dyn_tags:
+            sw = res["swerve"]
+            sw_str = ", ".join(f"{px:.2f} @ {R._to_pt_str(t)}" for t, px in sw["swings"][:3])
+            dyn_badges += (f'<span class="dyn-tag-badge swerve-tag-badge" title="Dynamic filter '
+                          f'‘swerve_blocked’: a confirmed M5 swing sat on the planned entry '
+                          f'{sw["planned_price"]:.2f} ({sw_str}) and no other live M5 {level_type} '
+                          f'level was available to move to, so this trade is NOT taken. It is '
+                          f'shown at its original entry so it can still be reviewed, and left out '
+                          f'of the headline stats by default.">SWERVE BLOCKED</span>')
+        if "eod_flat" in dyn_tags:
+            dyn_badges += (f'<span class="dyn-tag-badge" title="This trade was still open at '
+                          f'12:44 PT and was flattened at market under the end-of-day rule '
+                          f'(trade_management.py rule 3) instead of reaching its stop or '
+                          f'target.">EOD FLAT</span>')
         outcome_for_js = resolved.get("outcome") or ""
         r_for_js = "" if r_val is None else f"{r_val:.6f}"
         pnl_for_js = "" if pnl_pts is None else f"{pnl_pts:.6f}"
@@ -1365,7 +1727,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td>{res['alt_price']:.2f}{gap_flag}<span class="{src_cls}">{res['alt_source']}{improved_flag}</span>{chase_flag}</td>
   <td class="left">{entry_touch_str}</td>
   <td title="{stop_title}">{res['stop_price']:.2f}<span class="src-tag m5">{stop_source}</span></td>
-  <td title="{target_title}">{res['target_price']:.2f}<span class="src-tag m5">m5_opposite</span></td>
+  <td title="{target_title}">{res['target_price']:.2f}<span class="src-tag m5">{target_src}</span></td>
   <td>{rr_avail:.2f}</td>
   <td class="{outcome_cls}">{outcome_label}{dyn_badges}{mgmt_badge}</td>
   <td class="left">{exit_str}</td><td>{exit_px_str}</td>
@@ -1412,6 +1774,18 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
         f"Queue position and additional cancel/replace latency are not modeled."
         if args.pegged_entry else
         "Entry is a plain static limit order (no chasing).")
+    target_lead_sentence = (
+        f"TARGET = the nearest PREVIOUS consolidation area on the favourable side "
+        f"({MIN_DYNAMIC_TARGET_PTS:g}&ndash;{MAX_DYNAMIC_TARGET_PTS:g} points from the fill, "
+        f"a run of &ge;{args.consol_min_bars} M5 bars inside a "
+        f"&le;{args.consol_max_height:g}pt band with efficiency ratio &lt; "
+        f"{args.consol_max_er:g}): the untested opposite-type M5 P0 still sitting inside that "
+        f"area (src tag consol_p0) if there is one, else the area's near edge -- its low for a "
+        f"long, its high for a short (src tag consol_edge)."
+        if args.target_mode == "consolidation" else
+        f"TARGET = the MOST RECENTLY FORMED (P0) live opposite-type M5 level on the favourable "
+        f"side, {MIN_DYNAMIC_TARGET_PTS:g}&ndash;{MAX_DYNAMIC_TARGET_PTS:g} points from the "
+        f"fill, whose P1 candle broke at least two distinct same-type P0 levels.")
     reason_html = "".join(
         f'<div class="box"><strong>{n}</strong>{reason}</div>'
         for reason, n in sorted(reason_counts.items(), key=lambda kv: -kv[1]))
@@ -1422,7 +1796,7 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
   <div class="box"><strong>{len(candidates)}</strong>SS Confl &ge; {args.ss_confl_min}</div>
   <div class="box"><strong>{len(clusters)}</strong>confluence clusters</div>
   <div class="box"><strong>&plusmn;{radius}pt</strong>M5 confluence radius</div>
-  <div class="box"><strong>{args.min_r:.2f}</strong>min R required</div>
+  <div class="box"><strong>{args.min_r:.2f}</strong>min R (below: tagged, not skipped)</div>
   <div class="box true"><strong id="sum-win-rate">{stats['win_rate']:.1f}%</strong>win rate
     <span id="sum-win-rate-n">({stats['n']})</span></div>
   <div class="box"><strong id="sum-avg-r">{stats['avg_r']:.2f}</strong>avg R</div>
@@ -1460,14 +1834,20 @@ candle's own wick is a sharper invalidation point than the breakout candle for t
 Otherwise (src tag m5_thrust), one tick above the HIGHEST breakout-candle high
 for LLPB shorts, or one tick below the LOWEST breakout-candle low for LHPB longs (i.e. above/
 below the thrust candle), among live same-side M5 levels within
-&plusmn;{DYNAMIC_STOP_RADIUS_PTS:g} points of the actual fill. TARGET = the MOST RECENTLY
-FORMED (P0) live opposite-type M5 level on the favourable side, {MIN_DYNAMIC_TARGET_PTS:g}
-&ndash;{MAX_DYNAMIC_TARGET_PTS:g} points from the fill, whose P1 candle broke at least two
-distinct same-type P0 levels. NO FALLBACKS: if no qualifying stop or target exists, or if the
-resulting reward:risk (target pts / stop pts, fixed at entry) is below {args.min_r:g}, there
-is no trade at all (see the summary boxes above for the skip-reason breakdown) -- this differs
-from render_ss_confl_finetune_report.py, whose H1-anchored strategy always falls back to a
-fixed stop/target. Both searches use only completed M5 candles and the live ledger state
+&plusmn;{DYNAMIC_STOP_RADIUS_PTS:g} points of the actual fill. {target_lead_sentence} NO FALLBACKS: if no qualifying
+stop or target exists there is no trade at all (see the summary boxes above for the
+skip-reason breakdown) -- this differs from render_ss_confl_finetune_report.py, whose
+H1-anchored strategy always falls back to a fixed stop/target. A bracket below R
+{args.min_r:g} IS taken, resolved and charted, tagged r_below_min and excluded from the
+headline stats by default. ENTRY AND TRADE BLOCKS: a confirmed M5 swing within
+{args.swerve_tol_pts:g}pt of the planned entry, formed between the level's own P1 breakout and
+its retest, moves the order to the next live same-side M5 level within
+{args.swerve_max_move_pts:g}pt (SWERVED), or blocks the trade if there is none
+(SWERVE BLOCKED, shown at the original entry); a fill whose preceding
+{args.liq_window_minutes:g} minutes of tape show more than
+{args.liq_wide_spread_share * 100:g}% of quotes wider than one tick is a news/thin-book entry
+(NEWS / THIN); and no position is carried past the end of the day -- open trades are flattened
+at market before 12:45 PT (EOD FLAT) and no entry is taken from then until the Globex reopen. Both searches use only completed M5 candles and the live ledger state
 immediately before the fill's M5 bar, with no fixed lookback. Charts/markers/price-lines/
 tooltips, MAE/MFE/Max DD definitions, and the Reviewed/Valid/Replayed/Notes columns below all
 follow render_stop_target_report.py's own conventions exactly (see that module and
@@ -1515,6 +1895,26 @@ docstring in render_m5_confl2_report.py for the full convention.">Dynamic filter
       Exclude Globex/ETH open fills (15:00-15:05 PT)</label>
     <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="globex_eth_open">
       Only</label>
+    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="r_below_min" checked>
+      Exclude R below __MIN_R__</label>
+    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="r_below_min">
+      Only</label>
+    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="low_liquidity" checked>
+      Exclude news / thin-book entries</label>
+    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="low_liquidity">
+      Only</label>
+    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="swerve_blocked" checked>
+      Exclude swerve-blocked (not taken)</label>
+    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="swerve_blocked">
+      Only</label>
+    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="swerved">
+      Exclude swerved entries</label>
+    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="swerved">
+      Only</label>
+    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="eod_flat">
+      Exclude end-of-day flats</label>
+    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="eod_flat">
+      Only</label>
   </div>
   <div class="filter-row">
     <span class="filter-label" title="Live, in-browser toggle for the plug-n-play trade-management
@@ -1532,6 +1932,11 @@ the box is checked.">Trade management</span>
 </div>
 """
 
+    target_col_title = (
+        "The untested opposite-type M5 P0 still inside the nearest previous consolidation "
+        "area (consol_p0), else that area's near edge -- low for a long, high for a short "
+        "(consol_edge)" if args.target_mode == "consolidation" else
+        "Newest eligible opposite M5 P0 sharing P1 with another P0")
     head = (f"<th class=\"left\">#</th><th class=\"left\">Type</th>"
             f"<th class=\"left\">M5 retest</th>"
             f"<th class=\"left\" title=\"Distinct M5 prices merged into this trade, "
@@ -1545,12 +1950,13 @@ the box is checked.">Trade management</span>
             f"(m5_p0_spike). Otherwise, one tick beyond the live same-side M5 breakout-candle "
             f"extreme (m5_thrust); +/-{DYNAMIC_STOP_RADIUS_PTS:g}pt level search. "
             f"No trade if neither qualifies\">Stop</th>"
-            f"<th title=\"Newest eligible opposite M5 P0 sharing P1 with another P0; "
+            f"<th title=\"{target_col_title}; "
             f"no trade if none qualifies\">Target</th>"
             f"<th title=\"Reward:risk on offer for THIS trade's own bracket at entry "
             f"(target pts / stop pts) -- fixed once entry/stop/target are picked, independent "
-            f"of whether the trade goes on to win or lose. No trade if below "
-            f"{args.min_r:g}\">R</th>"
+            f"of whether the trade goes on to win or lose. Below {args.min_r:g} the trade is "
+            f"still taken and shown, tagged r_below_min and excluded from the headline stats "
+            f"by default\">R</th>"
             f"<th>Outcome</th><th class=\"left\">Exit time</th><th>Exit px</th>"
             f"<th title=\"Realized profit/loss in points (signed): +target pts on a win, "
             f"-stop pts on a loss\">PnL</th>"
@@ -1566,7 +1972,7 @@ the box is checked.">Trade management</span>
 </head><body>
 <h1>M5-native SS Confl. &ge; {args.ss_confl_min} strategy report{title_suffix}</h1>
 {summary_html}
-{filter_panel}
+{filter_panel.replace("__MIN_R__", f"{args.min_r:g}")}
 <div class="table-wrap"><table id="lvl-table">
 <thead><tr>{head}</tr></thead>
 <tbody>
@@ -1613,6 +2019,8 @@ tr.lvl-row.dyn-hidden, tr.chart-row.dyn-hidden { display:none !important; }
    second column beside it. */
 .chart-row-2col.chart-row-solo { grid-template-columns: 1fr; }
 .mgmt-tag-badge { background:#0e3a4a; color:#67e8f9; }
+.liq-tag-badge { background:#3f1d2e; color:#fda4af; }
+.swerve-tag-badge { background:#1e3a2f; color:#86efac; }
 </style>
 """
 JS = SR.JS + """
@@ -1706,8 +2114,61 @@ if __name__ == "__main__":
                         help=f"M5 price radius for SS qualification, clustering and entry "
                              f"selection (default {M5_CONFLUENCE_N_POINTS_DEFAULT}pt).")
     parser.add_argument("--min-r", type=float, default=MIN_R_DEFAULT,
-                        help=f"Minimum reward:risk (target pts / stop pts) required to take "
-                             f"the trade at all (default {MIN_R_DEFAULT}).")
+                        help=f"Reward:risk (target pts / stop pts) below which a trade is "
+                             f"TAGGED 'r_below_min' (default {MIN_R_DEFAULT}). The trade is "
+                             f"still taken, charted and resolved; the report's dynamic filter "
+                             f"excludes those rows from the headline stats by default.")
+    parser.add_argument("--target-mode", choices=("consolidation", "opposite-m5"),
+                        default=TARGET_MODE_DEFAULT,
+                        help="consolidation (default): target the nearest PREVIOUS "
+                             "consolidation area -- an untested opposite-type M5 P0 inside it "
+                             "if there is one, else the area's near edge (low for a long, high "
+                             "for a short). opposite-m5: the original rule, the newest live "
+                             "opposite-type M5 level whose P1 broke >=2 same-type P0s.")
+    parser.add_argument("--consol-min-bars", type=int, default=CONSOL_MIN_BARS_DEFAULT,
+                        help=f"Minimum M5 bars in a consolidation area (default "
+                             f"{CONSOL_MIN_BARS_DEFAULT} = 30 minutes).")
+    parser.add_argument("--consol-max-height", type=float, default=CONSOL_MAX_HEIGHT_DEFAULT,
+                        help=f"Tallest price band a consolidation area may span, in points "
+                             f"(default {CONSOL_MAX_HEIGHT_DEFAULT:g}).")
+    parser.add_argument("--consol-max-er", type=float, default=CONSOL_MAX_ER_DEFAULT,
+                        help=f"Efficiency-ratio ceiling for a consolidation area -- above this "
+                             f"the run is a trend, not congestion (default "
+                             f"{CONSOL_MAX_ER_DEFAULT:g}, lxpb.py's own ER_CONSOLIDATION_MAX).")
+    parser.add_argument("--swerve", action=argparse.BooleanOptionalAction, default=True,
+                        help="Move the entry past a confirmed swing sitting on it (see the "
+                             "SWERVED section). ON by default.")
+    parser.add_argument("--swerve-tol-pts", type=float, default=SWERVE_TOL_PTS_DEFAULT,
+                        help=f"How close (points) a confirmed swing low/high has to be to the "
+                             f"planned entry to trigger the move (default "
+                             f"{SWERVE_TOL_PTS_DEFAULT:g}).")
+    parser.add_argument("--swerve-lookback-hours", type=float,
+                        default=SWERVE_LOOKBACK_HOURS_DEFAULT,
+                        help=f"Cap on how far back before the retest swings are looked for "
+                             f"(default {SWERVE_LOOKBACK_HOURS_DEFAULT:g}h). The search starts "
+                             f"at the level's own P1 breakout bar, so this only binds on "
+                             f"levels that waited longer than that to be retested.")
+    parser.add_argument("--swerve-max-move-pts", type=float, default=SWERVE_MAX_MOVE_PTS_DEFAULT,
+                        help=f"Furthest a swerved entry may be moved from the planned one "
+                             f"(default {SWERVE_MAX_MOVE_PTS_DEFAULT:g}pt).")
+    parser.add_argument("--swerve-swing-k", type=int, default=SWERVE_SWING_K_DEFAULT,
+                        help=f"Bars required on each side of a swing pivot (default "
+                             f"{SWERVE_SWING_K_DEFAULT}).")
+    parser.add_argument("--liquidity-gate", action=argparse.BooleanOptionalAction, default=True,
+                        help="Tag trades whose entry landed in a measurably illiquid tape "
+                             "(news/thin book -- see liquidity.py). ON by default.")
+    parser.add_argument("--liq-window-minutes", type=float, default=LIQ_WINDOW_MINUTES_DEFAULT,
+                        help=f"Tape window measured before each fill (default "
+                             f"{LIQ_WINDOW_MINUTES_DEFAULT:g} min).")
+    parser.add_argument("--liq-wide-spread-share", type=float,
+                        default=LIQ_WIDE_SPREAD_SHARE_DEFAULT,
+                        help=f"Share of quotes wider than one tick at or above which the tape "
+                             f"counts as illiquid (default {LIQ_WIDE_SPREAD_SHARE_DEFAULT:g}).")
+    parser.add_argument("--eod-flat", action=argparse.BooleanOptionalAction, default=True,
+                        help="End-of-day flat (trade_management.py rule 3): close any open "
+                             "position before 12:45 PT and take no entry from then until the "
+                             "Globex reopen. ON by default, and applied to the baseline "
+                             "resolution as well as the managed one.")
     parser.add_argument("--max-alt-fill-hours", type=float, default=MAX_ALT_FILL_HOURS_DEFAULT,
                         help="Fill-window duration from the cluster's own M5 retest candle "
                              f"start (default {MAX_ALT_FILL_HOURS_DEFAULT:g}h).")
