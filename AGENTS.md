@@ -119,23 +119,35 @@ entry/stop/target into raw tick terms (`analyze_breakout_exits_1min.py`,
 price**. Jul–Aug reports sit in the U26 segment (delta 0.00) and were
 unaffected, which is why this hid for so long.
 
-Fixed (2026-09) by `render_labels_report._vintage_deltas()`: it *measures*
-the per-segment shift between `OFFSET_CALIB_H1` (the export the constants
-were calibrated against) and `DISPLAY_H1_PATHS` (what is actually rendered),
-and adds it in `_offset_for_ts`. Same-vintage exports measure 0.00, so it is
-a no-op until an export vintage actually changes. It **raises** if the
-difference is not a dominant constant, so a mismatched/unadjusted file can
-never again silently corrupt prices.
+First patched (2026-09) by a `_vintage_deltas()` correction that measured the
+shift between the calibration export and the displayed one and added it to the
+constants. **That whole approach is gone as of 2026-09-10.** A hardcoded
+offset can only ever be right for the one export vintage it was measured
+against, and the delta existed solely to patch that; both were removed
+together. `_offset_for_ts` now returns a value **measured at load** by
+`render_labels_report._measure_scid_offset`: the mode of (TradingView close −
+raw `.scid` close) per contract, restricted by `_front_month_start` to the
+span where that contract was genuinely front month. It **raises** if the
+difference is not a dominant constant, so a mismatched file can never silently
+corrupt prices. Do not reintroduce `TV_GROUND_TRUTH_OFFSETS` as a price
+source — only `B26`'s roll TIMING rule is still used.
 
-Rules when adding a new TradingView H1 export:
-- Add it to `render_labels_report.DISPLAY_H1_PATHS` (oldest first); that is
-  the single source of truth — `analyze_breakout_exits.DATA_PATHS` and
-  `load_merged_h1()` both derive from it.
-- **Never merge exports of different vintages.** Verify a new export against
-  the existing ones first: the per-segment close difference must be a
-  constant 0.00. (`1jan2026`, `24aug`, `1sep`, `2sep` are all one vintage;
-  `es-h1-2015-14aug2026.csv` and `data/es-h1-continuous-backadjusted.csv`
-  are the older one.)
+Restricting to the front-month span is load-bearing, not a detail: a quarterly
+`.scid` file holds the contract's whole traded life, and it trades thinly at
+its own calendar-spread distance for months before going front. Measured over
+EPH26's whole file the offset agrees on 60% of bars; over its front-month span
+alone, 99.8%.
+
+Rules when adding a new TradingView export:
+- Add it to `render_labels_report.DISPLAY_H1_PATHS` or `DISPLAY_M5_PATHS`
+  (oldest first); those are the single source of truth —
+  `analyze_breakout_exits.DATA_PATHS` and `load_merged_h1()` both derive from
+  the H1 list.
+- **Never merge exports of different vintages.** `_assert_one_vintage` now
+  checks this automatically on every overlap and raises, rather than leaving
+  it to you to verify by hand. (`1jan2026`, `24aug`, `1sep`, `2sep` and all
+  the `*5_e8128.csv` M5 exports are one vintage; `es-h1-2015-14aug2026.csv`
+  and `data/es-h1-continuous-backadjusted.csv` are the older one.)
 - Sanity check after any data change: reconstruct an H1 bar from `.scid` and
   compare. **open and close must match 100% exactly**; high/low legitimately
   differ by up to one tick (0.25) because the raw Sierra tick feed includes
@@ -196,17 +208,15 @@ LLPB levels existed and all passed the cutoff (7569.25, 7569.50, 7576.00,
 breakout→retest gap exceeds 7 days for **~17%** of Jul–Aug trades and **~15.5%**
 of full-year trades (median 0.75 d, max 235 d).
 
-Fixed by deleting `M5_MAX_SPAN_DAYS` entirely. The window is now bounded only by
-the contract segment, and the cost guard it was standing in for is gone anyway:
-M5 bars come from `lxpb_levels_cache.m5_bars_for_contract`, which builds the
-whole contract's M5 OHLC once and caches it (first call ~6 s, then ~0.16 s —
-*faster* than the old clamped path). When the breakout genuinely predates the
-contract segment the title now says so (`breakout_out_of_reach`) instead of
+Fixed by deleting `M5_MAX_SPAN_DAYS` entirely. M5 bars come from
+`lxpb_levels_cache.m5_bars_continuous()`, one continuous series spanning every
+rollover, so the window is now bounded by nothing at all — the per-contract
+clamp went too (2026-09-10). When the breakout genuinely predates the M5
+export's own coverage the title says so (`breakout_out_of_reach`) instead of
 silently claiming there were no levels.
 
 **Rule:** never bound an LXPB level window by a fixed lookback. A level's
-lifetime is unbounded — clamp only to the contract segment, or better, query
-the ledger.
+lifetime is unbounded — query the ledger.
 
 ## LXPB level ledger cache (`lxpb-v2/lxpb_levels_cache.py`)
 
@@ -225,13 +235,18 @@ consumed exactly at T is not live at T; `stage` is `broken` if
 
 ```python
 import lxpb_levels_cache as LC
-lv  = LC.h1_levels()                       # or LC.m5_levels(seg_idx) / LC.m5_levels_for_ts(ts)
+lv  = LC.h1_levels()                       # or LC.m5_levels() — one ledger per
+                                           # timeframe, spanning every rollover
 live = LC.levels_live_as_of(lv, ts, type_="LLPB")   # DataFrame + `stage` column
 sig  = LC.retests(lv)                      # the trade population
-bars = LC.m5_bars_for_contract(seg_idx)    # whole-contract M5 OHLC, cached
+bars = LC.m5_bars_continuous()             # continuous M5 OHLC, cached
 ```
 
-CLI: `python lxpb_levels_cache.py --build-h1 --build-m5 all --stats`.
+Neither loader takes a contract or `seg_idx` — see "TradingView continuous
+series only" in `lxpb-v2/CLAUDE.md`. `m5_levels_for_ts(ts)` still exists but
+ignores `ts`; there is only one M5 ledger now.
+
+CLI: `python lxpb_levels_cache.py --build-h1 --build-m5 --stats`.
 Cache lives in `lxpb-v2/data/levels_cache/`.
 
 Two things about how it is built matter:
