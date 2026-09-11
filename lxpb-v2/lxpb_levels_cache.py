@@ -360,10 +360,23 @@ class _LedgerObserver:
             if row is not None:
                 row["is_swing"] = bool(lv["is_swing"])
 
-    def observe(self, state, bar_time, gated_dropped=()):
-        """Record everything that happened to levels on the bar just processed."""
-        lv0, lv1, retests = state["touch_lv0"], state["touch_lv1"], state["retests"]
-        gated_by_key = {self._key(lv): lv for lv in gated_dropped}
+    def observe(self, state, bar_time, gated_dropped=(), consumed_early=(),
+                discarded_no_close=(), broke_out_promoted=()):
+        """Record everything that happened to levels on the bar just processed.
+
+        PERF (vector-optimization exploration, 2026-09): the four extra
+        params are the exact departures `lxpb.advance_one_bar` already
+        computed internally this call -- see its own docstring. Using them
+        directly replaces the old approach of snapshotting `list(touch_lv0)`/
+        `list(touch_lv1)` every bar and diffing against the previous
+        snapshot (`_departed`, O(len(list)) per call): that cost scales with
+        how many levels are PENDING (touch_lv0 alone reaches into the
+        thousands on a multi-year M5 history), not how many actually
+        happened this bar (almost always 0-4), which is what made the old
+        `observe` the dominant cost on M5. Output is unchanged -- every row
+        still gets exactly the same fields from exactly the same source
+        dicts, just handed over instead of re-derived by diffing."""
+        retests = state["retests"]
 
         # --- completed retests (phase 3): the level's terminal state ---
         retested_keys = set()
@@ -384,46 +397,35 @@ class _LedgerObserver:
             row["fate"] = FATE_RETESTED
         self._n_retests = len(retests)
 
-        # --- levels that left touch_lv1: retested above, else consumed early ---
-        for lv in _departed(self._prev_lv1, lv1):
-            k = self._key(lv)
-            if k in retested_keys:
-                continue
+        # --- levels that left touch_lv1 without retesting: consumed early ---
+        for lv in consumed_early:
             row = self._row_for(lv)
             self._apply_breakout(row, lv)
             row["death_time"] = bar_time
             row["fate"] = FATE_CONSUMED_EARLY
 
-        # --- levels that left touch_lv0: broke out, else discarded ---
-        # A level that broke out on this bar is re-added to touch_lv1 as a NEW
-        # dict, so identity is lost across that hop -- match on the key, and
-        # only against entries stamped with THIS bar's breakout_time.
-        broke_now = {}
-        for lv in lv1:
-            if lv["breakout_time"] == bar_time:
-                broke_now[self._key(lv)] = lv
-        for lv in _departed(self._prev_lv0, lv0):
-            k = self._key(lv)
+        # --- levels that left touch_lv0: broke out (still open, tracked in
+        # touch_lv1 now), gated (dead), or discarded (dead, no close) ---
+        for lv in broke_out_promoted:
             row = self._row_for(lv)
-            hit = broke_now.get(k)
-            gated = gated_by_key.get(k)
-            if hit is not None:
-                self._apply_breakout(row, hit)
-            elif gated is not None:
-                self._apply_breakout(row, gated)
-                row["death_time"] = bar_time
-                row["fate"] = FATE_GATED_DROPPED
-            else:
-                row["death_time"] = bar_time
-                row["fate"] = FATE_DISCARDED_NO_CLOSE
+            self._apply_breakout(row, lv)
+        for lv in gated_dropped:
+            row = self._row_for(lv)
+            self._apply_breakout(row, lv)
+            row["death_time"] = bar_time
+            row["fate"] = FATE_GATED_DROPPED
+        for lv in discarded_no_close:
+            row = self._row_for(lv)
+            row["death_time"] = bar_time
+            row["fate"] = FATE_DISCARDED_NO_CLOSE
 
-        # --- newly registered levels (phase 1) ---
-        for lv in lv0:
+        # --- newly registered levels (phase 1): lxpb.py's Phase 1 always
+        # appends exactly the bar's LHPB then LLPB to the END of touch_lv0,
+        # unconditionally, every bar -- so they're always its last two
+        # entries; no need to scan the whole (potentially huge) list.
+        for lv in state["touch_lv0"][-2:]:
             if lv["formation_time"] == bar_time:
                 self._row_for(lv)
-
-        self._prev_lv0 = list(lv0)
-        self._prev_lv1 = list(lv1)
 
     def finish(self, state):
         """Stamp the levels that were still alive when the data ran out."""
@@ -458,9 +460,11 @@ def build_ledger(bars, timeframe, contract="", resume=None):
         state, obs = resume
 
     for bar in bars.itertuples(index=True):
-        finalized_swing, gated_dropped = L.advance_one_bar(state, bar)
+        (finalized_swing, gated_dropped, consumed_early,
+         discarded_no_close, broke_out_promoted) = L.advance_one_bar(state, bar)
         obs.apply_finalized_swing(finalized_swing)
-        obs.observe(state, bar.Index, gated_dropped)
+        obs.observe(state, bar.Index, gated_dropped, consumed_early,
+                    discarded_no_close, broke_out_promoted)
 
     # Snapshot BEFORE finish(), which stamps terminal fates onto the rows of
     # levels that are merely still open -- those must stay open in the blob so a

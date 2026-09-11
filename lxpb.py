@@ -139,7 +139,15 @@ def new_state() -> dict:
 def advance_one_bar(state: dict, bar) -> tuple:
     """Advance LXPB state by one OHLC bar (namedtuple from itertuples(index=True)).
 
-    Returns (finalized_swing, gated_dropped):
+    Returns (finalized_swing, gated_dropped, consumed_early, discarded_no_close,
+    broke_out_promoted) -- the last three are PERF-ONLY additions (2026-09,
+    vector-optimization exploration branch): the exact touch_lv1/touch_lv0
+    departures this call already computes internally, handed back so an
+    outside observer (lxpb_levels_cache.py) doesn't have to rediscover them
+    by re-diffing the full lists every bar (O(len(list)) per bar, dominant
+    cost on a large M5 history). Purely additive -- no existing behavior,
+    rule, or return value changed; a caller that only unpacks the original
+    two values must update its unpacking, nothing else.
       finalized_swing -- the levels whose `is_swing` was just finalized
         this call (state['pending_swing'] as it stood before Phase 0
         cleared it). An external observer that snapshots a level's fields
@@ -229,6 +237,7 @@ def advance_one_bar(state: dict, bar) -> tuple:
 
     # Phase 3: check one-touch levels for retests (touched OR gapped over)
     keep = []
+    consumed_early = []
     for lv in state["touch_lv1"]:
         price = lv["price"]
         touched = bar.low <= price <= bar.high
@@ -260,8 +269,10 @@ def advance_one_bar(state: dict, bar) -> tuple:
                     "fta":          fta,
                     "stop_loss":    stop_loss,
                 })
-            # else: touched/gap-over but MIN_HOURS not elapsed — silently
-            # consume so the level doesn't re-fire on a later bar.
+            else:
+                # touched/gap-over but MIN_HOURS not elapsed — silently
+                # consume so the level doesn't re-fire on a later bar.
+                consumed_early.append(lv)
         else:
             keep.append(lv)
     state["touch_lv1"] = keep
@@ -278,6 +289,8 @@ def advance_one_bar(state: dict, bar) -> tuple:
     #   bar entirely on before-side → no interaction, keep
     keep = []
     gated_dropped = []
+    discarded_no_close = []
+    broke_out_promoted = []
     broke_out_ids = set()
     for lv in state["touch_lv0"]:
         price = lv["price"]
@@ -315,7 +328,7 @@ def advance_one_bar(state: dict, bar) -> tuple:
             er = _efficiency_ratio(lv.get("er_closes", ()))
             consolidating = er is None or er < ER_CONSOLIDATION_MAX
             if lv["is_spike"] or (lv["is_swing"] and consolidating):
-                state["touch_lv1"].append({
+                promoted = {
                     **lv,
                     "breakout_time":  bar.Index,
                     "breakout_open":  bar.open,
@@ -324,7 +337,9 @@ def advance_one_bar(state: dict, bar) -> tuple:
                     "breakout_close": bar.close,
                     "running_fta":    np.nan,
                     "er_score":       er,
-                })
+                }
+                state["touch_lv1"].append(promoted)
+                broke_out_promoted.append(promoted)
             else:
                 # Candidate gate failed: price closed through it, but it
                 # was never a real pre-breakout extreme. Not tracked
@@ -341,7 +356,9 @@ def advance_one_bar(state: dict, bar) -> tuple:
                     "breakout_close": bar.close,
                     "er_score":       er,
                 })
-        # else: bar range contained the level but close didn't pass — discard
+        else:
+            # bar range contained the level but close didn't pass — discard
+            discarded_no_close.append(lv)
     state["touch_lv0"] = keep
 
     # Every level still growing its own er_closes window gets this bar's
@@ -424,7 +441,7 @@ def advance_one_bar(state: dict, bar) -> tuple:
             else:  # LLPB
                 lv["running_fta"] = b_high if cur != cur or b_high > cur else cur
 
-    return finalized_swing, gated_dropped
+    return finalized_swing, gated_dropped, consumed_early, discarded_no_close, broke_out_promoted
 
 
 _INTERNAL_KEYS = {"running_fta", "_prev_high", "_prev_low", "er_closes"}
