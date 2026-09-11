@@ -52,10 +52,12 @@ the target are ALL M5 LXPB structure:
      low for a long) -- render_ss_confl_finetune_report.dynamic_stop,
      unchanged.
 
-  5. TARGET = THE NEAREST PREVIOUS CONSOLIDATION AREA (`_pick_target`,
-     m5_structure.py). Exit where the market last spent real time: the
-     nearest completed congestion area on the favourable side, 1..20 points
-     from the fill. If that area still holds an UNTESTED opposite-type M5
+  5. TARGET = THE NEAREST CONSOLIDATION AREA BUILT BETWEEN THIS LEVEL'S
+     OWN P1 AND P2 (`_pick_target`, m5_structure.py). Exit where the market
+     last spent real time on its way away from this level: the nearest
+     congestion area on the favourable side, 1..20 points from the fill,
+     lying wholly after the level's breakout candle and wholly before its
+     retest bar. If that area still holds an UNTESTED opposite-type M5
      P0 -- one whose own price sits inside the area's band and that has
      never been retested -- that P0's own price is the target (src tag
      consol_p0); otherwise the target is the
@@ -157,7 +159,7 @@ MAX_DYNAMIC_TARGET_PTS = SF.MAX_DYNAMIC_TARGET_PTS
 DYNAMIC_STOP_RADIUS_PTS = SF.DYNAMIC_STOP_RADIUS_PTS
 MAX_ALT_FILL_HOURS_DEFAULT = SF.MAX_ALT_FILL_HOURS_DEFAULT
 MIN_R_DEFAULT = 1.0
-TARGET_MODE_DEFAULT = "consolidation"
+TARGET_MODE_DEFAULT = "both"   # both target rules on by default (see _pick_targets)
 CONSOL_MIN_BARS_DEFAULT = MS.MIN_BARS_DEFAULT
 CONSOL_MAX_HEIGHT_DEFAULT = MS.MAX_HEIGHT_PTS_DEFAULT
 CONSOL_MAX_ER_DEFAULT = MS.MAX_ER_DEFAULT
@@ -443,8 +445,14 @@ def _dynamic_stop_m5(level_type, alt_price, is_long, entry_level_info,
 # with no notion of whether anything is actually resting there now.
 #
 # The consolidation rule instead exits where the market last spent real
-# time: the nearest PREVIOUS congestion area in the trade's own favourable
-# direction (see m5_structure.consolidation_areas for the definition). If
+# time: the nearest congestion area in the trade's own favourable
+# direction (see m5_structure.consolidation_areas for the definition),
+# restricted to areas built BETWEEN THIS LEVEL'S OWN P1 AND P2 -- wholly
+# after the breakout candle and wholly before the retest bar. That is the
+# stall price actually made after breaking away from the level, and the
+# retest is the market turning back towards it; congestion from before P1
+# belongs to a move this level had no part in, and congestion after P2 is
+# not yet there to aim at. If
 # that area still holds an UNTESTED opposite-type M5 P0 -- one whose own
 # price sits inside the area's band and that has never been retested --
 # that P0's own price is the target (src tag consol_p0). Otherwise the target
@@ -453,21 +461,106 @@ def _dynamic_stop_m5(level_type, alt_price, is_long, entry_level_info,
 # side it may never get through. The same 1..20pt band bounds both.
 # --------------------------------------------------------------------------
 
-def _pick_target(m5_ledger, level_type, price, is_long, touch_time, args):
-    """(target_price, target_info) for one trade under args.target_mode, or
-    (None, None) for no qualifying target (which is still a real "no trade"
-    -- this strategy has no fixed fallback bracket).
+TARGET_MODES = ("consolidation", "opposite-m5")
+
+
+def _window_bounds(touch_time, p1_time, p2_time):
+    """(after, cutoff) -- the level's own P1..P2 window, as the exclusive
+    instants a target's own structure has to sit between. The window ENDS at
+    P2, not at the fill: entry can be hours of fill-window searching after
+    the retest, and structure built in those hours is not what the level
+    broke away from. `touch_time` still bounds it for the raw-retest caller,
+    where the touch IS the P2."""
+    end = touch_time if p2_time is None else min(pd.Timestamp(p2_time), pd.Timestamp(touch_time))
+    return (None if p1_time is None else pd.Timestamp(p1_time)), MS.entry_cutoff(end)
+
+
+def _opposite_m5_target(m5_ledger, level_type, price, is_long, touch_time,
+                        p1_time=None, p2_time=None):
+    """(target_price, target_info) under the OPPOSITE-M5 rule, or
+    (None, None).
+
+    The original rule (SF.dynamic_target, left unchanged there because the
+    H1 report still uses it): the most recently FORMED live opposite-type M5
+    level, 1..20pt away on the favourable side, whose own P1 candle broke at
+    least two distinct same-type P0s. "Live" is _live_m5_before_entry's own
+    query -- broken out on a completed candle before the entry bar, never
+    retested since.
+
+    Re-implemented here rather than called, for one reason: this report adds
+    the SAME P1..P2 window the consolidation rule uses. The opposite level's
+    own P0 must have formed strictly after this level's P1 and strictly
+    before its P2, so both target rules answer the same question -- what did
+    the market build while this level was waiting to be retested -- and
+    differ only in what they look for there."""
+    opposite_type = "LLPB" if level_type == "LHPB" else "LHPB"
+    cand = SF._live_m5_before_entry(m5_ledger, opposite_type, touch_time,
+                                    min_breakout_levels=2)
+    if cand.empty:
+        return None, None
+    after, cutoff = _window_bounds(touch_time, p1_time, p2_time)
+    formed = pd.to_datetime(cand["formation_time"], utc=True)
+    in_window = formed < cutoff
+    if after is not None:
+        in_window &= formed > pd.Timestamp(after)
+    cand = cand[in_window]
+    if cand.empty:
+        return None, None
+    distance = (cand["price"] - price) if is_long else (price - cand["price"])
+    cand = cand[(distance >= MIN_DYNAMIC_TARGET_PTS) & (distance <= MAX_DYNAMIC_TARGET_PTS)]
+    if cand.empty:
+        return None, None
+    best = cand.loc[cand["formation_time"].idxmax()]
+    return float(best["price"]), {"src": "m5_opposite", "level": best.to_dict(), "area": None}
+
+
+def _pick_targets(m5_ledger, level_type, price, is_long, touch_time, args,
+                  p1_time=None, p2_time=None):
+    """{mode: (target_price, target_info)} for EVERY target rule that
+    produces one for this trade -- keys from TARGET_MODES; a missing key
+    means that rule found nothing.
+
+    BOTH rules are always computed, whatever --target-mode says, because each
+    one is a live in-browser toggle in the report: switching a rule off can
+    demote a trade to a no-trade, and switching it back on has to restore
+    that trade's whole bracket with no Python regen. --target-mode only picks
+    which rules are ON BY DEFAULT in the rendered page.
+
+    With both rules on and both producing a target, the FARTHEST target wins
+    -- the rule asking for more room. See _active_mode."""
+    out = {}
+    px, info = _opposite_m5_target(m5_ledger, level_type, price, is_long,
+                                   touch_time, p1_time, p2_time)
+    if px is not None:
+        out["opposite-m5"] = (px, info)
+    px, info = _consolidation_target(m5_ledger, level_type, price, is_long,
+                                     touch_time, args, p1_time, p2_time)
+    if px is not None:
+        out["consolidation"] = (px, info)
+    return out
+
+
+def _active_mode(targets, price, enabled=TARGET_MODES):
+    """Which of `targets` (a _pick_targets dict) a row actually trades under
+    the given set of ENABLED rules: the one whose target sits FARTHEST from
+    the fill, or None when no enabled rule found one (a real no-trade)."""
+    live = {m: t for m, t in targets.items() if m in enabled}
+    if not live:
+        return None
+    return max(live, key=lambda m: abs(live[m][0] - price))
+
+
+def _consolidation_target(m5_ledger, level_type, price, is_long, touch_time, args,
+                          p1_time=None, p2_time=None):
+    """(target_price, target_info) under the CONSOLIDATION-AREA rule, or
+    (None, None). `p1_time`/`p2_time` are the subject level's own breakout
+    and retest -- the window an area has to fall inside (see the section
+    comment above). They are optional only so a caller without a level of its
+    own can omit the bound; every caller here passes them.
 
     target_info carries 'src' plus whichever of 'area'/'level' that source
     used, so the row and the chart can both show WHERE the target came
     from."""
-    if args.target_mode == "opposite-m5":
-        target_price, target_row = SF.dynamic_target(m5_ledger, level_type, price,
-                                                     is_long, touch_time)
-        if target_price is None:
-            return None, None
-        return target_price, {"src": "m5_opposite", "level": target_row.to_dict(), "area": None}
-
     opposite_type = "LLPB" if level_type == "LHPB" else "LHPB"
     # "Untested still" == broken out and never retested since, as of the last
     # completed M5 candle before entry -- exactly _live_m5_before_entry's own
@@ -476,9 +569,10 @@ def _pick_target(m5_ledger, level_type, price, is_long, touch_time, args):
     # is the evidence that the price matters).
     live_opposite = SF._live_m5_before_entry(m5_ledger, opposite_type, touch_time)
     areas = consolidation_areas_for(args)
-    return MS.consolidation_target(areas, live_opposite, price, is_long,
-                                   MS.entry_cutoff(touch_time),
-                                   MIN_DYNAMIC_TARGET_PTS, MAX_DYNAMIC_TARGET_PTS)
+    after, cutoff = _window_bounds(touch_time, p1_time, p2_time)
+    return MS.consolidation_target(areas, live_opposite, price, is_long, cutoff,
+                                   MIN_DYNAMIC_TARGET_PTS, MAX_DYNAMIC_TARGET_PTS,
+                                   after=after)
 
 
 def consolidation_areas_for(args):
@@ -661,14 +755,9 @@ def process_cluster(cluster, args):
         if blocked:
             result["dyn_tags"].append("low_liquidity")
 
-    target_price, target_info = _pick_target(m5_ledger, level_type, fill_price, is_long,
-                                             touch_time_alt, args)
-    if target_price is None:
-        result["fail_reason"] = ("no_consol_target" if args.target_mode == "consolidation"
-                                 else "no_m5_target")
-        return result
-    target_pts = abs(target_price - fill_price)
-
+    # The STOP is target-rule-agnostic, so it is resolved once, before any
+    # target: a trade with no qualifying stop is not a trade under either
+    # rule, and there is nothing for the browser toggles to switch between.
     entry_level_info = _entry_level_row(cluster, conf)
     stop_price, stop_row, stop_source = _dynamic_stop_m5(
         level_type, fill_price, is_long, entry_level_info,
@@ -680,24 +769,39 @@ def process_cluster(cluster, args):
     if stop_pts <= 0:
         result["fail_reason"] = "degenerate_stop"
         return result
-
-    r_multiple = target_pts / stop_pts
-    result["target_price"] = target_price
-    result["target_pts"] = target_pts
-    result["target_info"] = target_info
     result["stop_price"] = stop_price
     result["stop_pts"] = stop_pts
     result["stop_m5_level"] = stop_row.to_dict()
     result["stop_source"] = stop_source
-    result["r_multiple"] = r_multiple
-    # A sub-min-R bracket is no longer skipped outright: the target is only
-    # knowable just before entry, and seeing what those trades actually did
-    # is the point of measuring them. They are TAGGED instead, and the
-    # report's own dynamic filter drops them from the headline stats by
-    # default -- untick it to fold them back in.
-    if r_multiple < args.min_r:
-        result["dyn_tags"].append("r_below_min")
 
+    targets = _pick_targets(m5_ledger, level_type, fill_price, is_long, touch_time_alt,
+                            args, p1_time=row_d["breakout_time"],
+                            p2_time=row_d["retest_time"])
+    active = _active_mode(targets, fill_price, enabled=args.default_target_modes)
+    if active is None:
+        result["fail_reason"] = "no_target"
+        return result
+    # EVERY rule that found a target is resolved, not just the active one:
+    # the report's target-rule checkboxes swap a row between them live (see
+    # _pick_targets), which needs each rule's own outcome precomputed.
+    result["modes"] = {mode: _resolve_target_mode(t_price, t_info, fill_price, stop_pts,
+                                                  level_type, is_long, touch_time_alt,
+                                                  bars, m5_ledger, args)
+                       for mode, (t_price, t_info) in targets.items()}
+    result["active_mode"] = active
+    result.update({"filled": True, "touch_time_alt": touch_time_alt})
+    _apply_mode(result, active)
+    return result
+
+
+def _resolve_target_mode(target_price, target_info, fill_price, stop_pts, level_type,
+                         is_long, touch_time_alt, bars, m5_ledger, args):
+    """One target rule's whole outcome for one trade: its bracket, its
+    baseline resolution, its managed resolution, and the dynamic-filter tags
+    that depend on the target (r_below_min, eod_flat -- both differ per rule,
+    unlike the row-level tags in res['dyn_tags'])."""
+    target_pts = abs(target_price - fill_price)
+    r_multiple = target_pts / stop_pts
     trade = {"type": level_type, "entry": fill_price, "is_long": is_long,
              "retest_time": touch_time_alt.tz_convert("UTC").tz_localize(None),
              "stop_dist": stop_pts, "target_dist": target_pts}
@@ -705,13 +809,38 @@ def process_cluster(cluster, args):
                 else SR.resolve_trades([trade], {0: bars}, stop=None, target=None)[0])
     managed = TM.resolve_managed_trade(trade, bars, level_type, ledger=m5_ledger,
                                        eod=args.eod_flat)
+    tags = []
+    # A sub-min-R bracket is not skipped outright: the target is only knowable
+    # just before entry, and seeing what those trades actually did is the
+    # point of measuring them. They are TAGGED instead, and the report's own
+    # dynamic filter drops them from the headline stats by default -- untick
+    # it to fold them back in.
+    if r_multiple < args.min_r:
+        tags.append("r_below_min")
     if resolved.get("outcome") == "eod_flat":
-        result["dyn_tags"].append("eod_flat")
+        tags.append("eod_flat")
+    return {"target_price": target_price, "target_pts": target_pts,
+            "target_info": target_info, "r_multiple": r_multiple,
+            "resolved": resolved, "mgmt": _mgmt_summary(resolved, managed, stop_pts),
+            "dyn_tags": tags}
+
+
+def _apply_mode(result, mode):
+    """Copy one target rule's outcome (result['modes'][mode]) into the row's
+    own top-level keys, so every consumer -- the charts, the server-side
+    stats, _render_row -- reads the ACTIVE rule without knowing there is more
+    than one. The per-rule dicts stay in result['modes'] for the browser."""
+    m = result["modes"][mode]
+    resolved = m["resolved"]
+    result["active_mode"] = mode
     result.update({
-        "filled": True, "touch_time_alt": touch_time_alt, "resolved": resolved,
-        "favorable_pts": resolved.get("favorable_pts"), "adverse_pts": resolved.get("adverse_pts"),
-        "giveback_pts": resolved.get("giveback_pts"), "entry_gapped": resolved.get("entry_gapped", False),
-        "mgmt": _mgmt_summary(resolved, managed, stop_pts),
+        "target_price": m["target_price"], "target_pts": m["target_pts"],
+        "target_info": m["target_info"], "r_multiple": m["r_multiple"],
+        "resolved": resolved, "mgmt": m["mgmt"],
+        "favorable_pts": resolved.get("favorable_pts"),
+        "adverse_pts": resolved.get("adverse_pts"),
+        "giveback_pts": resolved.get("giveback_pts"),
+        "entry_gapped": resolved.get("entry_gapped", False),
     })
     return result
 
@@ -948,11 +1077,11 @@ def _annotate_target_zone(chart_m5, res):
     than an arbitrary price. No-op for --target-mode opposite-m5, which has
     no zone.
 
-    Price lines, not markers on the area's own bars: the pane is anchored on
-    the trade, and the area that supplies a target is essentially always
-    older than the pane's own first bar (0 of 110 trades over Jul-Aug 2026
-    had one inside it). Each line's title carries the area's own start time
-    and length, which is the part a reviewer needs."""
+    Price lines, not markers on the area's own bars: the area now falls
+    inside the level's own P1..P2 span, but the pane is anchored on the
+    trade and compressed, so the area's bars may still be missing from it.
+    Each line's title carries the area's own start time and length, which
+    is the part a reviewer needs."""
     info = res.get("target_info") or {}
     area = info.get("area")
     if chart_m5 is None or not area:
@@ -1274,9 +1403,12 @@ def _resolve_raw_retest(m5_ledger, row_d, args):
     if touch_time.tzinfo is None:
         touch_time = touch_time.tz_localize("UTC")
 
-    target_price, _ = _pick_target(m5_ledger, level_type, price, is_long, touch_time, args)
-    if target_price is None:
+    targets = _pick_targets(m5_ledger, level_type, price, is_long, touch_time, args,
+                            p1_time=row_d["breakout_time"], p2_time=touch_time)
+    mode = _active_mode(targets, price, enabled=args.default_target_modes)
+    if mode is None:
         return None, None
+    target_price = targets[mode][0]
     stop_price, _, _ = _dynamic_stop_m5(
         level_type, price, is_long, row_d.to_dict(), m5_ledger, touch_time)
     if stop_price is None:
@@ -1405,9 +1537,8 @@ def _fail_reason_label(reason):
     return {
         "unfilled_within_window": "UNFILLED (entry never reached)",
         "eod_entry_blocked": "NO TRADE (entry blocked -- end of day)",
-        "no_consol_target": "NO TRADE (no qualifying previous consolidation target)",
+        "no_target": "NO TRADE (no target under either rule)",
         "no_tick_data_after_fill": "NO DATA after fill",
-        "no_m5_target": "NO TRADE (no qualifying M5 opposite target)",
         "no_m5_stop": "NO TRADE (no qualifying M5 breakout-candle stop)",
         "degenerate_stop": "NO TRADE (degenerate stop)",
     }.get(reason, reason.replace("_", " "))
@@ -1422,7 +1553,7 @@ def _target_title(info):
         return (f"Newest eligible M5 {level['type']} P0: "
                 f"{R._to_pt_str(level['formation_time'])}; shared P1: "
                 f"{R._to_pt_str(level['breakout_time'])}")
-    where = (f"Previous consolidation area {R._to_pt_str(area['start_time'])} &rarr; "
+    where = (f"Consolidation area (P1&hellip;P2) {R._to_pt_str(area['start_time'])} &rarr; "
              f"{R._to_pt_str(area['end_time'])} ({area['n_bars']} M5 bars, "
              f"{area['low']:.2f}-{area['high']:.2f}, ER {area['er']:.2f})")
     if info.get("src") == "consol_p0":
@@ -1631,7 +1762,10 @@ def _render_row(idx, res, chart_stacks, fps):
 
         row_key = f"{level_type}_{res['alt_price']:.2f}_{entry_touch_str}".replace(" ", "_")
 
-        dyn_tags = res.get("dyn_tags") or []
+        dyn_tags = list(res.get("dyn_tags") or [])
+        active_mode = res.get("active_mode")
+        if active_mode:
+            dyn_tags += res["modes"][active_mode]["dyn_tags"]
         dyn_tags_attr = " ".join(dyn_tags)
         dyn_badges = ""
         if "p1_reacted" in dyn_tags:
@@ -1775,7 +1909,9 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
         if args.pegged_entry else
         "Entry is a plain static limit order (no chasing).")
     target_lead_sentence = (
-        f"TARGET = the nearest PREVIOUS consolidation area on the favourable side "
+        f"TARGET = the nearest consolidation area on the favourable side that was built "
+        f"BETWEEN THIS LEVEL'S OWN P1 AND P2 -- wholly after its breakout candle and wholly "
+        f"before its retest bar "
         f"({MIN_DYNAMIC_TARGET_PTS:g}&ndash;{MAX_DYNAMIC_TARGET_PTS:g} points from the fill, "
         f"a run of &ge;{args.consol_min_bars} M5 bars inside a "
         f"&le;{args.consol_max_height:g}pt band with efficiency ratio &lt; "
@@ -1933,8 +2069,9 @@ the box is checked.">Trade management</span>
 """
 
     target_col_title = (
-        "The untested opposite-type M5 P0 still inside the nearest previous consolidation "
-        "area (consol_p0), else that area's near edge -- low for a long, high for a short "
+        "The untested opposite-type M5 P0 still inside the nearest consolidation area built "
+        "between this level's own P1 and P2 (consol_p0), else that area's near edge -- low for "
+        "a long, high for a short "
         "(consol_edge)" if args.target_mode == "consolidation" else
         "Newest eligible opposite M5 P0 sharing P1 with another P0")
     head = (f"<th class=\"left\">#</th><th class=\"left\">Type</th>"
@@ -2123,13 +2260,18 @@ if __name__ == "__main__":
                              f"TAGGED 'r_below_min' (default {MIN_R_DEFAULT}). The trade is "
                              f"still taken, charted and resolved; the report's dynamic filter "
                              f"excludes those rows from the headline stats by default.")
-    parser.add_argument("--target-mode", choices=("consolidation", "opposite-m5"),
+    parser.add_argument("--target-mode", choices=("both", "consolidation", "opposite-m5"),
                         default=TARGET_MODE_DEFAULT,
-                        help="consolidation (default): target the nearest PREVIOUS "
-                             "consolidation area -- an untested opposite-type M5 P0 inside it "
-                             "if there is one, else the area's near edge (low for a long, high "
-                             "for a short). opposite-m5: the original rule, the newest live "
-                             "opposite-type M5 level whose P1 broke >=2 same-type P0s.")
+                        help="Which target rule(s) are ON BY DEFAULT in the rendered page. "
+                             "Both rules are ALWAYS computed and both are live checkboxes in "
+                             "the report itself, so this only sets the starting state. "
+                             "both (default): whichever rule offers the FARTHER target wins "
+                             "per trade. consolidation: the nearest consolidation area built "
+                             "between this level's own P1 and P2 -- an untested opposite-type "
+                             "M5 P0 inside it if there is one, else the area's near edge (low "
+                             "for a long, high for a short). opposite-m5: the newest live "
+                             "opposite-type M5 level whose P1 broke >=2 same-type P0s and "
+                             "whose own P0 formed inside the same P1..P2 window.")
     parser.add_argument("--consol-min-bars", type=int, default=CONSOL_MIN_BARS_DEFAULT,
                         help=f"Minimum M5 bars in a consolidation area (default "
                              f"{CONSOL_MIN_BARS_DEFAULT} = 30 minutes).")
@@ -2197,6 +2339,8 @@ if __name__ == "__main__":
                              "at a time (default 1 = serial).")
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
+    args.default_target_modes = (TARGET_MODES if args.target_mode == "both"
+                                 else (args.target_mode,))
     args.output = args.output or os.path.join(
         _REPO_ROOT, "public", "reports", "ss_m5_confl2", "ss_m5_confl2_report.html"
     )
