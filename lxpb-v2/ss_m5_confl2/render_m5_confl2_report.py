@@ -53,7 +53,7 @@ the target are ALL M5 LXPB structure:
      unchanged.
 
   5. TARGET = THE NEAREST CONSOLIDATION AREA BUILT BETWEEN THIS LEVEL'S
-     OWN P1 AND P2 (`_pick_target`, m5_structure.py). Exit where the market
+     OWN P1 AND P2 (`_pick_targets`, this module). Exit where the market
      last spent real time on its way away from this level: the nearest
      congestion area on the favourable side, 1..20 points from the fill,
      lying wholly after the level's breakout candle and wholly before its
@@ -1075,7 +1075,7 @@ SWERVE_COLOR = "#86efac"        # the swing that moved the entry, and the planne
 
 def _annotate_target_zone(chart_m5, res):
     """Draw the consolidation area the target came from as two dashed price
-    lines (its high and its low) -- see _pick_target. The target price line
+    lines (its high and its low) -- see _pick_targets. The target price line
     itself is already drawn by build_m5_chart; these show the ZONE it sits
     in, which is what makes a consol_edge target readable as an edge rather
     than an arbitrary price. No-op for --target-mode opposite-m5, which has
@@ -1397,7 +1397,7 @@ def _resolve_raw_retest(m5_ledger, row_d, args):
     from a real trade's own resolution). Returns (None, None) if no
     qualifying target/stop exists or there's no tick data to check
     against, same 'no trade' cases process_cluster itself would hit.
-    _pick_target/_dynamic_stop_m5 still pick the SAME bracket a real trade
+    _pick_targets/_dynamic_stop_m5 still pick the SAME bracket a real trade
     on this P0 alone would have used (including this run's own
     --target-mode) -- only the touch-vs-fill distinction differs."""
     level_type = row_d["type"]
@@ -1549,7 +1549,7 @@ def _fail_reason_label(reason):
 
 
 def _target_title(info):
-    """Tooltip for the Target cell, per target source (see _pick_target)."""
+    """Tooltip for the Target cell, per target source (see _pick_targets)."""
     if not info:
         return "no target info"
     area, level = info.get("area"), info.get("level")

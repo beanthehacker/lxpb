@@ -25,37 +25,29 @@ so the report's in-browser mode toggle can switch between them live without
 a Python regen (`_active_mode` picks whichever enabled rule's target is
 farthest from the fill).
 
-## Known bug -- NOT fixed, will crash
+## Known bug -- fixed
 
-`_pick_target` (singular) was removed (only `_pick_targets` plural exists
-now), but **`_resolve_raw_retest` (~line 1406) still calls the old singular
-name**:
-
-```
-target_price, _ = _pick_target(m5_ledger, level_type, price, is_long, touch_time, args,
-                               p1_time=row_d["breakout_time"], p2_time=touch_time)
-```
-
-This is a dangling reference -- `NameError: name '_pick_target' is not
-defined` -- on whatever code path reaches `_resolve_raw_retest` (used for
-raw-retest resolution/stats, not the main `process_cluster` trade path,
-which is fine: it already correctly calls `_pick_targets(...)` then
-`_active_mode(targets, fill_price, enabled=args.default_target_modes)`
-around line 777-780 to collapse the dict to one target before use).
-
-**To resume:** grep for `_pick_target(` (singular) and either restore a
-thin singular wrapper (`_pick_target = lambda ...: ` picking one entry via
-`_active_mode`) or update the call site to use `_pick_targets` +
-`_active_mode` directly, matching `process_cluster`.
+This note originally flagged `_resolve_raw_retest` as still calling a
+dangling singular `_pick_target(...)`, which would have raised `NameError:
+name '_pick_target' is not defined`. That was true of the uncommitted tree
+this file was captured from, but not of what actually landed in this
+commit: `_resolve_raw_retest` already calls `_pick_targets(...)` then
+`_active_mode(targets, price, enabled=args.default_target_modes)`, same as
+`process_cluster`'s own trade path. A handful of docstrings/comments still
+named the old singular `_pick_target` in prose (no behavior effect); those
+are fixed too. Verified with a 20-row smoke test (`--max-rows 20`) that
+exercises `_resolve_raw_retest` via the `p1_reacted` reaction-cutoff scan
+without hitting the old name.
 
 ## Regenerated report file
 
 `public/reports/ss_m5_confl2/ss_m5_confl2_report.html` in this commit is
 much smaller than the last full regen (~3600 fewer lines) -- almost
 certainly a `--max-rows` smoke-test regen, not a full one (see repo memory:
-always smoke-test before a full regen, and this dangling-bug risk is
-exactly why). **Do not treat this HTML as current/authoritative** -- once
-the bug above is fixed, re-run a full regen.
+always smoke-test before a full regen). **Do not treat this HTML as
+current/authoritative** -- a full regen is still pending (tracked
+separately, alongside further target-rule and report-layout work already
+sitting on top of this one in the same working tree).
 
 ## Other unreconciled work sitting elsewhere (as of this branch's creation)
 
