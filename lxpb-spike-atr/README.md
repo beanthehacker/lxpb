@@ -174,10 +174,13 @@ Report-only: `--output`, `--title`, `--all-spikes`, `--n-ticks`,
 * **1-minute cache keys are index-based** (`f"{i:04d}_{retest_time}"`), so
   they are only unique *within one fixed trade list*. Any run with a
   different selection must pass its own `--cache` path.
-* **Don't mix H1 files.** `D:\lxpb\data\es-h1-continuous-backadjusted.csv`
-  differs from the `24aug-…` file by up to 5.75 pts in the overlap
-  (different back-adjustment). The `24aug-…` file is the default here so
-  results are apples-to-apples with `../lxpb-v2`'s exit reports.
+* **Don't mix H1 files.** Two back-adjustment vintages differ by up to 5.75
+  pts in their overlap, so merging them plants a step change no roll
+  explains. The `24aug-…` file is the default here, so results are
+  apples-to-apples with `../lxpb-v2`'s exit reports. The old
+  `es-h1-continuous-backadjusted.csv` is retired outright -- it spliced
+  resampled `.scid` bars onto a TradingView base; see "TradingView
+  continuous series only" in `../lxpb-v2/CLAUDE.md`.
 * **Exit resolution is look-ahead free.** `_pin_exact_exit` is always called
   with `not_before=touch_time`; see `../AGENTS.md` for the history of that
   bug. If a report ever shows an exit time at/before its entry, suspect a

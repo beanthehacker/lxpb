@@ -49,12 +49,18 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_HERE, ".."))
 sys.path.insert(0, _REPO_ROOT)
 import lxpb as L  # noqa: E402
+import es_h1_display  # noqa: E402
 
 TICK = 0.25
 CONFLUENCE_TICKS = 20
 PRIOR_TOUCH_TICKS = 4
 PRIOR_TOUCH_LOOKBACK_BARS = 24 * 365 * 2   # ~2 years of H1 bars
-H1_CSV = os.path.join(_REPO_ROOT, "data", "es-h1-continuous-backadjusted.csv")
+# H1 bars come from the TradingView continuous exports (es_h1_display), never
+# from a .scid-extended splice -- see "TradingView continuous series only" in
+# lxpb-v2/CLAUDE.md. Those exports start 2024-10-04, so PRIOR_TOUCH_LOOKBACK_BARS
+# is clipped by the data rather than by its own 2-year value for any window
+# before 2026-10; add an older export to es_h1_display.DISPLAY_H1_PATHS to widen
+# it. Previously this read data/es-h1-continuous-backadjusted.csv, now retired.
 WINDOW_START = pd.Timestamp("2026-05-28 00:00:00")
 WINDOW_END = pd.Timestamp("2026-08-17 21:00:00")   # end of ES_full_1s.csv coverage
 OUT_CSV = os.path.join(_HERE, "lxpb_fade_levels.csv")
@@ -101,8 +107,9 @@ def prior_touches(highs, lows, idx_by_time, formation_time, price, lookback_bars
 
 
 def main():
-    print(f"Loading H1 data from {H1_CSV} ...")
-    df = L.load_ohlc_data(H1_CSV)
+    print("Loading H1 data from the TradingView continuous exports "
+          f"({len(es_h1_display.DISPLAY_H1_PATHS)} file(s)) ...")
+    df = es_h1_display.load()
     print(f"  {len(df)} bars, {df.index.min()} -> {df.index.max()}")
 
     print("Running LXPB state machine with per-bar touch_lv1 snapshots ...")

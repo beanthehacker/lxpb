@@ -40,8 +40,8 @@ in JS_TEMPLATE (id/label/hint) plus its default rule in compute_hints's
 persistence, and CSV export/import are all driven off the FEATURES list.
 
 Usage:
-    python render_labels_report.py --data ../data/es-h1-continuous-backadjusted.csv --limit 300
-    python render_labels_report.py --data ../data/es-h1-continuous-backadjusted.csv --all --output all_labels.html
+    python render_labels_report.py --limit 300
+    python render_labels_report.py --all --output all_labels.html
 """
 import os
 import sys
@@ -58,6 +58,7 @@ for _p in (_REPO_ROOT, _DATA_DIR):
         sys.path.insert(0, _p)
 
 import lxpb as L  # noqa: E402
+import es_h1_display  # noqa: E402
 
 # Spike (and large-wick) detection is sourced from patterns-pure -- the
 # more rigorous/"source of truth" pattern library -- rather than
@@ -89,15 +90,15 @@ import build_es_h1_2026_backadjusted as B26  # noqa: E402
 sys.path.insert(0, r"D:\acheron\AcheronUtils")  # scidReader.py lives there
 from scidReader import get_scid_df  # noqa: E402
 
-# ../data/es-h1-continuous-backadjusted.csv is the whole-monorepo canonical, back-adjusted,
-# jump-free continuous ES H1 series (see data/build_es_h1_continuous.py at repo root),
-# used consistently by lxpb.py/lxpb-es-vol/label-review. It is built by taking the frozen,
-# internally-consistent TradingView back-adjusted export (data/es-h1-2015-14aug2026.csv) as
-# the historical base and extending it with fresh, real front-month .scid data (which
-# always carries a +0 offset as the current contract) -- so it stays accurate without ever
-# needing a fresh TradingView re-export (which is what caused the original drift bug: each
-# re-export recalculates ALL history relative to a new anchor date).
-DEFAULT_DATA = os.path.join(_REPO_ROOT, "data", "es-h1-continuous-backadjusted.csv")
+# H1 bars come from the TradingView continuous ES1! exports (es_h1_display) and
+# nothing else -- see "TradingView continuous series only" in lxpb-v2/CLAUDE.md.
+# `--data` still accepts an explicit CSV; None means the display series.
+#
+# The old default was ../data/es-h1-continuous-backadjusted.csv, a frozen
+# TradingView export extended with resampled front-month .scid bars. That is the
+# construction the convention now forbids -- two vendors' feeds joined at an
+# arbitrary date -- and it is retired along with its builder.
+DEFAULT_DATA = None
 DEFAULT_OUTPUT = os.path.join(_HERE, "lxpb_labels_report.html")
 
 BARS_BEFORE = 8     # H1 bars of context shown before Phase 0 (formation)
@@ -1350,7 +1351,7 @@ initRows();
 def render(data_path, output_path, title, n_ticks, tick_size, start=None, end=None,
            limit=300, order="desc", pad_seconds=PAD_SECONDS_DEFAULT,
            one_min_pad_minutes=ONE_MIN_PAD_MINUTES_DEFAULT, include_footprint=True):
-    h1_df = L.load_ohlc_data(data_path)
+    h1_df = es_h1_display.load() if data_path is None else L.load_ohlc_data(data_path)
     _touch_lv0, touch_lv1_df, retests_df = L.detect_lxpb_h1(h1_df)
 
     if start:
@@ -1401,7 +1402,9 @@ def render(data_path, output_path, title, n_ticks, tick_size, start=None, end=No
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate LXPB hand-labeling HTML report")
-    parser.add_argument("--data", default=DEFAULT_DATA, help="H1 OHLC CSV path")
+    parser.add_argument("--data", default=DEFAULT_DATA,
+                         help="H1 OHLC CSV path. Defaults to the TradingView "
+                              "continuous display series (es_h1_display).")
     parser.add_argument("--output", default=DEFAULT_OUTPUT, help="Output HTML path")
     parser.add_argument("--title", default="LXPB Hand-Labeling Report",
                          help="Report page title")
@@ -1428,7 +1431,7 @@ if __name__ == "__main__":
                          help="Skip the tick-level volume-by-price footprint (faster; H1+1s+1min only)")
     args = parser.parse_args()
 
-    if not os.path.exists(args.data):
+    if args.data is not None and not os.path.exists(args.data):
         print(f"Error: {args.data} not found.")
         sys.exit(1)
 
