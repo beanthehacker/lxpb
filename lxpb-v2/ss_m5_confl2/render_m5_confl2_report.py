@@ -1519,8 +1519,8 @@ docstring in render_m5_confl2_report.py for the full convention.">Dynamic filter
   <div class="filter-row">
     <span class="filter-label" title="Live, in-browser toggle for the plug-n-play trade-management
 rules in trade_management.py (symmetric across direction): rule 1 trails the stop to one tick
-beyond a qualifying large-body M5 thrust candle's own extreme (below the low for a long, above
-the high for a short); rule 2 exits at market whenever remaining reward/remaining risk (using
+beyond a qualifying M5 breakout candle's own extreme (below the low for a long, above
+the high for a short) once it closes past enough still-live sibling P0s; rule 2 exits at market whenever remaining reward/remaining risk (using
 whatever the CURRENT stop is, post-trail) drops to 0.2 or below. Every filled trade already has
 both baseline and managed outcomes precomputed -- this checkbox swaps win rate / avg R / total R
 / total PnL above to the managed numbers instantly, no regen required. Rows where management

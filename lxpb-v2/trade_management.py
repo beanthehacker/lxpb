@@ -13,17 +13,17 @@ managed trade's outcome is directly comparable to its unmanaged baseline.
 Both rules are symmetric across direction (LHPB/long and LLPB/short are
 mirror images of each other -- see each rule's own docstring):
 
-  Rule 1 -- thrust-P1 stop trail (`thrust_trail_events`). LONG: when a
-  large-body M5 breakout candle closes above the high wicks of several
-  still-live P0 LHPB candles (making that candle their shared P1), the stop
-  trails to one tick below the thrust candle's own low. SHORT (mirrored):
-  when a large-body breakout candle closes below the low wicks of several
-  still-live P0 LLPB candles, the stop trails to one tick above the thrust
-  candle's own high. "Several" is a tiered threshold: 1 P0 is enough if any
-  member is a swing or a spike candle (lxpb.py's own is_swing/is_spike), 2
-  if every member has a "slight" wick (< 10% of that candle's own range),
-  3 otherwise. "Large body" is body >= THRUST_BODY_K x the average M5 range
-  over the THRUST_LOOKBACK_BARS bars immediately before the breakout bar.
+  Rule 1 -- thrust-P1 stop trail (`thrust_trail_events`). LONG: when an M5
+  breakout candle closes above the high wicks of several still-live P0
+  LHPB candles (making that candle their shared P1), the stop trails to
+  one tick below that candle's own low. SHORT (mirrored): when a breakout
+  candle closes below the low wicks of several still-live P0 LLPB
+  candles, the stop trails to one tick above that candle's own high.
+  "Several" is a tiered threshold: 1 P0 is enough if any member is a
+  swing or a spike candle (lxpb.py's own is_swing/is_spike), 2 if every
+  member has a "slight" wick (< 10% of that candle's own range), 3
+  otherwise. No requirement on the breakout candle's own body size --
+  any candle closing past enough still-live P0s qualifies.
 
   Rule 2 -- RR-floor exit. At every M5 candle close after entry, the
   remaining reward (target - current close) divided by the remaining risk
@@ -57,8 +57,6 @@ import lxpb_levels_cache as LC                    # noqa: E402
 TICK_SIZE = R.TICK_SIZE_DEFAULT
 
 # Rule 1 -- thrust-P1 stop trail
-THRUST_BODY_K = 1.5             # thrust body >= this x the recent average M5 range
-THRUST_LOOKBACK_BARS = 10       # M5 bars of "recent average range" immediately before P1
 SLIGHT_WICK_RATIO = 0.10        # a P0's own wick < 10% of its range is "slight"
 
 # Rule 2 -- RR-floor exit
@@ -107,23 +105,18 @@ def _group_threshold(group, m5_bars, level_type):
     return 3
 
 
-def _recent_avg_range(m5_bars, breakout_time, n):
-    if m5_bars is None:
-        return None
-    prior = m5_bars[m5_bars.index < breakout_time].tail(n)
-    if prior.empty:
-        return None
-    return float((prior["high"] - prior["low"]).mean())
-
-
 def thrust_trail_events(level_type, start_time, end_time, ledger=None, m5_bars=None):
     """Every qualifying thrust-P1 stop-trail event in (start_time, end_time],
     as a chronological list of `(trigger_time, new_stop_price)` --
     `trigger_time` is the breakout bar's own CLOSE (formation_time + one M5
-    bar), not its open, since the thrust isn't knowable until the bar
+    bar), not its open, since the group isn't confirmed until the bar
     actually closes; `new_stop_price` is in adjusted/display scale -- one
     tick beyond the breakout bar's own low (LHPB/long) or high (LLPB/
-    short), same scale as the ledger's own `breakout_low`/`breakout_high`."""
+    short), same scale as the ledger's own `breakout_low`/`breakout_high`.
+    No body-size ("thrust") requirement on the breakout candle itself --
+    only `_group_threshold`'s own sibling-count/quality tiers gate this;
+    any candle that closes past enough still-live P0s qualifies regardless
+    of how large its own body is."""
     if level_type not in ("LHPB", "LLPB"):
         raise ValueError(f"unknown level_type {level_type!r}")
     ledger = LC.m5_levels(verbose=False) if ledger is None else ledger
@@ -143,16 +136,6 @@ def thrust_trail_events(level_type, start_time, end_time, ledger=None, m5_bars=N
         if len(group) < _group_threshold(group, m5_bars, level_type):
             continue
         row0 = group.iloc[0]
-        body = abs(float(row0["breakout_close"]) - float(row0["breakout_open"]))
-        avg_range = _recent_avg_range(m5_bars, breakout_time, THRUST_LOOKBACK_BARS)
-        # A near-zero avg_range (a dead/no-tick stretch -- e.g. a thin
-        # contract-rollover gap where every lookback bar is flat,
-        # open==high==low==close) would make ANY nonzero body pass the
-        # ">= K x avg_range" test trivially, since the threshold collapses
-        # to ~0. Require a real (>= 1 tick) lookback range so a genuine
-        # data gap can't masquerade as a thrust.
-        if avg_range is None or avg_range < TICK_SIZE or body < THRUST_BODY_K * avg_range:
-            continue
         new_stop = (float(row0["breakout_low"]) - TICK_SIZE if level_type == "LHPB"
                    else float(row0["breakout_high"]) + TICK_SIZE)
         trigger_time = breakout_time + pd.Timedelta(minutes=5)
