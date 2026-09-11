@@ -21,8 +21,8 @@ mirror images of each other -- see each rule's own docstring):
   candles, the stop trails to one tick above that candle's own high.
   "Several" is a tiered threshold: 1 P0 is enough if any member is a
   swing or a spike candle (lxpb.py's own is_swing/is_spike), 2 if every
-  member has a "slight" wick (< 10% of that candle's own range), 3
-  otherwise. No requirement on the breakout candle's own body size --
+  member's own wick is at least MIN_WICK_RATIO (20%) of that candle's own
+  range, 3 otherwise. No requirement on the breakout candle's own body size --
   any candle closing past enough still-live P0s qualifies. The stop only
   ever moves TOWARDS the target, and nothing pins it to the losing side
   of entry: when the breakout candle's own low (LHPB) already sits above
@@ -70,7 +70,7 @@ import lxpb_levels_cache as LC                    # noqa: E402
 TICK_SIZE = R.TICK_SIZE_DEFAULT
 
 # Rule 1 -- thrust-P1 stop trail
-SLIGHT_WICK_RATIO = 0.10        # a P0's own wick < 10% of its range is "slight"
+MIN_WICK_RATIO = 0.20        # a P0's own wick must be >= 20% of its range for the 2-tier
 
 # Rule 2 -- RR-floor exit
 RR_FLOOR_MIN_RR = 0.2
@@ -197,14 +197,14 @@ def _p0_wick_ratio(m5_bars, formation_time, level_type):
 def _group_threshold(group, m5_bars, level_type):
     """Tiered minimum sibling-P0 count for one P1 group to qualify as a
     thrust trigger: 1 if any member is a local swing or a spike candle, 2
-    if EVERY member's own wick is "slight" (< SLIGHT_WICK_RATIO of its own
-    range), 3 otherwise (a member whose wick can't be measured -- missing
-    bar data -- makes the group ineligible for the 2-tier, same as a
-    non-slight wick would)."""
+    if EVERY member's own wick is at least MIN_WICK_RATIO of its own range,
+    3 otherwise (a member whose wick can't be measured -- missing bar data
+    -- makes the group ineligible for the 2-tier, same as a too-thin wick
+    would)."""
     if bool(group["is_swing"].fillna(False).any() or group["is_spike"].fillna(False).any()):
         return 1
     ratios = [_p0_wick_ratio(m5_bars, ft, level_type) for ft in group["formation_time"]]
-    if ratios and all(r is not None and r < SLIGHT_WICK_RATIO for r in ratios):
+    if ratios and all(r is not None and r >= MIN_WICK_RATIO for r in ratios):
         return 2
     return 3
 
