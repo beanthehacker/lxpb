@@ -899,7 +899,11 @@ def _annotate_mgmt_events(chart_m5, res, is_long):
 
     new_markers = []
     for trigger_time, new_stop_price in mgmt.get("trail_events") or []:
-        t = snap(trigger_time)
+        # trigger_time is the thrust candle's own CLOSE (= the next bar's
+        # open, see trade_management.thrust_trail_events) -- step back one
+        # bar so the marker lands on the thrust candle itself, the one
+        # responsible for the event, not the candle after it.
+        t = snap(trigger_time - P1_BAR_WIDTH)
         if t is not None:
             new_markers.append({
                 "time": t, "position": "belowBar" if is_long else "aboveBar",
