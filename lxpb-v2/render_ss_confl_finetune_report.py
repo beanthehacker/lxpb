@@ -1358,14 +1358,10 @@ def render(args):
   <div class="box"><strong>&plusmn;{m5_radius}pt</strong>M5 entry radius</div>
   <div class="box"><strong>{len(unfilled)}</strong>fine-tuned entry unfilled</div>
   <div class="box"><strong>{improved_n}</strong>/{len(filled)} entry improved over baseline</div>
-  <div class="box true"><strong>{ft_stats['win_rate']:.1f}%</strong>fine-tuned win rate ({ft_stats['n']})</div>
   <div class="box"><strong>{ft_stats['avg_r']:.2f}</strong>fine-tuned avg R</div>
-  <div class="box"><strong>{ft_stats['total_r']:.1f}</strong>fine-tuned total R</div>
   <div class="box"><strong>{base_stats['win_rate']:.1f}%</strong>baseline win rate (same {base_stats['n']} rows)</div>
   <div class="box"><strong>{base_stats['avg_r']:.2f}</strong>baseline avg R</div>
   <div class="box"><strong>{base_stats['total_r']:.1f}</strong>baseline total R</div>
-  <div class="box"><strong>{max_win_mae:.2f}</strong>max MAE (win)</div>
-  <div class="box"><strong>{max_loss_mfe:.2f}</strong>max MFE (loss)</div>
   <div class="box"><strong>{dynamic_stops}</strong>M5 breakout-candle stops</div>
   <div class="box"><strong>{len(filled) - dynamic_stops}</strong>fixed {SR._fmt_pts(args.stop)}pt fallback stops</div>
   <div class="box"><strong>{gapped_entries}</strong>gapped entry</div>
@@ -1380,6 +1376,10 @@ def render(args):
     <button class="btn" onclick="if(confirm('Clear ALL saved Reviewed/Valid/Replayed/Notes in this browser for this report?')) clearAllReview();">\U0001f5d1 Clear all</button>
   </div>
 </div>
+"""
+    # Reference material -- the rules write-up and the excursion percentiles --
+    # moved out of the trades view into its own tab (SR.tab_bar_html/TABS_JS).
+    pctile_tab_html = f"""
 <p class="lead">Fine-tuned entry = most extreme price (highest for LLPB/short, lowest for
 LHPB/long) among the subject's own H1 level and its same-side H1+M5 confluent levels still
 unconsumed immediately before the cluster's ORIGINAL first H1 retest (H1 search radius
@@ -1416,6 +1416,19 @@ render_stop_target_report.py's own conventions exactly (see that module and this
 docstring for full detail and design-choice caveats).</p>
 {pctile_html}
 """
+
+    total_pnl_pts = sum(r["resolved"]["r"] * r["stop_pts"] for r in filled
+                       if r["resolved"].get("r") is not None)
+    stats_bar_html = SR.trade_stats_bar_html([
+        (f"{ft_stats['n']}", "trades taken", None, False),
+        (f"{ft_stats['win_rate']:.1f}%", "fine-tuned win rate", None, True),
+        (f"{ft_stats['wins']}", "wins", None, False),
+        (f"{ft_stats['losses']}", "losses", None, False),
+        (f"{ft_stats['total_r']:.1f}", "fine-tuned total R", None, False),
+        (f"{total_pnl_pts:+.1f}", "total PnL (pts)", None, False),
+        (f"{max_win_mae:.2f}", "max MAE (win)", None, False),
+        (f"{max_loss_mfe:.2f}", "max MFE (loss)", None, False),
+    ])
 
     filter_panel = """
 <div class="filter-panel">
@@ -1473,16 +1486,24 @@ docstring for full detail and design-choice caveats).</p>
 {CSS}
 </head><body>
 <h1>SS Confl. &ge; {args.ss_confl_min} fine-tuned entry/exit report{title_suffix}</h1>
+{SR.tab_bar_html([("trades", "Trades"), ("pctile", "Excursion percentiles")])}
+<div class="tab-panel" id="tab-trades">
 {summary_html}
 {filter_panel}
+{stats_bar_html}
 <div class="table-wrap"><table id="lvl-table">
 <thead><tr>{head}</tr></thead>
 <tbody>
 {"".join(rows_html)}
 </tbody>
 </table></div>
+</div>
+<div class="tab-panel tab-hidden" id="tab-pctile">
+{pctile_tab_html}
+</div>
 {JS.replace("__CHARTS_JSON__", json.dumps(charts))
    .replace("__STORAGE_KEY__", storage_key)}
+{SR.TABS_JS}
 </body></html>
 """
     with open(args.output, "w", encoding="utf-8") as f:
