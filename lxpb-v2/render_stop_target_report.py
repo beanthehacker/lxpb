@@ -139,6 +139,65 @@ EXCURSION_CSS = """.pctile-wrap { margin:14px 0 18px; }
               margin:8px 0 0; }"""
 
 
+# Tabbed layout + the per-trade stat strip that sits directly above the trades
+# table. Kept apart from CSS for the same reason EXCURSION_CSS is: a report
+# rendered before the tabs existed can be retro-fitted (move_excursion_to_tab.py)
+# with exactly the rules and markup a fresh render would emit.
+TABS_CSS = """.tab-bar { display:flex; gap:4px; margin:12px 0 0; border-bottom:1px solid var(--border); }
+.tab-btn { background:none; border:none; border-bottom:2px solid transparent; cursor:pointer;
+           color:var(--text-dim); font-size:0.95em; padding:7px 15px; }
+.tab-btn:hover { color:var(--text); }
+.tab-btn.active { color:var(--text); border-bottom-color:#38bdf8; }
+.tab-panel.tab-hidden { display:none; }
+.stats-bar { margin:10px 0 6px; }
+.stats-bar .box { padding:6px 12px; }
+.stats-bar .box strong { font-size:1.25em; }"""
+
+# The tab buttons only toggle a class; nothing is re-rendered, so a chart that
+# was already drawn in the trades panel survives a trip to another tab and back.
+TABS_JS = """<script>
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.tab-panel').forEach(p =>
+      p.classList.toggle('tab-hidden', p.id !== 'tab-' + btn.dataset.tab));
+  });
+});
+</script>"""
+
+
+def tab_bar_html(tabs):
+    """Tab buttons for `tabs` = [(id_suffix, label), ...]; the first is active.
+
+    The panels themselves are plain <div class="tab-panel" id="tab-{suffix}">
+    wrappers written by the caller -- every non-first one also carrying
+    tab-hidden, so the page is correct before any JS runs."""
+    return ('<div class="tab-bar">'
+            + "".join(f'<button class="tab-btn{" active" if i == 0 else ""}" '
+                      f'data-tab="{suffix}">{label}</button>'
+                      for i, (suffix, label) in enumerate(tabs))
+            + "</div>")
+
+
+def trade_stats_bar_html(boxes):
+    """The stat strip printed immediately above the trades table.
+
+    `boxes` is an ordered list of (value, label, elem_id, highlight). These are
+    the numbers that describe the TRADES THEMSELVES -- count, win rate, wins,
+    losses, total R, total PnL, worst excursions -- kept beside the table they
+    summarise rather than up in the header summary, which is about the scan
+    (candidate counts, radii, parameters) and the review workflow. Where the
+    report has live filters, `elem_id` is what its JS rewrites in place, so
+    the strip always describes the rows actually shown."""
+    parts = []
+    for value, label, elem_id, highlight in boxes:
+        cls = "box true" if highlight else "box"
+        ident = ' id="%s"' % elem_id if elem_id else ""
+        parts.append('<div class="%s"><strong%s>%s</strong>%s</div>'
+                     % (cls, ident, value, label))
+    return '<div class="summary stats-bar">' + "".join(parts) + "</div>"
+
+
 def excursion_percentile_html(groups, stop, *, group_stops=None):
     """Percentile tables for the MAE/MFE excursion columns.
 
@@ -1230,7 +1289,7 @@ textarea.trade-note { width:160px; height:34px; resize:vertical; background:var(
 select.f-num-op, input.f-num-val { background:var(--surface2); color:var(--text);
     border:1px solid var(--border); border-radius:4px; font-size:0.85em; padding:3px 5px; }
 input.f-num-val { width:4.5em; }
-""" + EXCURSION_CSS + """
+""" + EXCURSION_CSS + "\n" + TABS_CSS + """
 /* Half-width H1/M5 panes: keep the hover OHLC readout pinned right and
    fully visible, letting the descriptive part ellipsis instead. */
 .chart-title.chart-title-split { display:flex; align-items:baseline; gap:10px; }
@@ -2129,6 +2188,10 @@ real, variable R = (fill - entry) / {_fmt_pts(stop)}pt, coloured by whether that
 <h1>LXPB Strong-Breakout Trades &mdash; Stop {_fmt_pts(stop)} / Target {_fmt_pts(target)}{
     ' &mdash; candle-close exit' if candle_exit else ''}{
     ' (from the candle after entry)' if candle_exit and candle_exit_skip_entry else ''}</h1>
+"""
+    # How the trades are built, and the excursion percentiles that go with it:
+    # reference material, kept in its own tab rather than above the table.
+    pctile_tab_html = f"""
 <p class="lead">Same {len(trades)} "strong breakout" LXPB retests as exit_analysis_report.html's
 1-minute-resolved grid, walked forward with a fixed stop={_fmt_pts(stop)}pt / target={_fmt_pts(target)}pt bracket.
 {candle_rule_html}
@@ -2159,16 +2222,12 @@ touch and exit, so the modeled no-slippage fill was never actually available and
 not something the strategy could have realised.
 Reviewed/Valid/Replayed/Notes persist server-side (keyed to this stop/target report) and
 sync across devices; also exportable/importable as CSV (top-right buttons).</p>
+{pctile_html}
+"""
+    summary_html = f"""
 <div class="summary">
-  <div class="box"><strong>{len(trades)}</strong>trades</div>
-  <div class="box"><strong>{wins}</strong>wins</div>
-  <div class="box"><strong>{losses}</strong>losses</div>
-  <div class="box"><strong>{no_hits}</strong>no-hit</div>
-  <div class="box"><strong>{win_rate*100:.1f}%</strong>win rate</div>{candle_boxes}
+  <div class="box"><strong>{no_hits}</strong>no-hit</div>{candle_boxes}
   <div class="box"><strong>{avg_r:.2f}</strong>avg R</div>
-  <div class="box"><strong>{total_r:.1f}</strong>total R</div>
-  <div class="box"><strong>{max_win_mae:.2f}</strong>max MAE (win)</div>
-  <div class="box"><strong>{max_loss_mfe:.2f}</strong>max MFE (loss)</div>
   <div class="box"><strong>{gapped_entries}</strong>gapped entry</div>
   <div class="box"><strong id="sum-shown">{len(trades)}</strong>shown</div>
   <div class="box"><strong id="sum-reviewed">0</strong>reviewed</div>
@@ -2181,8 +2240,19 @@ sync across devices; also exportable/importable as CSV (top-right buttons).</p>
     <button class="btn" onclick="if(confirm('Clear ALL saved Reviewed/Valid/Replayed/Notes in this browser for this report?')) clearAllReview();">\U0001f5d1 Clear all</button>
   </div>
 </div>
-{pctile_html}
 """
+    # Fixed bracket, so a trade's points are just its R times the stop distance.
+    stats_bar_html = trade_stats_bar_html([
+        (f"{len(trades)}", "trades taken", None, False),
+        (f"{win_rate*100:.1f}%", "win rate", None, True),
+        (f"{wins}", "wins", None, False),
+        (f"{losses}", "losses", None, False),
+        (f"{total_r:.1f}", "total R", None, False),
+        (f"{total_r * stop:+.1f}", "total PnL (pts)", None, False),
+        (f"{max_win_mae:.2f}", "max MAE (win)", None, False),
+        (f"{max_loss_mfe:.2f}", "max MFE (loss)", None, False),
+    ])
+
     filter_panel = """
 <div class="filter-panel">
   <div class="filter-row">
@@ -2250,13 +2320,22 @@ sync across devices; also exportable/importable as CSV (top-right buttons).</p>
 {CSS}
 </head><body>
 {header}
+{tab_bar_html([("trades", "Trades"), ("pctile", "Excursion percentiles")])}
+<div class="tab-panel" id="tab-trades">
+{summary_html}
 {filter_panel}
+{stats_bar_html}
 <div class="table-wrap">{thead}
 {''.join(rows_html)}
 </tbody></table></div>
+</div>
+<div class="tab-panel tab-hidden" id="tab-pctile">
+{pctile_tab_html}
+</div>
 {JS.replace("__CHARTS_JSON__", json.dumps(charts))
    .replace("__STORAGE_KEY__", storage_key
             or f"lxpb_trade_review_v1_stop{_fmt_pts(stop)}_target{_fmt_pts(target)}")}
+{TABS_JS}
 </body></html>
 """
     with open(output_path, "w", encoding="utf-8") as f:

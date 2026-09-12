@@ -10,12 +10,16 @@ resamples .scid into bars).
 Two consumers, both in the M5-native strategy report:
 
   * CONSOLIDATION AREAS -> the target rule (`consolidation_target`). A
-    previous congestion area is where resting supply/demand actually sits;
-    price returning to one is where an open trade should be paid. If that
-    area still holds an UNTESTED opposite-type M5 P0 -- a level inside its
-    own price band that has never been retested -- that P0's own price is
-    the target; otherwise the area's NEAR EDGE is (its low for a long, its
-    high for a short -- the first price of the zone the trade reaches).
+    congestion area is where resting supply/demand actually sits; price
+    returning to one is where an open trade should be paid. Only areas
+    built INSIDE the trade's own level lifetime count -- wholly after that
+    level's P1 (breakout) and wholly before its P2 (retest) -- i.e. the
+    congestion the market laid down while the level was waiting to be
+    retested. If that area still holds an UNTESTED opposite-type M5 P0 -- a
+    level inside its own price band that has never been retested -- that
+    P0's own price is the target; otherwise the area's NEAR EDGE is (its
+    low for a long, its high for a short -- the first price of the zone the
+    trade reaches).
 
   * SWING PIVOTS -> the "swerved" entry rule. A confirmed swing low sitting
     right on a planned LONG entry (or a swing high on a planned SHORT entry)
@@ -164,7 +168,7 @@ def entry_cutoff(touch_time):
 
 
 def consolidation_target(areas, live_opposite, price, is_long, cutoff,
-                         min_pts, max_pts):
+                         min_pts, max_pts, after=None):
     """(target_price, info) for one trade, or (None, None) if no previous
     consolidation area qualifies.
 
@@ -182,11 +186,21 @@ def consolidation_target(areas, live_opposite, price, is_long, cutoff,
     price-containment reading finds a P0 for 29 of 69 trades where the
     formed-during reading finds 6.)
 
-    Eligible areas are COMPLETED strictly before `cutoff` ("previous"
-    consolidation areas -- an area whose last bar is still forming is not a
-    place price is returning TO) and sit in the trade's favourable
-    direction, with their NEAR EDGE (low for a long, high for a short)
-    `min_pts`..`max_pts` away from the fill.
+    Eligible areas lie ENTIRELY INSIDE the trade's own (`after`, `cutoff`)
+    window -- first bar strictly after `after`, last bar completed strictly
+    before `cutoff`. The caller passes this level's own P1 (breakout) as
+    `after` and its P2 (retest) as `cutoff`, so the only congestion that
+    can be a target is congestion the market built while THIS level was
+    waiting to be retested: the area is where price went after the breakout
+    and stalled, and the trade is a return to it. Structure older than P1
+    belongs to a move this level had no part in, and an area whose last bar
+    is still forming at P2 is not a place price is returning TO. `after` is
+    optional only so a caller with no level of its own can omit the lower
+    bound; the report always supplies it.
+
+    Eligible areas also sit in the trade's favourable direction, with their
+    NEAR EDGE (low for a long, high for a short) `min_pts`..`max_pts` away
+    from the fill.
 
     Preference order, nearest area first:
       1. an area still holding an untested opposite-type P0 (formed inside
@@ -202,6 +216,8 @@ def consolidation_target(areas, live_opposite, price, is_long, cutoff,
         return None, None
     cutoff = _as_utc(cutoff)
     elig = areas[areas["end_time"] < cutoff]
+    if after is not None:
+        elig = elig[elig["start_time"] > _as_utc(after)]
     if elig.empty:
         return None, None
     edge = elig["low"] if is_long else elig["high"]
