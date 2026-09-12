@@ -34,7 +34,7 @@ population":
 1. **It hides most levels.** The machine registers two levels per bar (the
    bar's high as an LHPB, its low as an LLPB) and then *silently* drops any
    that (a) get traded into but not closed through (phase 2), or (b) get
-   touched/gapped past before MIN_HOURS_BEFORE_RETEST has elapsed (phase 3).
+   touched/gapped past before MIN_BARS_BEFORE_RETEST has elapsed (phase 3).
    Those levels appear in none of the three buckets. Over 2024-10..2026-09 H1
    that is 17,676 of 22,518 levels -- 78% of them.
 
@@ -59,7 +59,7 @@ of the three buckets, so anything the old API could answer, this can too.
 `fate` is one of:
 
     retested             reached a valid retest; death_time == retest_time
-    consumed_early       touched/gapped past before MIN_HOURS_BEFORE_RETEST
+    consumed_early       touched/gapped past before MIN_BARS_BEFORE_RETEST
     discarded_no_close   bar traded into the level but did not close through
     gated_dropped        closed through, but failed lxpb.py's candidate gate
                          (see advance_one_bar's own docstring for the full
@@ -201,7 +201,7 @@ PRICE_COLS = (
 
 
 def _rules_fingerprint():
-    """Hash of lxpb.py's source + MIN_HOURS_BEFORE_RETEST.
+    """Hash of lxpb.py's source + MIN_BARS_BEFORE_RETEST.
 
     lxpb.py is a synced copy of a file maintained elsewhere, so it can change
     under us. Keying on its bytes means a re-sync that alters the detection
@@ -209,7 +209,7 @@ def _rules_fingerprint():
     built by the old rules."""
     src = open(L.__file__, "rb").read()
     h = hashlib.sha1(src).hexdigest()[:12]
-    return f"{h}-mh{L.MIN_HOURS_BEFORE_RETEST}"
+    return f"{h}-mh{L.MIN_BARS_BEFORE_RETEST}"
 
 
 def _bars_fingerprint(bars):

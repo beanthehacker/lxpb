@@ -21,7 +21,9 @@ import numpy as np
 import pandas as pd
 
 
-MIN_HOURS_BEFORE_RETEST = 1
+MIN_BARS_BEFORE_RETEST = 1  # bar-count gap, not clock time -- see advance_one_bar's own
+                            # docstring for why: a fixed hour count silently meant
+                            # "skip ~1 bar" on H1 but "skip ~12 bars" on M5.
 
 # Candidate gate, rule 4 (consolidation vs trend -- see advance_one_bar's own
 # docstring): Kaufman's Efficiency Ratio over a small window of bar closes
@@ -123,6 +125,13 @@ def new_state() -> dict:
     this stays small even over a huge bar history where touch_lv0 itself
     does not -- see the loop that walks it in Phase 2's own comment for
     why that distinction matters.
+
+    `bar_count` increments once per `advance_one_bar` call, independent of
+    the bars' own timestamps -- a level's own breakout stamps the count at
+    that moment (`breakout_bar_count`, Phase 2), so Phase 3 can require
+    "at least one full bar between breakout and retest" by comparing two
+    small integers instead of a clock-time gap that would mean a different
+    number of bars on every timeframe (see MIN_BARS_BEFORE_RETEST).
     """
     return {
         "touch_lv0": [],
@@ -133,6 +142,7 @@ def new_state() -> dict:
         "recent_closes": [],
         "prev_high": None,
         "prev_low": None,
+        "bar_count": 0,
     }
 
 
@@ -175,11 +185,13 @@ def advance_one_bar(state: dict, bar) -> tuple:
     via `not (retest_low <= entry_price <= retest_high)`.
 
     Retest is direction-agnostic: any bar whose range overlaps the level
-    (or gaps past it) qualifies once MORE THAN MIN_HOURS_BEFORE_RETEST has
-    elapsed (strict >, so the breakout bar's immediate next bar can never
-    itself be the retest — at least one full bar sits in between) — no
-    open/close directional condition is required (unlike breakout, which
-    requires a body cross).
+    (or gaps past it) qualifies once MORE THAN MIN_BARS_BEFORE_RETEST bars
+    have elapsed since the breakout bar (strict >, compared as integer bar
+    counts via `bar_count`/`breakout_bar_count`, not clock time -- so the
+    breakout bar's immediate next bar can never itself be the retest — at
+    least one full bar sits in between, on ANY timeframe this runs over) —
+    no open/close directional condition is required (unlike breakout,
+    which requires a body cross).
 
     Spike/swing classification: `is_spike` (hammer for LHPB, shooting
     star for LLPB) is single-bar and finalized immediately at
@@ -213,6 +225,8 @@ def advance_one_bar(state: dict, bar) -> tuple:
     not a ranking that picks a single "best" candidate among several
     that still pass -- more may be added the same way later.
     """
+    state["bar_count"] += 1
+
     # Phase 0: finalize is_swing for levels formed on the previous bar,
     # using this bar as the look-ahead ("next") bar. Keep the pre-clear
     # list so the caller can patch anything it already snapshotted with
@@ -241,14 +255,18 @@ def advance_one_bar(state: dict, bar) -> tuple:
             # level has gapped past it.
             gap_over = bar.low > price
         if touched or gap_over:
-            # Strict ">" (not ">="): the immediately-next H1 bar after the
-            # breakout bar (elapsed == 1 hour) can never itself be the
-            # retest -- at least MIN_HOURS_BEFORE_RETEST full bars must sit
+            # Strict ">" (not ">="): the immediately-next bar after the
+            # breakout bar (bar_count elapsed == 1) can never itself be the
+            # retest -- at least MIN_BARS_BEFORE_RETEST full bars must sit
             # in between breakout and retest bar (elapsed must exceed it).
-            if (bar.Index - lv["breakout_time"]) > pd.Timedelta(hours=MIN_HOURS_BEFORE_RETEST):
+            # Compared as integer bar counts, not clock time, so this means
+            # the same thing -- "at least one full bar in between" -- on
+            # every timeframe this runs over.
+            if (state["bar_count"] - lv["breakout_bar_count"]) > MIN_BARS_BEFORE_RETEST:
                 fta       = lv["running_fta"]
                 stop_loss = lv["breakout_low"] if lv["type"] == "LHPB" else lv["breakout_high"]
-                public = {k: v for k, v in lv.items() if k != "running_fta"}
+                public = {k: v for k, v in lv.items()
+                         if k not in ("running_fta", "breakout_bar_count")}
                 state["retests"].append({
                     **public,
                     "retest_time":  bar.Index,
@@ -318,6 +336,7 @@ def advance_one_bar(state: dict, bar) -> tuple:
                 state["touch_lv1"].append({
                     **lv,
                     "breakout_time":  bar.Index,
+                    "breakout_bar_count": state["bar_count"],
                     "breakout_open":  bar.open,
                     "breakout_high":  bar.high,
                     "breakout_low":   bar.low,
@@ -427,7 +446,7 @@ def advance_one_bar(state: dict, bar) -> tuple:
     return finalized_swing, gated_dropped
 
 
-_INTERNAL_KEYS = {"running_fta", "_prev_high", "_prev_low", "er_closes"}
+_INTERNAL_KEYS = {"running_fta", "_prev_high", "_prev_low", "er_closes", "breakout_bar_count"}
 
 
 def _strip_internal(rows: list) -> list:
@@ -442,7 +461,7 @@ def detect_lxpb_h1(ohlc_h1: pd.DataFrame):
     -------
     touch_lv0 : zero-touch levels  (formed, not yet broken out)
     touch_lv1 : one-touch levels   (broken out, awaiting retest)
-    retests   : completed retests  (one-touch level returned to after MIN_HOURS)
+    retests   : completed retests  (one-touch level returned to after MIN_BARS_BEFORE_RETEST)
     """
     state = new_state()
     for bar in ohlc_h1.itertuples(index=True):

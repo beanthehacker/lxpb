@@ -217,7 +217,7 @@ def _seg_departed_levels(m5_ledger, start_ts, end_ts):
     [start_ts, end_ts): fate 'retested' (a clean retest, entry_price/
     stop_loss populated) OR 'consumed_early' (price touched/gapped past the
     level too soon after ITS OWN P1 to count as a clean retest, per
-    lxpb_levels_cache.retests's own MIN_HOURS_BEFORE_RETEST gate -- see
+    lxpb_levels_cache.retests's own MIN_BARS_BEFORE_RETEST gate -- see
     lxpb_levels_cache.py's own fate table). A consumed_early level was
     never a tradeable retest in this strategy's own selection logic, but
     price DID reach its price and move on, which is exactly the kind of
@@ -420,8 +420,11 @@ def _dynamic_stop_m5(level_type, alt_price, is_long, entry_level_info,
     (no_m5_stop), not a silent revert to the old behaviour, since a silent
     fallback would defeat the point of making this an override.
 
-    Otherwise: unchanged SF.dynamic_stop (protective extreme of the P1
-    thrust candle among live same-side levels within +/-10pt of the fill).
+    Otherwise: _dynamic_stop_m5_thrust (protective extreme of the P1 thrust
+    candle among live same-side levels within +/-10pt of the fill) --
+    SF.dynamic_stop's own rule, re-implemented locally so the candidate
+    pool can include gated-dropped candles too (see that function's own
+    docstring for why; same reasoning as the target rules).
 
     stop_row is always a pd.Series (like SF.dynamic_stop's own return) so
     callers can .to_dict() either path uniformly."""
@@ -444,10 +447,41 @@ def _dynamic_stop_m5(level_type, alt_price, is_long, entry_level_info,
                 })
                 return stop_price, stop_row, "m5_p0_spike"
         return None, None, None
-    stop_price, stop_row = SF.dynamic_stop(m5_ledger, level_type, alt_price, is_long, touch_time_alt)
+    stop_price, stop_row = _dynamic_stop_m5_thrust(m5_ledger, level_type, alt_price,
+                                                   is_long, touch_time_alt)
     if stop_price is None:
         return None, None, None
     return stop_price, stop_row, "m5_thrust"
+
+
+def _dynamic_stop_m5_thrust(m5_ledger, level_type, alt_price, is_long, touch_time_alt):
+    """Same rule as SF.dynamic_stop (protective extreme of the P1 thrust
+    candle among live same-side levels within +/-DYNAMIC_STOP_RADIUS_PTS of
+    the fill, plus one tick) -- re-implemented here, rather than calling
+    SF.dynamic_stop (left unchanged there for the H1 report), for one
+    reason: the candidate pool comes from _live_m5_target_candidates
+    instead of SF._live_m5_before_entry, so a thrust candle that failed the
+    entry candidate gate still qualifies to protect a stop. A stop is a
+    price the market broke through and hasn't come back to since, same as
+    a target -- it doesn't need to have looked like a genuine turn at the
+    time any more than a target does (see _target_candidate_still_live's
+    own docstring)."""
+    cand = _live_m5_target_candidates(m5_ledger, level_type, touch_time_alt,
+                                      price=alt_price, max_pts=DYNAMIC_STOP_RADIUS_PTS)
+    if cand.empty:
+        return None, None
+    cand = cand[(cand["price"] - alt_price).abs() <= DYNAMIC_STOP_RADIUS_PTS]
+    if cand.empty:
+        return None, None
+    extreme = "breakout_low" if is_long else "breakout_high"
+    if not np.isfinite(cand[extreme]).all():
+        raise ValueError(f"Non-finite M5 {extreme} for a confirmed stop candidate")
+    stops = cand[extreme] + (-R.TICK_SIZE_DEFAULT if is_long else R.TICK_SIZE_DEFAULT)
+    cand = cand[(stops < alt_price) if is_long else (stops > alt_price)]
+    if cand.empty:
+        return None, None
+    best_idx = cand[extreme].idxmin() if is_long else cand[extreme].idxmax()
+    return float(stops.loc[best_idx]), cand.loc[best_idx]
 
 
 # --------------------------------------------------------------------------
@@ -489,6 +523,85 @@ def _window_bounds(touch_time, p1_time, p2_time):
     return (None if p1_time is None else pd.Timestamp(p1_time)), MS.entry_cutoff(end)
 
 
+def _target_candidate_still_live(bars, level_type, price, breakout_time, as_of):
+    """Whether an opposite-type M5 candle that FAILED lxpb.py's entry
+    candidate gate (fate 'gated_dropped' -- neither a spike nor a
+    consolidating swing) has nonetheless gone untouched since its own
+    breakout, as of `as_of`.
+
+    A gated-dropped candidate's death_time is stamped equal to its own
+    breakout_time (see lxpb_levels_cache.py's fate table) because nothing
+    tracks it forward once it fails that gate -- the gate exists to keep
+    noise out of ENTRY selection, where a level needs to have looked like a
+    real turn AT THE TIME to justify trading its retest. A TARGET doesn't
+    need that: a price the market broke through and never came back to is
+    still somewhere price could go, whether or not that original break
+    looked convincing. So for a gated-dropped candidate only, this replays
+    lxpb.py's own retest rule (touched or gapped past, strictly more than
+    R.L.MIN_BARS_BEFORE_RETEST bars after the breakout bar -- the same
+    "immediately-next bar can never itself be the retest" rule real P0s
+    get) directly against the bars, since the ledger never recorded
+    whether that actually happened for a candidate that failed the gate."""
+    window = bars[(bars.index > breakout_time) & (bars.index <= as_of)]
+    skip = R.L.MIN_BARS_BEFORE_RETEST
+    if len(window) <= skip:
+        return True
+    window = window.iloc[skip:]
+    touched = (window["low"] <= price) & (window["high"] >= price)
+    if level_type == "LHPB":
+        gap_over = window["high"] < price
+    else:
+        gap_over = window["low"] > price
+    return not (touched | gap_over).any()
+
+
+def _live_m5_target_candidates(m5_ledger, level_type, touch_time, min_breakout_levels=1,
+                               price=None, max_pts=None):
+    """Same query as SF._live_m5_before_entry (still-standing, completed-bar
+    opposite-type candidates as of `touch_time`), except a candidate that
+    failed lxpb.py's entry candidate gate is not disqualified for that
+    reason alone -- see _target_candidate_still_live's own docstring for
+    why targets and entries need different standards here. Every other
+    fate (real P0s, already accurately tracked to retest/death in the
+    ledger) is resolved exactly as SF._live_m5_before_entry does.
+
+    `price`/`max_pts`: every caller immediately throws out anything more
+    than a fixed number of points from the fill (1..20pt for a target,
+    +/-DYNAMIC_STOP_RADIUS_PTS for a stop) -- pass them here so a
+    gated-dropped candidate that could never qualify on distance alone is
+    dropped BEFORE its own untouched-since-breakout check runs, not after.
+    That check replays real bars per candidate, and the gated-dropped pool
+    is the majority of this ledger's whole history (every candle that ever
+    broke out and failed the entry gate, tens of thousands of rows) -- most
+    of them formed at some unrelated price months away from this trade, so
+    skipping the distance-blind ones first is the difference between
+    checking a handful of candidates and checking nearly all of history for
+    every single trade."""
+    if m5_ledger is None or m5_ledger.empty:
+        return pd.DataFrame()
+    as_of = pd.to_datetime(touch_time, utc=True).floor("5min") - pd.Timedelta(nanoseconds=1)
+    confirmed = m5_ledger[(m5_ledger["type"] == level_type) &
+                         (m5_ledger["breakout_time"] <= as_of)]
+    if min_breakout_levels > 1:
+        counts = confirmed.groupby("breakout_time")["formation_time"].transform("nunique")
+        confirmed = confirmed[counts >= min_breakout_levels]
+    is_gated = confirmed["fate"] == "gated_dropped"
+    live = LC.levels_live_as_of(confirmed[~is_gated], as_of)
+    gated = confirmed[is_gated]
+    if price is not None and max_pts is not None:
+        gated = gated[(gated["price"] - price).abs() <= max_pts]
+    if gated.empty:
+        return live
+    bars = LC.m5_bars_continuous()
+    still_live = gated.apply(
+        lambda r: _target_candidate_still_live(bars, level_type, float(r["price"]),
+                                               pd.Timestamp(r["breakout_time"]), as_of),
+        axis=1)
+    live_gated = gated[still_live].copy()
+    live_gated["stage"] = "broken"
+    return pd.concat([live, live_gated], ignore_index=True)
+
+
 def _opposite_m5_target(m5_ledger, level_type, price, is_long, touch_time,
                         p1_time=None, p2_time=None):
     """(target_price, target_info) under the OPPOSITE-M5 rule, or
@@ -497,9 +610,11 @@ def _opposite_m5_target(m5_ledger, level_type, price, is_long, touch_time,
     The original rule (SF.dynamic_target, left unchanged there because the
     H1 report still uses it): the most recently FORMED live opposite-type M5
     level, 1..20pt away on the favourable side, whose own P1 candle broke at
-    least two distinct same-type P0s. "Live" is _live_m5_before_entry's own
-    query -- broken out on a completed candle before the entry bar, never
-    retested since.
+    least two distinct same-type P0s. "Live" is _live_m5_target_candidates's
+    own query -- broken out on a completed candle before the entry bar,
+    never retested since, WITHOUT also requiring the candidate to have
+    passed the entry candidate gate (see that function's own docstring) --
+    a target only needs an untouched-since price, not a confirmed swing.
 
     Re-implemented here rather than called, for one reason: this report adds
     the SAME P1..P2 window the consolidation rule uses. The opposite level's
@@ -508,8 +623,9 @@ def _opposite_m5_target(m5_ledger, level_type, price, is_long, touch_time,
     the market build while this level was waiting to be retested -- and
     differ only in what they look for there."""
     opposite_type = "LLPB" if level_type == "LHPB" else "LHPB"
-    cand = SF._live_m5_before_entry(m5_ledger, opposite_type, touch_time,
-                                    min_breakout_levels=2)
+    cand = _live_m5_target_candidates(m5_ledger, opposite_type, touch_time,
+                                      min_breakout_levels=2,
+                                      price=price, max_pts=MAX_DYNAMIC_TARGET_PTS)
     if cand.empty:
         return None, None
     after, cutoff = _window_bounds(touch_time, p1_time, p2_time)
@@ -577,11 +693,14 @@ def _consolidation_target(m5_ledger, level_type, price, is_long, touch_time, arg
     from."""
     opposite_type = "LLPB" if level_type == "LHPB" else "LHPB"
     # "Untested still" == broken out and never retested since, as of the last
-    # completed M5 candle before entry -- exactly _live_m5_before_entry's own
+    # completed M5 candle before entry -- _live_m5_target_candidates's own
     # query (min_breakout_levels=1: the shared-P1 requirement belongs to the
     # opposite-M5 rule, not to this one, where the consolidation area itself
-    # is the evidence that the price matters).
-    live_opposite = SF._live_m5_before_entry(m5_ledger, opposite_type, touch_time)
+    # is the evidence that the price matters). Also does not require the
+    # candidate to have passed the entry candidate gate -- see that
+    # function's own docstring.
+    live_opposite = _live_m5_target_candidates(m5_ledger, opposite_type, touch_time,
+                                               price=price, max_pts=MAX_DYNAMIC_TARGET_PTS)
     areas = consolidation_areas_for(args)
     after, cutoff = _window_bounds(touch_time, p1_time, p2_time)
     return MS.consolidation_target(areas, live_opposite, price, is_long, cutoff,
