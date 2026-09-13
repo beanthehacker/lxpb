@@ -2008,6 +2008,7 @@ def _mode_payload(res, mode):
                 f'{info.get("src", "m5_opposite")}</span>'),
         "tgtTitle": _target_title(info),
         "rr": f'{m["r_multiple"]:.2f}',
+        "rrVal": f'{m["r_multiple"]:.6f}',
         "outcomeLabel": outcome_label,
         "outcomeCls": outcome_cls,
         "modeBadges": _mode_badges(res, mode),
@@ -2247,7 +2248,7 @@ def _render_row(idx, res, chart_stacks, fps):
         row_html = f"""
 <tr class="lvl-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
     data-dyn-tags="{dyn_tags_attr}" data-base-tags="{base_tags_attr}"
-    data-r="{act['r']}" data-pnl-pts="{act['pnlPts']}" data-outcome="{act['outcome']}"
+    data-r="{act['r']}" data-rr="{act['rrVal']}" data-pnl-pts="{act['pnlPts']}" data-outcome="{act['outcome']}"
     data-mgmt-r="{act['mgmtR']}" data-mgmt-pnl-pts="{act['mgmtPnl']}"
     data-mgmt-outcome="{act['mgmtOutcome']}" data-mgmt-fired="{act['mgmtFired']}"
     data-mode="{active_mode}" data-modes="{modes_attr}"
@@ -2430,6 +2431,36 @@ Trades tab for trade-exclusion toggles you can flip live in the browser, no rege
     <label class="chip"><input type="checkbox" class="f-cb f-review-notes" value="has_notes" checked> Has notes</label>
   </div>
   <div class="filter-row">
+    <span class="filter-label" title="Reward:risk on offer at entry (the R column: target pts /
+stop pts, fixed regardless of win or loss). Reads tr.dataset.rr, which applyTargetModes() keeps
+in sync with whichever target rule is ticked above -- the same generic op/value numeric-filter
+mechanism (f-num-op/f-num-val, data-target) already used for Confl./SS Confl. in
+render_stop_target_report.py's shared review panel (see numFilterOk/applyReviewFilters there).
+Pick &ge; and e.g. 1.5 to show only R &ge; 1.5.">R</span>
+    <select class="f-num-op" data-target="rr">
+      <option value="any" selected>any</option>
+      <option value="gte">&ge;</option>
+      <option value="gt">&gt;</option>
+      <option value="eq">=</option>
+      <option value="lte">&le;</option>
+      <option value="lt">&lt;</option>
+    </select>
+    <input type="number" class="f-num-val" data-target="rr" value="1" min="0" max="5" step="0.1">
+  </div>
+  <div class="filter-row">
+    <span class="filter-label" title="Live, in-browser toggle -- no Python regen needed. Win =
+outcome-cell reads WIN under the target rule / trade-management state currently ticked above.
+Loss = every other row that DID resolve to a numeric R (LOSS, EOD FLAT, RR FLOOR, CANDLE, all
+scored by the sign of their R). No trade = unfilled rows (Python never found a valid stop/target)
+plus rows currently showing NO TARGET (rule off) because the ticked target rule(s) above found
+nothing for them, and any filled row that never resolved (NO-HIT). This reads the SAME per-row
+outcome recomputeDynStats() already uses for the win-rate/avg-R summary above, so it always
+agrees with those numbers.">Outcome</span>
+    <label class="chip"><input type="checkbox" class="f-cb f-outcome" value="win" checked> Win</label>
+    <label class="chip"><input type="checkbox" class="f-cb f-outcome" value="loss" checked> Loss</label>
+    <label class="chip"><input type="checkbox" class="f-cb f-outcome" value="no_trade" checked> No trade</label>
+  </div>
+  <div class="filter-row">
     <span class="filter-label" title="Live, in-browser trade-exclusion toggles -- no Python regen
 needed. Checking Exclude hides those rows AND recomputes win rate / avg R / total R / total PnL
 above from only the remaining (not excluded) trades. Checking Only instead hides every OTHER
@@ -2593,6 +2624,10 @@ td.merged-h1-levels { max-width:220px; white-space:normal; }
    review-workflow filters' own .hidden class so the two systems never
    fight over one class -- either one hides the row, independently). */
 tr.lvl-row.dyn-hidden, tr.chart-row.dyn-hidden { display:none !important; }
+/* Outcome filter (Win/Loss/No trade chips): same independent-hide pattern
+   as .dyn-hidden above, toggled in recomputeDynStats() from whichever
+   outcome bucket a row currently falls in. */
+tr.lvl-row.outcome-hidden, tr.chart-row.outcome-hidden { display:none !important; }
 .dyn-tag-badge { display:inline-block; margin-left:6px; padding:1px 6px; font-size:0.72em;
                 border-radius:3px; background:#4a3010; color:#fbbf24; cursor:help; }
 .chip-iso { margin-left:-4px; opacity:0.8; font-size:0.9em; }
@@ -2686,7 +2721,7 @@ function applyTargetModes() {
       tr.classList.add('no-target-row');
       tr.dataset.mode = '';
       tr.dataset.dynTags = baseTags;
-      tr.dataset.r = ''; tr.dataset.pnlPts = ''; tr.dataset.outcome = '';
+      tr.dataset.r = ''; tr.dataset.rr = ''; tr.dataset.pnlPts = ''; tr.dataset.outcome = '';
       tr.dataset.mgmtR = ''; tr.dataset.mgmtPnlPts = ''; tr.dataset.mgmtOutcome = '';
       tr.dataset.mgmtFired = '0';
       setCell(tr, '.tgt-cell', '-', 'tgt-cell');
@@ -2710,7 +2745,7 @@ function applyTargetModes() {
     tr.classList.remove('no-target-row');
     tr.dataset.mode = pick;
     tr.dataset.dynTags = (baseTags + ' ' + (p.tags || '')).trim();
-    tr.dataset.r = p.r; tr.dataset.pnlPts = p.pnlPts; tr.dataset.outcome = p.outcome;
+    tr.dataset.r = p.r; tr.dataset.rr = p.rrVal; tr.dataset.pnlPts = p.pnlPts; tr.dataset.outcome = p.outcome;
     tr.dataset.mgmtR = p.mgmtR; tr.dataset.mgmtPnlPts = p.mgmtPnl;
     tr.dataset.mgmtOutcome = p.mgmtOutcome; tr.dataset.mgmtFired = p.mgmtFired;
     setCell(tr, '.tgt-cell', p.tgt, 'tgt-cell');
@@ -2734,10 +2769,14 @@ function applyTargetModes() {
     setCell(tr, '.gap-slot', p.gap);
   });
 }
+function activeOutcomeBuckets() {
+  return Array.from(document.querySelectorAll('.f-outcome:checked')).map(cb => cb.value);
+}
 function recomputeDynStats() {
   applyTargetModes();
   const excludeTags = activeDynExcludeTags();
   const isolateTags = activeDynIsolateTags();
+  const outcomeOn = activeOutcomeBuckets();
   const mgmtCb = document.getElementById('mgmt-thrust-trail');
   const useMgmt = !!(mgmtCb && mgmtCb.checked);
   let n = 0, wins = 0, sumR = 0, sumPnl = 0, maxWinMae = 0, maxLossMfe = 0;
@@ -2756,8 +2795,8 @@ function recomputeDynStats() {
     tr.classList.toggle('dyn-hidden', hidden);
     const chartRow = document.getElementById('chart-row-' + tr.dataset.idx);
     if (chartRow) chartRow.classList.toggle('dyn-hidden', hidden);
-    if (hidden || tr.classList.contains('unfilled-row')
-        || tr.classList.contains('no-target-row')) return;
+    const isNoTradeRow = tr.classList.contains('unfilled-row')
+      || tr.classList.contains('no-target-row');
     // Trade management (see trade_management.py): every filled long row
     // already carries a precomputed managed outcome in data-mgmt-* --
     // fired='1' means the rules actually changed something for that row.
@@ -2768,6 +2807,14 @@ function recomputeDynStats() {
     const rVal = parseFloat(useRow ? tr.dataset.mgmtR : tr.dataset.r);
     const pnl = parseFloat(useRow ? tr.dataset.mgmtPnlPts : tr.dataset.pnlPts);
     const outcome = useRow ? tr.dataset.mgmtOutcome : tr.dataset.outcome;
+    // Win/Loss/No trade bucket -- same per-row outcome the stats below
+    // fold into win rate, so this filter always agrees with those numbers.
+    const bucket = isNoTradeRow ? 'no_trade'
+      : (isNaN(rVal) ? 'no_trade' : (outcome === 'target' ? 'win' : 'loss'));
+    const outcomeHidden = !outcomeOn.includes(bucket);
+    tr.classList.toggle('outcome-hidden', outcomeHidden);
+    if (chartRow) chartRow.classList.toggle('outcome-hidden', outcomeHidden);
+    if (hidden || outcomeHidden || isNoTradeRow) return;
     if (!isNaN(rVal)) {
       n += 1;
       sumR += rVal;
@@ -2794,8 +2841,13 @@ function recomputeDynStats() {
   setText('sum-total-pnl', (sumPnl >= 0 ? '+' : '') + sumPnl.toFixed(1));
   setText('sum-max-win-mae', maxWinMae.toFixed(2));
   setText('sum-max-loss-mfe', maxLossMfe.toFixed(2));
+  // The R >= filter below (shared applyReviewFilters/numFilterOk, data-target
+  // "rr") reads tr.dataset.rr, which applyTargetModes() just rewrote for
+  // whichever target rule is now ticked -- re-run it so that filter doesn't
+  // go stale against the rule that was active when the page last ran it.
+  applyReviewFilters();
 }
-document.querySelectorAll('.f-dyn-exclude, .f-dyn-isolate, .f-target-mode').forEach(cb => cb.addEventListener('change', recomputeDynStats));
+document.querySelectorAll('.f-dyn-exclude, .f-dyn-isolate, .f-target-mode, .f-outcome').forEach(cb => cb.addEventListener('change', recomputeDynStats));
 const mgmtToggleCb = document.getElementById('mgmt-thrust-trail');
 if (mgmtToggleCb) mgmtToggleCb.addEventListener('change', recomputeDynStats);
 recomputeDynStats();
