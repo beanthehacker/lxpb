@@ -120,6 +120,19 @@ the target are ALL M5 LXPB structure:
          hard rule, not a filter -- it is in the baseline and the managed
          numbers both.
 
+       * WEAK P1 BREAKOUT (`_m5_p1_range_ratio`). The subject level's OWN
+         P1 (breakout) candle range, divided by its trailing
+         `M5_AVG_RANGE_WINDOW`-bar M5 average range -- the same range-ratio
+         calc and `WIDE_BREAKOUT_RATIO_THRESHOLD` (2x) cutoff
+         render_labels_report.py uses to flag a 'wide breakout' H1 P1 for
+         the strong-breakout sample, just run on M5 bars. Below 2x is
+         tagged `weak_p1_breakout` -- a thin thrust that barely out-ranged
+         the recent tape, as distinct from a genuine impulsive break. NOT
+         excluded by default (unlike the two filters above): whether
+         breakout strength matters for this M5-native strategy is exactly
+         what the checkbox lets a reviewer find out, not a rule already
+         adopted.
+
 Every filled, in-R trade is resolved with the exact same tick-accurate
 machinery the rest of this repo depends on
 (render_stop_target_report.resolve_trades / _compute_excursion, which pin
@@ -809,6 +822,40 @@ def _in_globex_open_window(ts_utc):
     return GLOBEX_OPEN_START_PT <= tod < GLOBEX_OPEN_END_PT
 
 
+M5_AVG_RANGE_WINDOW = R.AVG_RANGE_WINDOW                        # same trailing-bar count as the H1 hint
+WIDE_M5_BREAKOUT_RATIO_THRESHOLD = R.WIDE_BREAKOUT_RATIO_THRESHOLD  # same 2x cutoff, run on M5 bars
+
+_M5_RANGE_RATIO = None
+
+
+def _m5_range_ratio_table():
+    """{M5 bar time -> that bar's own (high-low) range / its trailing
+    M5_AVG_RANGE_WINDOW-bar average range}, over the whole continuous M5
+    series (LC.m5_bars_continuous) -- the M5-timeframe run of the same calc
+    render_labels_report.compute_range_ratio_col does for the H1 'wide
+    breakout' hint (WIDE_BREAKOUT_RATIO_THRESHOLD). The average excludes the
+    bar itself (shift(1)), so a level's own P1 thrust can never inflate its
+    own baseline. Lazily built once per process."""
+    global _M5_RANGE_RATIO
+    if _M5_RANGE_RATIO is None:
+        bars = LC.m5_bars_continuous()
+        rng = bars["high"] - bars["low"]
+        avg = rng.rolling(M5_AVG_RANGE_WINDOW).mean().shift(1)
+        _M5_RANGE_RATIO = (rng / avg).to_dict()
+    return _M5_RANGE_RATIO
+
+
+def _m5_p1_range_ratio(breakout_time):
+    """This level's own P1 breakout-bar range ratio (see
+    _m5_range_ratio_table), or None if the bar isn't in the cached M5 series
+    or doesn't yet have M5_AVG_RANGE_WINDOW trailing bars to average against.
+    Used to tag a THIN P1 thrust -- one that barely out-ranged the recent
+    M5 tape -- for the weak_p1_breakout dynamic filter (process_cluster)."""
+    breakout_time = pd.to_datetime(breakout_time, utc=True)
+    ratio = _m5_range_ratio_table().get(breakout_time)
+    return float(ratio) if ratio is not None and not pd.isna(ratio) else None
+
+
 # --------------------------------------------------------------------------
 # Per-cluster processing (one cluster = one trade)
 # --------------------------------------------------------------------------
@@ -847,6 +894,19 @@ def process_cluster(cluster, args):
     }
     if swerve is not None:
         result["dyn_tags"].append("swerved" if swerve["moved"] else "swerve_blocked")
+
+    # P1 breakout-bar strength: this SUBJECT level's own breakout candle
+    # (row_d, not the entry level -- entry refinement/swerve can move the
+    # fill onto a different M5 level, but the retest signal being traded is
+    # still row_d's own P1) measured against its trailing M5-bar average
+    # range, same calc/threshold as the H1 report's phase1_wide_breakout
+    # hint. Tags, doesn't drop -- a thin P1 thrust is a candidate for a
+    # tighter gate, not proof one is needed, so it's left in the baseline
+    # stats behind an off-by-default checkbox.
+    p1_range_ratio = _m5_p1_range_ratio(row_d["breakout_time"])
+    result["p1_range_ratio"] = p1_range_ratio
+    if p1_range_ratio is not None and p1_range_ratio < WIDE_M5_BREAKOUT_RATIO_THRESHOLD:
+        result["dyn_tags"].append("weak_p1_breakout")
 
     window_start = pd.to_datetime(row_d["retest_time"], utc=True)
     touch_time_alt, fill_price = SF.find_alt_fill(
@@ -2163,6 +2223,14 @@ def _render_row(idx, res, chart_stacks, fps):
                           f'level was available to move to, so this trade is NOT taken. It is '
                           f'shown at its original entry so it can still be reviewed, and left out '
                           f'of the headline stats by default.">SWERVE BLOCKED</span>')
+        if "weak_p1_breakout" in dyn_tags:
+            dyn_badges += (f'<span class="dyn-tag-badge" title="Dynamic filter '
+                          f'‘weak_p1_breakout’: this level’s own P1 (breakout) bar range was only '
+                          f'{res["p1_range_ratio"]:.2f}x its trailing {M5_AVG_RANGE_WINDOW}-bar M5 '
+                          f'average range (below the {WIDE_M5_BREAKOUT_RATIO_THRESHOLD:g}x cutoff '
+                          f'the H1 report uses for its own ‘wide breakout’ sample) -- a thin, '
+                          f'unconvincing thrust through the level. Not excluded by default -- toggle the '
+                          f'Dynamic filters checkbox above to see performance without these.">WEAK P1</span>')
         modes_attr = _attr_json(payloads)
 
         chart_stack, fp = chart_stacks[idx], fps[idx]
@@ -2398,6 +2466,10 @@ docstring in render_m5_confl2_report.py for the full convention.">Dynamic filter
       Exclude end-of-day flats</label>
     <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="eod_flat">
       Only</label>
+    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="weak_p1_breakout">
+      Exclude weak P1 breakout (&lt;__WIDE_RATIO__x avg range)</label>
+    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="weak_p1_breakout">
+      Only</label>
   </div>
   <div class="filter-row">
     <span class="filter-label" title="Which TARGET RULE each trade exits on -- live, in the
@@ -2473,6 +2545,7 @@ the box is checked.">Trade management</span>
 <div class="tab-panel" id="tab-trades">
 {summary_html}
 {filter_panel.replace("__MIN_R__", f"{args.min_r:g}")
+   .replace("__WIDE_RATIO__", f"{WIDE_M5_BREAKOUT_RATIO_THRESHOLD:g}")
    .replace("__CONSOL_CHECKED__",
             "checked" if "consolidation" in args.default_target_modes else "")
    .replace("__OPP_CHECKED__",
