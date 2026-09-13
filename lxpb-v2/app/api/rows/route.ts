@@ -13,6 +13,7 @@ async function requireSession() {
 // GET /api/rows?report=<key> -> { [row_key]: fields }
 export async function GET(req: NextRequest) {
   if (!(await requireSession())) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!sql) return NextResponse.json({ error: "database not configured" }, { status: 503 });
 
   const report = req.nextUrl.searchParams.get("report");
   if (!report) return NextResponse.json({ error: "missing report" }, { status: 400 });
@@ -28,6 +29,7 @@ export async function GET(req: NextRequest) {
 // POST /api/rows  { report, key, fields } -> upsert one row
 export async function POST(req: NextRequest) {
   if (!(await requireSession())) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!sql) return NextResponse.json({ error: "database not configured" }, { status: 503 });
 
   const body = await req.json().catch(() => null);
   const report = body?.report;
@@ -49,6 +51,7 @@ export async function POST(req: NextRequest) {
 // DELETE /api/rows?report=<key> -> clear all rows for a report
 export async function DELETE(req: NextRequest) {
   if (!(await requireSession())) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!sql) return NextResponse.json({ error: "database not configured" }, { status: 503 });
 
   const report = req.nextUrl.searchParams.get("report");
   if (!report) return NextResponse.json({ error: "missing report" }, { status: 400 });

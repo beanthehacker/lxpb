@@ -3,10 +3,7 @@ import { neon } from "@neondatabase/serverless";
 const connectionString =
   process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.DATABASE_URL_UNPOOLED;
 
-if (!connectionString) {
-  throw new Error(
-    "No Postgres connection string found. Set DATABASE_URL (Neon/Vercel Postgres integration env var)."
-  );
-}
-
-export const sql = neon(connectionString);
+// `null` (rather than throwing here) when unset, so pages/routes that don't
+// touch the DB still build and serve fine before Postgres is configured.
+// Callers must check for null and respond accordingly (see app/api/rows*).
+export const sql = connectionString ? neon(connectionString) : null;

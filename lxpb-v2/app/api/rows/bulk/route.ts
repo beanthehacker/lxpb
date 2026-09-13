@@ -13,6 +13,7 @@ async function requireSession() {
 // POST /api/rows/bulk  { report, entries: { [row_key]: fields } } -> upsert many (CSV import)
 export async function POST(req: NextRequest) {
   if (!(await requireSession())) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!sql) return NextResponse.json({ error: "database not configured" }, { status: 503 });
 
   const body = await req.json().catch(() => null);
   const report = body?.report;
