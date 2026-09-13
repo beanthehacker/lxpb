@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "buildCommand": "node scripts/build-index.mjs",
   "installCommand": "echo 'no dependencies'",
-  "outputDirectory": "lxpb-v2/public"
+  "buildCommand": "if [ -f scripts/build-index.mjs ]; then node scripts/build-index.mjs; else node lxpb-v2/scripts/build-index.mjs; fi",
+  "outputDirectory": "dist"
 }

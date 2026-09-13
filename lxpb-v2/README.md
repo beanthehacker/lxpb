@@ -13,15 +13,18 @@ features.
 
 **Connect the GitHub repo to a Vercel project and that is the whole setup
 -- no dashboard settings to change, no env vars, no database.** The repo
-root's `vercel.json` does it all: it runs `scripts/build-index.mjs` (which
-generates the `/` landing page listing every report, grouped by family) and
-serves `lxpb-v2/public/` as the site root. Reports keep their natural URLs,
-`/reports/*.html`, because they are served straight from where the
-`render_*.py` scripts already write them -- nothing is copied or moved.
+root's `vercel.json` runs `lxpb-v2/scripts/build-index.mjs`, which builds
+the whole site into `dist/`: everything under `lxpb-v2/public/` (the
+reports, plus `js/`) alongside a generated `index.html` landing page
+listing every report, grouped by family. Reports keep their natural
+`/reports/*.html` URLs, and the index is regenerated on every deploy, so it
+can never drift from what the `render_*.py` scripts actually wrote.
 
-Leave **Root Directory** alone (it must stay the repo root). Setting it to
-`lxpb-v2` breaks this, because `vercel.json` and `scripts/` live at the
-root.
+Vercel reads `vercel.json` from the repo root but runs the build from
+`lxpb-v2/`, so the build command tries both locations and the script writes
+`dist/` relative to whichever directory it ran in. That means the
+deployment works whether **Root Directory** is left empty or set to
+`lxpb-v2` -- there is no setting you need to get right.
 
 Two things a plain static deploy does not include:
 

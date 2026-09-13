@@ -1,8 +1,6 @@
 node_modules/
 .next/
 next-env.d.ts
-# Generated at deploy time by ../scripts/build-index.mjs
-public/index.html
 .env
 .env.local
 .env*.local

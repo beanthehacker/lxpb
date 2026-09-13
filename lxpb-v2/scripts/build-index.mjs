@@ -1,15 +1,20 @@
-// Generates lxpb-v2/public/index.html -- the landing page linking to every
-// report. Vercel serves lxpb-v2/public as the site root (see vercel.json), so
-// the reports keep their existing /reports/*.html URLs and nothing is copied.
+// Builds the deployable site into ./dist: every file under lxpb-v2/public
+// (the reports themselves plus js/), and an index.html landing page linking
+// to each report, grouped by family.
 //
-// Run manually with `node scripts/build-index.mjs` to preview locally.
+// Sources are resolved from this file's own location, but the output goes to
+// `dist` under the *current working directory*, because Vercel runs the build
+// from lxpb-v2/ while reading vercel.json from the repo root -- writing
+// relative to cwd keeps `outputDirectory: "dist"` correct from either one.
+//
+// Run manually with `node lxpb-v2/scripts/build-index.mjs` to preview locally.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PUBLIC_DIR = path.join(REPO_ROOT, "lxpb-v2", "public");
+const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public");
 const REPORTS_DIR = path.join(PUBLIC_DIR, "reports");
+const OUT_DIR = path.join(process.cwd(), "dist");
 
 const GROUPS = [
   {
@@ -150,6 +155,12 @@ ${body}
 </html>
 `;
 
-fs.mkdirSync(PUBLIC_DIR, { recursive: true });
-fs.writeFileSync(path.join(PUBLIC_DIR, "index.html"), html);
-console.log(`Wrote lxpb-v2/public/index.html -- ${files.length} reports in ${sections.length} groups.`);
+if (!files.length) {
+  console.error(`No reports found under ${REPORTS_DIR} -- refusing to publish an empty site.`);
+  process.exit(1);
+}
+
+fs.rmSync(OUT_DIR, { recursive: true, force: true });
+fs.cpSync(PUBLIC_DIR, OUT_DIR, { recursive: true });
+fs.writeFileSync(path.join(OUT_DIR, "index.html"), html);
+console.log(`Built ${OUT_DIR} -- ${files.length} reports in ${sections.length} groups.`);
