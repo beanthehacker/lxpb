@@ -11,20 +11,40 @@ features.
 
 ## Deploying (Vercel)
 
-The repo root is also a minimal Next.js app: `/` lists every report under
-`public/reports/` (grouped by family, opens in a new tab), `/reports/*.html`
-serves the reports themselves, and `/api/rows` is the Postgres-backed store
-that replaced each report's old `localStorage` review/label state (so
-Reviewed/Valid/Replayed/Notes-style checkboxes now sync across devices).
-Everything is gated behind Google sign-in for a single allowed email.
+**Connect the GitHub repo to a Vercel project and that is the whole setup
+-- no dashboard settings to change, no env vars, no database.** The repo
+root's `vercel.json` does it all: it runs `scripts/build-index.mjs` (which
+generates the `/` landing page listing every report, grouped by family) and
+serves `lxpb-v2/public/` as the site root. Reports keep their natural URLs,
+`/reports/*.html`, because they are served straight from where the
+`render_*.py` scripts already write them -- nothing is copied or moved.
 
-**One-time setup, after connecting the GitHub repo to a Vercel project:**
+Leave **Root Directory** alone (it must stay the repo root). Setting it to
+`lxpb-v2` breaks this, because `vercel.json` and `scripts/` live at the
+root.
+
+Two things a plain static deploy does not include:
+
+- **The site is public.** Anyone with the URL can read every report.
+- **Checkbox/label state does not persist.** Reviewed/Valid/Replayed/Notes
+  toggles work within a page visit but are forgotten on reload, since
+  `/api/rows` does not exist on a static deployment. `public/js/row-store.js`
+  degrades quietly here -- no console errors, just no saving.
+
+### Optional: the full Next.js app (sign-in + saved labels)
+
+`lxpb-v2/` is also a Next.js app providing the same index page plus Google
+sign-in gating and `/api/rows`, a Postgres-backed store for the review/label
+state so it syncs across devices. Deploying *that* instead is what needs
+configuration: set the Vercel project's **Root Directory** to `lxpb-v2`,
+then:
 
 1. **Database** -- in the Vercel dashboard, Storage tab, add a Postgres
    database (Neon integration). This sets `DATABASE_URL` (and friends) as
    project env vars automatically. Then, locally: `vercel env pull
    .env.local` followed by `npm run init-db` (creates the `row_state`
-   table from `db/schema.sql` -- one-off, idempotent).
+   table from `db/schema.sql` -- one-off, idempotent). Until this is set,
+   `/api/rows` returns 503 and the rest of the site still works.
 2. **Google sign-in** -- in Google Cloud Console, create an OAuth 2.0
    Client ID (OAuth consent screen: External + Testing, with your Google
    account added as a test user is enough for single-user use). Authorized
