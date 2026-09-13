@@ -11,10 +11,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { inflateGzReports } from "./decompress-gz-reports.mjs";
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public");
 const REPORTS_DIR = path.join(PUBLIC_DIR, "reports");
 const OUT_DIR = path.join(process.cwd(), "dist");
+
+// Some reports are committed gzip-compressed (over GitHub's 100MB blob
+// limit raw) -- inflate them back to real .html before walking/copying
+// REPORTS_DIR, so they show up on the landing page and serve normally.
+inflateGzReports(REPORTS_DIR);
 
 const GROUPS = [
   {
