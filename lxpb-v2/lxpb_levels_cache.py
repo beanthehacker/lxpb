@@ -149,6 +149,7 @@ import json
 import time
 import pickle
 import hashlib
+import weakref
 import argparse
 
 import numpy as np
@@ -700,12 +701,27 @@ def m5_levels(rebuild=False, verbose=True):
 
     Survives a rollover without recomputing: the stored ledger is shifted onto
     the current back-adjustment scale rather than rebuilt, because that shift is
-    provably all that changes (see the module docstring)."""
+    provably all that changes (see the module docstring).
+
+    Memoised per process against the bars object it was reconciled with:
+    m5_bars_continuous() is itself a per-process singleton over static
+    TradingView exports, so a second reconcile could only ever re-read the
+    same parquet. Reports call this once per chart, which made that re-read
+    a real share of their per-trade time. Callers must treat the returned
+    ledger as read-only (they all do) -- it is shared."""
+    global _M5_LEVELS_MEMO
     bars = m5_bars_continuous()
     if bars is None or bars.empty:
         return None
+    if not rebuild and _M5_LEVELS_MEMO is not None and _M5_LEVELS_MEMO[0] is bars:
+        return _M5_LEVELS_MEMO[1]
     df, meta, _ = _reconcile("m5_levels_continuous", bars, "M5", "", rebuild, verbose)
-    return _to_current_scale(df, meta, bars, verbose, "M5")
+    df = _to_current_scale(df, meta, bars, verbose, "M5")
+    _M5_LEVELS_MEMO = (bars, df)
+    return df
+
+
+_M5_LEVELS_MEMO = None
 
 
 def m5_levels_for_ts(ts, **kw):
@@ -846,6 +862,127 @@ def same_side_live_confluence(confluent, level_type, breakout_time):
     live = same_type[same_type["death_time"].isna() |
                      (same_type["death_time"] > breakout_time)]
     return live.reset_index(drop=True)
+
+
+# --------------------------------------------------------------------------
+# Row pre-selection
+#
+# Every query above filters the WHOLE ledger with pandas masks, and the
+# reports ask them once per retest or per trade -- a full copy of one level
+# type (~124k M5 rows) each time. select_levels() narrows the ledger to a
+# SUPERSET of the rows a query could possibly keep (same type, plus an
+# optional price band / breakout window / confirmed-and-alive instant) from
+# plain numpy arrays built once per ledger. The caller then runs the SAME
+# query on that small frame, so every liveness rule stays exactly where it
+# is and the result is identical row for row, in ledger order.
+#
+# The price band is a sorted array per level type, sliced with
+# np.searchsorted -- a multimap, never price -> one level, since many
+# distinct levels share a price. It only decides which rows get looked at;
+# it never decides liveness.
+#
+# Keyed on the ledger OBJECT (weakref): ledgers are treated as read-only
+# once loaded, which every report here already does.
+# --------------------------------------------------------------------------
+
+_LEDGER_INDEXES = {}
+_INDEX_TIME_COLS = ("formation_time", "breakout_time", "death_time")
+
+
+class _LedgerIndex:
+    def __init__(self, ledger):
+        types = ledger["type"].to_numpy()
+        bt = pd.DatetimeIndex(ledger["breakout_time"])
+        dt = pd.DatetimeIndex(ledger["death_time"])
+        # Distinct P0s per (type, P1 bar) -- the whole-ledger count, which is
+        # what a "confirmed as of T" filter sees too: every level sharing a
+        # breakout bar at or before T is itself confirmed by T.
+        counts = (ledger.groupby(["type", "breakout_time"])["formation_time"]
+                  .transform("nunique").fillna(0).to_numpy())
+        gated = (ledger["fate"].to_numpy() == FATE_GATED_DROPPED if "fate" in ledger.columns
+                 else np.zeros(len(ledger), dtype=bool))
+        cols = {"price": ledger["price"].to_numpy(float),
+                "bt_ok": ~bt.isna(), "bt": bt.asi8,
+                "dt_na": dt.isna(), "dt": dt.asi8,
+                "count": counts, "gated": gated}
+        self.by_type = {}
+        for t in pd.unique(types):
+            pos = np.flatnonzero(types == t)
+            d = {k: v[pos] for k, v in cols.items()}
+            d["pos"] = pos
+            d["by_price"] = np.argsort(d["price"], kind="stable")
+            d["sorted_price"] = d["price"][d["by_price"]]
+            self.by_type[t] = d
+
+    def select(self, level_type, price=None, pts=None, confirmed_by=None,
+               min_breakout_levels=1, alive_at=None, breakout_from=None,
+               breakout_to=None, gated=None):
+        d = self.by_type.get(level_type)
+        if d is None:
+            return np.empty(0, dtype=np.intp)
+        sel = None
+        if price is not None:
+            # Widened by a hair so the band can only ever be a superset of the
+            # caller's own inclusive float comparison.
+            lo = np.searchsorted(d["sorted_price"], price - pts - 1e-9, side="left")
+            hi = np.searchsorted(d["sorted_price"], price + pts + 1e-9, side="right")
+            sel = np.sort(d["by_price"][lo:hi])
+
+        def col(k):
+            return d[k] if sel is None else d[k][sel]
+
+        keep = np.ones(len(d["pos"]) if sel is None else len(sel), dtype=bool)
+        if confirmed_by is not None:
+            keep &= col("bt_ok") & (col("bt") <= _as_utc(confirmed_by).value)
+        if min_breakout_levels > 1:
+            keep &= col("count") >= min_breakout_levels
+        if alive_at is not None:
+            keep &= col("dt_na") | (col("dt") > _as_utc(alive_at).value)
+        if breakout_from is not None:
+            keep &= col("bt_ok") & (col("bt") >= _as_utc(breakout_from).value)
+        if breakout_to is not None:
+            keep &= col("bt_ok") & (col("bt") <= _as_utc(breakout_to).value)
+        if gated is not None:
+            keep &= col("gated") == gated
+        local = np.flatnonzero(keep) if sel is None else sel[keep]
+        return d["pos"][local]
+
+
+def _ledger_index(ledger):
+    if ledger is None or ledger.empty:
+        return None
+    if any(c not in ledger.columns for c in ("type", "price") + _INDEX_TIME_COLS):
+        return None
+    if not all(isinstance(ledger[c].dtype, pd.DatetimeTZDtype) for c in _INDEX_TIME_COLS):
+        return None
+    hit = _LEDGER_INDEXES.get(id(ledger))
+    if hit is not None and hit[0]() is ledger and hit[2] == len(ledger):
+        return hit[1]
+    for k in [k for k, v in _LEDGER_INDEXES.items() if v[0]() is None]:
+        del _LEDGER_INDEXES[k]
+    index = _LedgerIndex(ledger)
+    _LEDGER_INDEXES[id(ledger)] = (weakref.ref(ledger), index, len(ledger))
+    return index
+
+
+def select_levels(ledger, level_type, **query):
+    """`ledger` narrowed to rows of `level_type` that pass every given
+    pre-filter, in ledger order (a positional slice, index labels kept):
+
+      price + pts           price within [price - pts, price + pts]
+      confirmed_by          breakout_time not null and <= this
+      min_breakout_levels   >= this many distinct P0s share the row's P1 bar
+      alive_at              death_time null or > this
+      breakout_from/_to     breakout_time not null and within [from, to]
+      gated                 fate == gated_dropped (True) / != (False)
+
+    A pre-filter, not a query: pass the result to the real query, which
+    re-applies its own rules. Returns None when the ledger can't be indexed
+    (missing columns, tz-naive times) -- fall back to the full ledger."""
+    index = _ledger_index(ledger)
+    if index is None:
+        return None
+    return ledger.iloc[index.select(level_type, **query)]
 
 
 # --------------------------------------------------------------------------

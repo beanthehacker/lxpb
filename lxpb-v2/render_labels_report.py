@@ -619,6 +619,47 @@ def _slice_sorted(df, lo, hi):
     return df.iloc[a:b]
 
 
+_ONE_MINUTE_NS = 60_000_000_000
+
+
+def _resample_1min_ohlc(ticks):
+    """The same frame as
+    ticks.resample("1min").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"}),
+    computed from the sorted tick arrays directly. Reports build one of these
+    over a multi-day window for nearly every trade, and the pandas resample
+    was the largest remaining per-trade cost. Falls back to that resample for
+    anything the fast path doesn't cover (unsorted, tz-naive, NaNs)."""
+    cols = ("Open", "High", "Low", "Close")
+    idx = ticks.index
+    vals = [ticks[c].to_numpy() for c in cols]
+    if (len(ticks) == 0 or not isinstance(idx, pd.DatetimeIndex) or idx.tz is None
+            or not idx.is_monotonic_increasing
+            or any(v.dtype.kind != "f" or np.isnan(v).any() for v in vals)):
+        return ticks.resample("1min").agg({"Open": "first", "High": "max",
+                                           "Low": "min", "Close": "last"})
+    ns = idx.asi8
+    minute = ns - ns % _ONE_MINUTE_NS
+    starts = np.flatnonzero(np.r_[True, minute[1:] != minute[:-1]])
+    ends = np.r_[starts[1:], len(ns)] - 1
+    slot = (minute[starts] - minute[0]) // _ONE_MINUTE_NS
+    n_minutes = int(slot[-1]) + 1
+    out = {}
+    for c, v in zip(cols, vals):
+        col = np.full(n_minutes, np.nan, dtype=v.dtype)
+        if c == "Open":
+            col[slot] = v[starts]
+        elif c == "Close":
+            col[slot] = v[ends]
+        elif c == "High":
+            col[slot] = np.maximum.reduceat(v, starts)
+        else:
+            col[slot] = np.minimum.reduceat(v, starts)
+        out[c] = col
+    index = pd.date_range(pd.Timestamp(int(minute[0]), tz="UTC").tz_convert(idx.tz),
+                          periods=n_minutes, freq="min", name=idx.name)
+    return pd.DataFrame(out, index=index)
+
+
 def _resample_1s(ticks):
     """Same 1s resample convention as export_es_1s_pt.py/export_es_1s_range.py:
     Open recomputed as prior bar's Close (raw scid Open is unreliable)."""
@@ -688,7 +729,13 @@ def build_footprint(touch_time_utc, entry_price_raw, pre_s, post_s, offset=0.0):
     hi = touch_time_utc + pd.Timedelta(seconds=post_s)
     _, sym = _offset_for_ts(touch_time_utc)
     raw = _footprint_load_contract(sym)
-    ticks = raw.loc[(raw.index >= lo) & (raw.index <= hi)]
+    if raw.index.is_monotonic_increasing:
+        # Same rows as the mask below (hi inclusive), without materialising
+        # two whole-contract boolean arrays per footprint.
+        ticks = raw.iloc[raw.index.searchsorted(lo, side="left"):
+                         raw.index.searchsorted(hi, side="right")]
+    else:
+        ticks = raw.loc[(raw.index >= lo) & (raw.index <= hi)]
     if ticks.empty:
         return None
     price = np.round(ticks["Close"].to_numpy(float) / TICK_SIZE_DEFAULT) * TICK_SIZE_DEFAULT

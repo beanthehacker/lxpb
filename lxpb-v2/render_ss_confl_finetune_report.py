@@ -175,7 +175,14 @@ pd.set_option("display.max_columns", 20)
 # --------------------------------------------------------------------------
 
 def _same_side_confluence(ledger, row, n_points):
-    """Apply the existing same-side/P1 filter before the nearby-level query."""
+    """Apply the existing same-side/P1 filter before the nearby-level query.
+    The ledger is first narrowed to same-type rows inside the price band
+    (LC.select_levels), a superset of anything the query can keep, so the
+    result is unchanged -- it just stops copying the whole ledger per row."""
+    if np.isfinite(n_points):
+        nearby = LC.select_levels(ledger, row["type"], price=float(row["price"]), pts=n_points)
+        if nearby is not None:
+            ledger = nearby
     same_side = LC.same_side_live_confluence(ledger, row["type"], row["breakout_time"])
     return LC.find_confluent_levels(
         same_side, row["type"], float(row["price"]), row["formation_time"],
@@ -523,24 +530,50 @@ def _scan_alt_fill(ticks, raw_alt, is_long, pegged=False, peg_step=None, peg_cap
         worst = raw_alt + peg_cap if is_long else raw_alt - peg_cap
     if not ticks.index.is_monotonic_increasing:
         ticks = ticks.sort_index(kind="stable")
-    for r in ticks.itertuples():
+    index = ticks.index
+    low = ticks["Low"].to_numpy(float)
+    high = ticks["High"].to_numpy(float)
+    close = ticks["Close"].to_numpy(float)
+    right_side = (ticks["BidVolume"].to_numpy() > 0) if is_long else (ticks["AskVolume"].to_numpy() > 0)
+
+    def next_event(start):
+        """First record at/after `start` that can change anything at the
+        current price: a fill, or a touch that would re-quote the peg. Every
+        record before it would fall straight through the walk below."""
+        traded = (close[start:] <= current) if is_long else (close[start:] >= current)
+        event = right_side[start:] & traded
+        if pegged and current != worst:
+            touched = (low[start:] <= current) & (current <= high[start:])
+            event |= touched & ~right_side[start:]
+        hit = np.flatnonzero(event)
+        return start + int(hit[0]) if hit.size else None
+
+    # The same record-by-record walk, jumping straight to the next record
+    # that matters instead of visiting every tick in the window.
+    i, n = 0, len(ticks)
+    while i < n:
         if replace_pending:
-            quote = float(r.High if is_long else r.Low)
-            if not np.isfinite(quote) or r.Low > r.High:
-                raise ValueError(f"Invalid bid/ask quote at {r.Index}")
+            j = i
+            quote = float(high[j] if is_long else low[j])
+            if not np.isfinite(quote) or low[j] > high[j]:
+                raise ValueError(f"Invalid bid/ask quote at {index[j]}")
             marketable = current >= quote if is_long else current <= quote
             if marketable:
-                return r.Index, quote
+                return index[j], quote
             replace_pending = False
-        right_side = (r.BidVolume > 0) if is_long else (r.AskVolume > 0)
-        traded_through = (r.Close <= current) if is_long else (r.Close >= current)
-        if right_side and traded_through:
-            return r.Index, current
-        touched = r.Low <= current <= r.High
-        if pegged and touched and not right_side and current != worst:
+        else:
+            j = next_event(i)
+            if j is None:
+                return None, None
+        traded_through = (close[j] <= current) if is_long else (close[j] >= current)
+        if right_side[j] and traded_through:
+            return index[j], current
+        touched = low[j] <= current <= high[j]
+        if pegged and touched and not right_side[j] and current != worst:
             current = (min(current + peg_step, worst) if is_long
                        else max(current - peg_step, worst))
             replace_pending = True
+        i = j + 1
     return None, None
 
 
@@ -593,7 +626,7 @@ def build_minute_bars(touch_time, horizon_hours=HORIZON_HOURS):
     ticks = R._ticks_for_window(touch_time, hi_needed)
     if ticks is None or ticks.empty:
         return None
-    bars = ticks.resample("1min").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
+    bars = R._resample_1min_ohlc(ticks)
     bars["Close"] = bars["Close"].ffill()
     bars["Open"] = bars["Open"].fillna(bars["Close"])
     bars["High"] = bars["High"].fillna(bars["Close"])
@@ -630,7 +663,7 @@ def build_fill_window_chart(window_start, alt_price, level_type, max_hours, fail
         return None
     ticks = ticks.loc[(ticks.index >= window_start) & (ticks.index < hi)]
     offset, _sym = R._offset_for_ts(window_start)
-    bars = ticks.resample("1min").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
+    bars = R._resample_1min_ohlc(ticks)
     bars["Close"] = bars["Close"].ffill()
     bars["Open"] = bars["Open"].fillna(bars["Close"])
     bars["High"] = bars["High"].fillna(bars["Close"])
@@ -660,11 +693,16 @@ def _live_m5_before_entry(m5_ledger, level_type, touch_time, min_breakout_levels
     if m5_ledger is None or m5_ledger.empty:
         return pd.DataFrame()
     as_of = pd.to_datetime(touch_time, utc=True).floor("5min") - pd.Timedelta(nanoseconds=1)
-    confirmed = m5_ledger[(m5_ledger["type"] == level_type) &
-                          (m5_ledger["breakout_time"] <= as_of)]
-    if min_breakout_levels > 1:
-        counts = confirmed.groupby("breakout_time")["formation_time"].transform("nunique")
-        confirmed = confirmed[counts >= min_breakout_levels]
+    # Pre-narrowed to rows still alive at as_of (LC.select_levels); the
+    # liveness query below re-applies its own rules, so nothing changes.
+    confirmed = LC.select_levels(m5_ledger, level_type, confirmed_by=as_of, alive_at=as_of,
+                                 min_breakout_levels=min_breakout_levels)
+    if confirmed is None:
+        confirmed = m5_ledger[(m5_ledger["type"] == level_type) &
+                              (m5_ledger["breakout_time"] <= as_of)]
+        if min_breakout_levels > 1:
+            counts = confirmed.groupby("breakout_time")["formation_time"].transform("nunique")
+            confirmed = confirmed[counts >= min_breakout_levels]
     return LC.levels_live_as_of(confirmed, as_of)
 
 

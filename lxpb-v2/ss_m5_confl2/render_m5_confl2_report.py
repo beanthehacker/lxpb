@@ -554,7 +554,16 @@ def _target_candidate_still_live(bars, level_type, price, breakout_time, as_of):
     R.L.MIN_BARS_BEFORE_RETEST bars after the breakout bar -- the same
     "immediately-next bar can never itself be the retest" rule real P0s
     get) directly against the bars, since the ledger never recorded
-    whether that actually happened for a candidate that failed the gate."""
+    whether that actually happened for a candidate that failed the gate.
+
+    The bar that first kills a candidate depends only on the candidate and the
+    bars, never on `as_of`, so it is found once (_gated_kill_ns) and every
+    later query just compares against it: the same gated candidates come up
+    again for trade after trade, and replaying months of bars for each one
+    was the single largest per-trade cost."""
+    if bars.index.is_monotonic_increasing:
+        kill = _gated_kill_ns(bars, level_type, price, breakout_time)
+        return kill is None or kill > pd.Timestamp(as_of).value
     window = bars[(bars.index > breakout_time) & (bars.index <= as_of)]
     skip = R.L.MIN_BARS_BEFORE_RETEST
     if len(window) <= skip:
@@ -566,6 +575,33 @@ def _target_candidate_still_live(bars, level_type, price, breakout_time, as_of):
     else:
         gap_over = window["low"] > price
     return not (touched | gap_over).any()
+
+
+_GATED_KILL_BARS = None   # (bars, times_ns, lows, highs) the memo below belongs to
+_GATED_KILL_NS = {}
+
+
+def _gated_kill_ns(bars, level_type, price, breakout_time):
+    """UTC-ns time of the first bar that touches or gaps past a gated-dropped
+    candidate under _target_candidate_still_live's rule -- skipping the first
+    R.L.MIN_BARS_BEFORE_RETEST bars after its breakout bar -- or None if no
+    bar in `bars` ever does. The candidate is live as of T exactly when this
+    is None or later than T. Memoised per candidate; `bars` must be sorted."""
+    global _GATED_KILL_BARS
+    if _GATED_KILL_BARS is None or _GATED_KILL_BARS[0] is not bars:
+        _GATED_KILL_BARS = (bars, bars.index.asi8, bars["low"].to_numpy(float),
+                            bars["high"].to_numpy(float))
+        _GATED_KILL_NS.clear()
+    key = (level_type, price, pd.Timestamp(breakout_time).value)
+    if key not in _GATED_KILL_NS:
+        _, times, lows, highs = _GATED_KILL_BARS
+        start = int(np.searchsorted(times, key[2], side="right")) + R.L.MIN_BARS_BEFORE_RETEST
+        lo, hi = lows[start:], highs[start:]
+        touched = (lo <= price) & (hi >= price)
+        gap_over = (hi < price) if level_type == "LHPB" else (lo > price)
+        hit = np.flatnonzero(touched | gap_over)
+        _GATED_KILL_NS[key] = int(times[start + hit[0]]) if hit.size else None
+    return _GATED_KILL_NS[key]
 
 
 def _live_m5_target_candidates(m5_ledger, level_type, touch_time, min_breakout_levels=1,
@@ -593,23 +629,35 @@ def _live_m5_target_candidates(m5_ledger, level_type, touch_time, min_breakout_l
     if m5_ledger is None or m5_ledger.empty:
         return pd.DataFrame()
     as_of = pd.to_datetime(touch_time, utc=True).floor("5min") - pd.Timedelta(nanoseconds=1)
-    confirmed = m5_ledger[(m5_ledger["type"] == level_type) &
-                         (m5_ledger["breakout_time"] <= as_of)]
-    if min_breakout_levels > 1:
-        counts = confirmed.groupby("breakout_time")["formation_time"].transform("nunique")
-        confirmed = confirmed[counts >= min_breakout_levels]
-    is_gated = confirmed["fate"] == "gated_dropped"
-    live = LC.levels_live_as_of(confirmed[~is_gated], as_of)
-    gated = confirmed[is_gated]
-    if price is not None and max_pts is not None:
+    # Pre-narrowed with LC.select_levels -- real P0s to the ones still alive
+    # at as_of, gated candidates to the distance band -- and then run through
+    # exactly the same filters as the full-ledger fallback, so the rows kept
+    # are identical.
+    near = {"price": price, "pts": max_pts} if price is not None and max_pts is not None else {}
+    nongated = LC.select_levels(m5_ledger, level_type, confirmed_by=as_of, alive_at=as_of,
+                                min_breakout_levels=min_breakout_levels, gated=False)
+    if nongated is not None:
+        live = LC.levels_live_as_of(nongated, as_of)
+        gated = LC.select_levels(m5_ledger, level_type, confirmed_by=as_of,
+                                 min_breakout_levels=min_breakout_levels, gated=True, **near)
+    else:
+        confirmed = m5_ledger[(m5_ledger["type"] == level_type) &
+                             (m5_ledger["breakout_time"] <= as_of)]
+        if min_breakout_levels > 1:
+            counts = confirmed.groupby("breakout_time")["formation_time"].transform("nunique")
+            confirmed = confirmed[counts >= min_breakout_levels]
+        is_gated = confirmed["fate"] == "gated_dropped"
+        live = LC.levels_live_as_of(confirmed[~is_gated], as_of)
+        gated = confirmed[is_gated]
+    if near:
         gated = gated[(gated["price"] - price).abs() <= max_pts]
     if gated.empty:
         return live
     bars = LC.m5_bars_continuous()
-    still_live = gated.apply(
-        lambda r: _target_candidate_still_live(bars, level_type, float(r["price"]),
-                                               pd.Timestamp(r["breakout_time"]), as_of),
-        axis=1)
+    still_live = np.fromiter(
+        (_target_candidate_still_live(bars, level_type, p, pd.Timestamp(b), as_of)
+         for p, b in zip(gated["price"].to_numpy(float), gated["breakout_time"])),
+        dtype=bool, count=len(gated))
     live_gated = gated[still_live].copy()
     live_gated["stage"] = "broken"
     return pd.concat([live, live_gated], ignore_index=True)
@@ -1122,6 +1170,10 @@ def _p1_sibling_group(level_type, breakout_time):
     breakout_time = pd.Timestamp(breakout_time)
     if breakout_time.tzinfo is None:
         breakout_time = breakout_time.tz_localize("UTC")
+    same_bar = LC.select_levels(ledger, level_type,
+                                breakout_from=breakout_time, breakout_to=breakout_time)
+    if same_bar is not None:
+        ledger = same_bar
     group = ledger[(ledger["type"] == level_type) &
                    (pd.to_datetime(ledger["breakout_time"], utc=True) == breakout_time)]
     if len(group) < 2:

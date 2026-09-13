@@ -225,19 +225,24 @@ def _pin_exact_exit(sym, minute_start, offset, entry_price_adj, stop, target, is
     raw_entry = entry_price_adj - offset
     stop_price = raw_entry - stop if is_long else raw_entry + stop
     target_price = raw_entry + target if is_long else raw_entry - target
-    for t, r in ticks.iterrows():
-        lo, hi = float(r["Low"]), float(r["High"])
-        if is_long:
-            if lo <= stop_price:
-                return "stop", t, entry_price_adj - stop
-            if hi >= target_price and r.AskVolume > 0:
-                return "target", t, entry_price_adj + target
-        else:
-            if hi >= stop_price:
-                return "stop", t, entry_price_adj + stop
-            if lo <= target_price and r.BidVolume > 0:
-                return "target", t, entry_price_adj - target
-    return None, None, None
+    # First tick that fills either leg, stop checked before target on the same
+    # tick -- the original row-by-row walk, done as whole-array tests.
+    lo = ticks["Low"].to_numpy(float)
+    hi = ticks["High"].to_numpy(float)
+    if is_long:
+        stop_hit = lo <= stop_price
+        target_hit = (hi >= target_price) & (ticks["AskVolume"].to_numpy() > 0)
+    else:
+        stop_hit = hi >= stop_price
+        target_hit = (lo <= target_price) & (ticks["BidVolume"].to_numpy() > 0)
+    hit = np.flatnonzero(stop_hit | target_hit)
+    if not hit.size:
+        return None, None, None
+    i = hit[0]
+    t = ticks.index[i]
+    if stop_hit[i]:
+        return "stop", t, (entry_price_adj - stop if is_long else entry_price_adj + stop)
+    return "target", t, (entry_price_adj + target if is_long else entry_price_adj - target)
 
 
 def _resolve_ambiguous_minute(sym, minute_start, offset, entry_price_adj, stop, target, is_long):

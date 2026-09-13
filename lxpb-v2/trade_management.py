@@ -231,7 +231,12 @@ def thrust_trail_events(level_type, start_time, end_time, ledger=None, m5_bars=N
     m5_bars = LC.m5_bars_continuous() if m5_bars is None else m5_bars
     start_time, end_time = _norm_utc(start_time), _norm_utc(end_time)
 
-    sub = ledger[ledger["type"] == level_type].copy()
+    # Pre-narrowed to breakouts near the window (a superset of the trigger
+    # filter below -- see LC.select_levels), instead of copying every level.
+    near = LC.select_levels(ledger, level_type,
+                            breakout_from=start_time - pd.Timedelta(minutes=10),
+                            breakout_to=end_time)
+    sub = (ledger[ledger["type"] == level_type] if near is None else near).copy()
     sub["breakout_time"] = pd.to_datetime(sub["breakout_time"], utc=True)
     # Window on the event's own TRIGGER (the breakout bar's close), not on
     # the bar's open: a breakout candle that was still in progress at entry
