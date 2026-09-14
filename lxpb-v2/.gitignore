@@ -13,3 +13,4 @@ __pycache__/
 # scripts/decompress-gz-reports.mjs (runs before dev/build) -- the inflated
 # .html itself is a build artifact, not source, so list each one here.
 public/reports/ss_m5_confl2/ss_m5_confl2_report_2026_full_year.html
+public/reports/ss_m5_confl2/ss_m5_confl2_report_2025_full_year.html
