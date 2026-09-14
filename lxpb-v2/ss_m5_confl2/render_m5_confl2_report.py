@@ -127,11 +127,11 @@ the target are ALL M5 LXPB structure:
          render_labels_report.py uses to flag a 'wide breakout' H1 P1 for
          the strong-breakout sample, just run on M5 bars. Below 2x is
          tagged `weak_p1_breakout` -- a thin thrust that barely out-ranged
-         the recent tape, as distinct from a genuine impulsive break. NOT
-         excluded by default (unlike the two filters above): whether
-         breakout strength matters for this M5-native strategy is exactly
-         what the checkbox lets a reviewer find out, not a rule already
-         adopted.
+         the recent tape, as distinct from a genuine impulsive break.
+         Excluded by default, like the two filters above: on the 2026
+         data dropping these lifts the default view to +0.55R avg / +67.3R
+         total over 62 trades (it did NOT hold on 2025 out-of-sample, so
+         untick it to see the unfiltered numbers).
 
 Every filled, in-R trade is resolved with the exact same tick-accurate
 machinery the rest of this repo depends on
@@ -2282,8 +2282,8 @@ def _render_row(idx, res, chart_stacks, fps):
                           f'{res["p1_range_ratio"]:.2f}x its trailing {M5_AVG_RANGE_WINDOW}-bar M5 '
                           f'average range (below the {WIDE_M5_BREAKOUT_RATIO_THRESHOLD:g}x cutoff '
                           f'the H1 report uses for its own ‘wide breakout’ sample) -- a thin, '
-                          f'unconvincing thrust through the level. Not excluded by default -- toggle the '
-                          f'Dynamic filters checkbox above to see performance without these.">WEAK P1</span>')
+                          f'unconvincing thrust through the level. Left out of the headline stats by default -- untick the '
+                          f'Dynamic filters checkbox above to include these.">WEAK P1</span>')
         modes_attr = _attr_json(payloads)
 
         chart_stack, fp = chart_stacks[idx], fps[idx]
@@ -2488,10 +2488,10 @@ stop pts, fixed regardless of win or loss). Reads tr.dataset.rr, which applyTarg
 in sync with whichever target rule is ticked above -- the same generic op/value numeric-filter
 mechanism (f-num-op/f-num-val, data-target) already used for Confl./SS Confl. in
 render_stop_target_report.py's shared review panel (see numFilterOk/applyReviewFilters there).
-Pick &ge; and e.g. 1.5 to show only R &ge; 1.5.">R</span>
+Defaults to &ge; 1 (only R &ge; 1 shown); pick any to show every row.">R</span>
     <select class="f-num-op" data-target="rr">
-      <option value="any" selected>any</option>
-      <option value="gte">&ge;</option>
+      <option value="any">any</option>
+      <option value="gte" selected>&ge;</option>
       <option value="gt">&gt;</option>
       <option value="eq">=</option>
       <option value="lte">&le;</option>
@@ -2549,7 +2549,7 @@ docstring in render_m5_confl2_report.py for the full convention.">Dynamic filter
       Exclude end-of-day flats</label>
     <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="eod_flat">
       Only</label>
-    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="weak_p1_breakout">
+    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="weak_p1_breakout" checked>
       Exclude weak P1 breakout (&lt;__WIDE_RATIO__x avg range)</label>
     <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="weak_p1_breakout">
       Only</label>
