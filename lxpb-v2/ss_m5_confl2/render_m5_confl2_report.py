@@ -1919,6 +1919,18 @@ def _apply_h1_p0_confluence(results):
     column is a raw structural check, not a replay of lxpb.py's candidate
     gate (see _h1_p0_kind's own docstring for that same point re: kind).
 
+    A candidate H1 P0 is further required to have at least one H1 candle
+    between its OWN breakout (P1) and retest (P2) bars -- an immediate
+    next-bar snap-back (0 candles between) reads as a wick round-trip, not
+    a level the market spent any time respecting, so it is too weak to
+    count as confluence. Checked by BAR POSITION in R._display_h1(), not
+    wall-clock time: a weekend/holiday close sits between two truly
+    ADJACENT bars with no separating candle, and a wall-clock gap
+    threshold (e.g. >=2h) would wrongly count that closure as 'a candle in
+    between'. A level with no breakout, or a breakout but no retest, has
+    no P1/P2 pair to check and passes through unaffected -- this rule
+    only screens out ones that reacted instantly.
+
     This strategy is M5-only (see the module docstring -- 'drops H1
     entirely'); this is purely a review aid answering 'was there H1
     structure sitting near where this trade entered', not a strategy input.
@@ -1927,6 +1939,7 @@ def _apply_h1_p0_confluence(results):
     res['dyn_tags'] when the list is non-empty so the report's Dynamic
     filters panel can Exclude/Only on it like any other tag."""
     h1_ledger = LC.h1_levels(verbose=False)
+    h1_bar_pos = {ts: i for i, ts in enumerate(R._display_h1().index)}
     for res in results:
         if not res["filled"]:
             continue
@@ -1938,6 +1951,12 @@ def _apply_h1_p0_confluence(results):
         overlaps_window = ((same_type["formation_time"] <= p2) &
                            (same_type["death_time"].isna() | (same_type["death_time"] > p1)))
         same_type = same_type[overlaps_window]
+        own_p1_pos = same_type["breakout_time"].map(h1_bar_pos)
+        own_p2_pos = same_type["retest_time"].map(h1_bar_pos)
+        has_candle_between = (same_type["breakout_time"].isna() | same_type["retest_time"].isna() |
+                              own_p1_pos.isna() | own_p2_pos.isna() |
+                              ((own_p2_pos - own_p1_pos) >= 2))
+        same_type = same_type[has_candle_between]
         # assign(dist=...) BEFORE filtering, not after: assigning a
         # non-empty Series onto an already-filtered (possibly zero-row)
         # frame pathologically reindexes to the Series' own length,
@@ -2760,8 +2779,10 @@ the box is checked.">Trade management</span>
             f"price, that was LIVE (formed, not yet dead) at some point during this trade's "
             f"own P1&rarr;P2 window (same span as the P1&rarr;P2 day-gap column) -- so one "
             f"that already retested partway through that window still counts, but one dead "
-            f"before this trade's own P1 does not. Any fate otherwise. This strategy is "
-            f"M5-only (no H1 input); purely a review aid. "
+            f"before this trade's own P1 does not. Also requires at least one H1 candle "
+            f"between the H1 P0's OWN breakout and retest bars -- an immediate next-bar "
+            f"snap-back is a wick round-trip, not real confluence. Any fate otherwise. This "
+            f"strategy is M5-only (no H1 input); purely a review aid. "
             f"'none' if no H1 P0 qualified.\">H1 P0 confl (&plusmn;{H1_CONFL_RADIUS_PTS:g}pt)</th>"
             f"<th>Entry</th>"
             f"<th class=\"left\">Entry (touch) time</th>"
