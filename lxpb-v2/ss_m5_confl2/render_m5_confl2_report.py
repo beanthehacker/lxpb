@@ -1895,10 +1895,30 @@ def _h1_p0_kind(level_type, is_spike, is_swing):
 def _apply_h1_p0_confluence(results):
     """Mutates and returns `results` in place. Same dynamic-filter
     convention as _apply_p1_reaction_filter (see that function's docstring)
-    -- for every FILLED result, looks up every H1 level (any fate) that was
-    LIVE (LC.levels_live_as_of -- formed, not yet dead) at the moment of
-    this trade's own fill (res['touch_time_alt']), within
-    +/-H1_CONFL_RADIUS_PTS of the actual fill price (res['fill_price']).
+    -- for every FILLED result, looks up every H1 level of the SAME LXPB
+    TYPE as this trade (an LHPB M5 trade only ever confluences with H1
+    LHPB, never LLPB, and vice versa -- the two types are opposite-direction
+    structure, not interchangeable S/R), within +/-H1_CONFL_RADIUS_PTS of
+    the actual fill price (res['fill_price']), that was LIVE (formed, not
+    yet dead) at some point during THIS TRADE'S OWN P1->P2 WINDOW --
+    row_d['breakout_time'] to row_d['retest_time'], the same span the
+    'P1->P2' day-gap column reports. That is an interval-overlap test
+    ([h1_formation, h1_death) intersects [P1, P2]), not a single-instant
+    liveness check: an H1 P0 that already retested BEFORE this M5 trade's
+    own P1 is unrelated old structure and excluded even if it is the
+    closest price match, but one that formed before P1 and only died
+    (retested) partway through the window -- e.g. an H1 LHPB hammer that
+    retested 42 minutes before this M5 LHPB trade finally filled, having
+    sat live throughout the whole multi-week P1->P2 span -- is exactly the
+    kind of same-setup confluence this column exists to surface. A single-
+    instant check at the fill tick would hide that (already dead by then)
+    while a plain 'formed by fill time, any age' check would flood the
+    column with unrelated levels from months earlier (both tried and
+    rejected while building this). Deliberately ANY fate otherwise --
+    gated_dropped/discarded_no_close H1 levels still show, since this
+    column is a raw structural check, not a replay of lxpb.py's candidate
+    gate (see _h1_p0_kind's own docstring for that same point re: kind).
+
     This strategy is M5-only (see the module docstring -- 'drops H1
     entirely'); this is purely a review aid answering 'was there H1
     structure sitting near where this trade entered', not a strategy input.
@@ -1910,13 +1930,29 @@ def _apply_h1_p0_confluence(results):
     for res in results:
         if not res["filled"]:
             continue
-        near = LC.levels_live_as_of(h1_ledger, res["touch_time_alt"],
-                                    near_price=res["fill_price"],
-                                    near_pts=H1_CONFL_RADIUS_PTS)
+        row_d = res["row"]
+        p1 = pd.Timestamp(row_d["breakout_time"])
+        p2 = pd.Timestamp(row_d["retest_time"])
+        as_of = pd.Timestamp(res["touch_time_alt"])
+        same_type = h1_ledger[h1_ledger["type"] == res["level_type"]]
+        overlaps_window = ((same_type["formation_time"] <= p2) &
+                           (same_type["death_time"].isna() | (same_type["death_time"] > p1)))
+        same_type = same_type[overlaps_window]
+        # assign(dist=...) BEFORE filtering, not after: assigning a
+        # non-empty Series onto an already-filtered (possibly zero-row)
+        # frame pathologically reindexes to the Series' own length,
+        # backfilling every original column with NaN instead of staying
+        # empty -- a real pandas gotcha, not a hypothetical one (caught it
+        # producing 199 all-NaN confluence rows here on a genuinely-out-
+        # of-range trade whose nearest same-type H1 P0 was 15.75pt away,
+        # just outside the 10pt radius).
+        same_type = same_type.assign(dist=(same_type["price"] - res["fill_price"]).abs())
+        near = same_type[same_type["dist"] <= H1_CONFL_RADIUS_PTS].sort_values("dist")
         confl = [{"type": r["type"], "price": float(r["price"]),
                   "formation_time": r["formation_time"],
                   "kind": _h1_p0_kind(r["type"], r["is_spike"], r["is_swing"]),
-                  "dist": float(r["dist"])}
+                  "dist": float(r["dist"]),
+                  "dead_by_fill": bool(pd.notna(r["death_time"]) and r["death_time"] <= as_of)}
                  for _, r in near.iterrows()]
         res["h1_p0_confl"] = confl
         if confl:
@@ -2176,14 +2212,17 @@ def _attr_json(obj):
 def _h1_confl_cell(confl):
     """(cell_html, title) for the 'H1 P0 confl' column from
     res['h1_p0_confl'] (see _apply_h1_p0_confluence) -- 'none' with no
-    tooltip when the list is empty, else each nearby H1 P0 as
-    '<price> <TYPE> <kind>', nearest first."""
+    tooltip when the list is empty, else each same-type H1 P0 as
+    '<price> <TYPE> <kind>', nearest first (type is always the trade's own
+    type -- see _apply_h1_p0_confluence -- shown anyway for clarity)."""
     if not confl:
         return "none", ""
     cell = ", ".join(f'{c["price"]:.2f} {c["type"]} {c["kind"]}' for c in confl)
     title = "; ".join(
         f'{c["type"]} {c["price"]:.2f} {c["kind"]}, P0 {R._to_pt_str(c["formation_time"])}, '
-        f'{c["dist"]:.2f}pt from fill' for c in confl)
+        f'{c["dist"]:.2f}pt from fill'
+        + (" (already retested by fill)" if c["dead_by_fill"] else "")
+        for c in confl)
     return cell, title
 
 
@@ -2716,10 +2755,14 @@ the box is checked.">Trade management</span>
             f"Single-level trades show their own M5 price.\">Merged M5 levels</th>"
             f"<th title=\"The level's original M5 entry price, before fine-tuning to the "
             f"confluence group's extreme price\">Own</th>"
-            f"<th title=\"Every H1 level (any fate) that was live -- formed, not yet dead -- "
-            f"within +/-{H1_CONFL_RADIUS_PTS:g}pt of this trade's actual fill price at the "
-            f"moment it filled. This strategy is M5-only (no H1 input); purely a review aid. "
-            f"'none' if no H1 level qualified.\">H1 P0 confl (&plusmn;{H1_CONFL_RADIUS_PTS:g}pt)</th>"
+            f"<th title=\"Every H1 P0 of THIS TRADE'S OWN LXPB TYPE (LHPB trade -> H1 LHPB "
+            f"only, LLPB -> LLPB only), within +/-{H1_CONFL_RADIUS_PTS:g}pt of the actual fill "
+            f"price, that was LIVE (formed, not yet dead) at some point during this trade's "
+            f"own P1&rarr;P2 window (same span as the P1&rarr;P2 day-gap column) -- so one "
+            f"that already retested partway through that window still counts, but one dead "
+            f"before this trade's own P1 does not. Any fate otherwise. This strategy is "
+            f"M5-only (no H1 input); purely a review aid. "
+            f"'none' if no H1 P0 qualified.\">H1 P0 confl (&plusmn;{H1_CONFL_RADIUS_PTS:g}pt)</th>"
             f"<th>Entry</th>"
             f"<th class=\"left\">Entry (touch) time</th>"
             f"<th title=\"If the entry level's own P0 was a spike candle (hammer for LHPB / "
