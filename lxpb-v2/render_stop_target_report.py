@@ -368,8 +368,75 @@ def _market_fill(sym, signal_ts, is_long):
     return None, None
 
 
+def _resolve_one_pegged_target(bars, touch_time, offset, sym, entry_adj, raw_entry,
+                               is_long, stop_pts, target_pts, peg_step, peg_cap):
+    """One trade's bracket with a pegged/chasing TARGET (see `resolve_trades`'
+    `peg_target` docstring) -- STOP stays a plain any-side stop/market order,
+    checked first and truncating the tick window fed to the target scan so a
+    stop and a would-be target requote can never race on the same print.
+
+    Needs real single-trade .scid tick records for the chase logic (per-print
+    bid/ask, not 1-minute OHLC), so it fetches its own tick window bounded by
+    `bars`' own span (already end-truncated by callers like
+    trade_management.resolve_with_eod for the EOD-flat rule); `bars` itself
+    is passed through only for `_compute_excursion`'s tick/bar split.
+
+    `render_ss_confl_finetune_report._scan_alt_fill` is reused unmodified for
+    the target leg: that function's own `is_long` parameter names the
+    resting order's SIDE (True = buy), not the trade's direction, so a long
+    trade's target (a resting SELL) passes `not is_long`, and a short's
+    target (a resting BUY) passes `is_long` unchanged -- the opposite of the
+    entry-side call in ss_m5_confl2/render_m5_confl2_report.py, which passes
+    the trade's own is_long straight through since an entry order IS on the
+    trade's own side."""
+    import render_ss_confl_finetune_report as SF  # lazy: SF imports this module at its own top
+    step = SF.PEG_STEP_DEFAULT if peg_step is None else peg_step
+    cap = SF.PEG_CAP_DEFAULT if peg_cap is None else peg_cap
+
+    end = bars.index[-1] + pd.Timedelta(minutes=1)
+    ticks = R._ticks_for_window(touch_time, end)
+    if ticks is not None and not ticks.empty:
+        ticks = ticks.loc[(ticks.index >= touch_time) & (ticks.index < end)]
+    if ticks is None or ticks.empty:
+        return {"outcome": "no_hit", "r": None, "exit_time": bars.index[-1],
+                "exit_price": entry_adj, "touch_time": touch_time}
+
+    stop_price = raw_entry - stop_pts if is_long else raw_entry + stop_pts
+    hi = ticks["High"].to_numpy(float)
+    lo = ticks["Low"].to_numpy(float)
+    stop_hit = (lo <= stop_price) if is_long else (hi >= stop_price)
+    stop_idx = np.flatnonzero(stop_hit)
+    stop_pos = int(stop_idx[0]) if stop_idx.size else None
+    window = ticks.iloc[:stop_pos] if stop_pos is not None else ticks
+
+    target_raw = raw_entry + target_pts if is_long else raw_entry - target_pts
+    fill_time, fill_price = SF._scan_alt_fill(
+        window, target_raw, not is_long, pegged=True, peg_step=step, peg_cap=cap)
+
+    if fill_price is not None:
+        exact_time, exact_price = fill_time, fill_price + offset
+        gain = (exact_price - entry_adj) if is_long else (entry_adj - exact_price)
+        outcome, r = "target", gain / stop_pts
+    elif stop_pos is not None:
+        exact_time = ticks.index[stop_pos]
+        exact_price = entry_adj - stop_pts if is_long else entry_adj + stop_pts
+        outcome, r = "stop", -1.0
+    else:
+        return {"outcome": "no_hit", "r": None, "exit_time": bars.index[-1],
+                "exit_price": entry_adj, "touch_time": touch_time}
+
+    favorable_pts, adverse_pts, entry_traded = _compute_excursion(
+        bars, touch_time, exact_time, raw_entry, is_long, sym, offset)
+    giveback_pts = _compute_giveback(touch_time, exact_time, is_long)
+    return {"outcome": outcome, "r": r, "exit_time": exact_time, "exit_price": exact_price,
+            "touch_time": touch_time, "favorable_pts": favorable_pts,
+            "adverse_pts": adverse_pts, "giveback_pts": giveback_pts,
+            "entry_gapped": entry_traded is False}
+
+
 def resolve_trades(trades, series_by_idx, stop=None, target=None, candle_exit=False,
-                   candle_exit_skip_entry=False):
+                   candle_exit_skip_entry=False, peg_target=False, peg_target_step=None,
+                   peg_target_cap=None):
     """Per-trade version of analyze_breakout_exits_1min.stop_target_grid_1min,
     with the same tick-accurate anchoring fix (see that module's docstring):
     series_by_idx's bars are already anchored to each trade's real touch_time
@@ -409,7 +476,21 @@ def resolve_trades(trades, series_by_idx, stop=None, target=None, candle_exit=Fa
     fixed +target/stop or -1.
 
     `candle_exit_skip_entry` makes the rule ignore the entry minute itself,
-    so the earliest it can fire is the first full candle after entry."""
+    so the earliest it can fire is the first full candle after entry.
+
+    `peg_target` makes the TARGET a pegged/chasing limit order instead of a
+    static one: on every wrong-side touch (price reaches the target price
+    but only the "wrong" side trades there, so the resting order can't
+    actually fill -- see the TARGET-is-a-resting-LIMIT-order note below) it
+    re-quotes `peg_target_step` closer to market, up to `peg_target_cap`
+    points total, exactly mirroring
+    render_ss_confl_finetune_report._scan_alt_fill's pegged-ENTRY model
+    (same function, reused here for the exit leg -- see
+    `_resolve_one_pegged_target`). Defaults to that module's own
+    PEG_STEP_DEFAULT/PEG_CAP_DEFAULT (0.25pt / 1.0pt) when left None. STOP
+    is never pegged -- it stays a plain stop/market order that fires on any
+    side and always wins a tie against the target on the same print. Not
+    implemented together with `candle_exit`."""
     out = []
     for i, t in enumerate(trades):
         stop_pts = float(t["stop_dist"]) if stop is None else float(stop)
@@ -423,6 +504,16 @@ def resolve_trades(trades, series_by_idx, stop=None, target=None, candle_exit=Fa
         touch_time = bars.attrs.get("touch_time")
         offset, sym = R._offset_for_ts(pd.Timestamp(t["retest_time"], tz="UTC"))
         raw_entry = entry_adj - offset
+
+        if peg_target:
+            if candle_exit:
+                raise NotImplementedError(
+                    "peg_target is not implemented together with candle_exit")
+            out.append(_resolve_one_pegged_target(
+                bars, touch_time, offset, sym, entry_adj, raw_entry, is_long,
+                stop_pts, target_pts, peg_target_step, peg_target_cap))
+            continue
+
         highs, lows = bars["high"].to_numpy(float), bars["low"].to_numpy(float)
         if is_long:
             stop_price, target_price = raw_entry - stop_pts, raw_entry + target_pts

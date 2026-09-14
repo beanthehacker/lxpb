@@ -123,7 +123,7 @@ def eod_exit_signal(entry_ts):
     raise AssertionError("unreachable: tomorrow's 12:44 PT is always after entry")
 
 
-def resolve_with_eod(trade, bars):
+def resolve_with_eod(trade, bars, peg_target=False, peg_target_step=None, peg_target_cap=None):
     """BASELINE (unmanaged) resolution of one trade, under rule 3.
 
     Runs `SR.resolve_trades`' own tick-accurate machinery over the trade's
@@ -133,19 +133,24 @@ def resolve_with_eod(trade, bars):
     flattened at the prevailing bid/ask (`SR._market_fill`, the same fill
     model rule 2 uses), outcome "eod_flat", with a real, variable, signed R.
 
+    `peg_target`/`peg_target_step`/`peg_target_cap` pass straight through to
+    `SR.resolve_trades` -- see that function's own docstring.
+
     Returns the same shape `SR.resolve_trades(...)[0]` does."""
+    peg_kwargs = dict(peg_target=peg_target, peg_target_step=peg_target_step,
+                      peg_target_cap=peg_target_cap)
     if bars is None or bars.empty:
-        return SR.resolve_trades([trade], {0: bars}, stop=None, target=None)[0]
+        return SR.resolve_trades([trade], {0: bars}, stop=None, target=None, **peg_kwargs)[0]
     touch_time = bars.attrs.get("touch_time")
     eod_ts = eod_exit_signal(touch_time if touch_time is not None else bars.index[0])
     if bars.index[-1] < eod_ts:
-        return SR.resolve_trades([trade], {0: bars}, stop=None, target=None)[0]
+        return SR.resolve_trades([trade], {0: bars}, stop=None, target=None, **peg_kwargs)[0]
 
     cut = bars[bars.index < eod_ts]
     if cut.empty:
         return {"outcome": "no_data", "r": None, "exit_time": None, "touch_time": touch_time}
     cut.attrs["touch_time"] = touch_time      # attrs do not survive a boolean mask
-    resolved = SR.resolve_trades([trade], {0: cut}, stop=None, target=None)[0]
+    resolved = SR.resolve_trades([trade], {0: cut}, stop=None, target=None, **peg_kwargs)[0]
     if resolved.get("outcome") != "no_hit":
         return resolved
 

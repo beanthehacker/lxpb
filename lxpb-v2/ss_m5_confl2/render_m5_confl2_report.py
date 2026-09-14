@@ -1046,8 +1046,11 @@ def _resolve_target_mode(target_price, target_info, fill_price, stop_pts, level_
     trade = {"type": level_type, "entry": fill_price, "is_long": is_long,
              "retest_time": touch_time_alt.tz_convert("UTC").tz_localize(None),
              "stop_dist": stop_pts, "target_dist": target_pts}
-    resolved = (TM.resolve_with_eod(trade, bars) if args.eod_flat
-                else SR.resolve_trades([trade], {0: bars}, stop=None, target=None)[0])
+    peg_kwargs = dict(peg_target=args.peg_target, peg_target_step=args.peg_target_step,
+                      peg_target_cap=args.peg_target_cap)
+    resolved = (TM.resolve_with_eod(trade, bars, **peg_kwargs) if args.eod_flat
+                else SR.resolve_trades([trade], {0: bars}, stop=None, target=None,
+                                       **peg_kwargs)[0])
     managed = TM.resolve_managed_trade(trade, bars, level_type, ledger=m5_ledger,
                                        eod=args.eod_flat)
     tags = []
@@ -3005,6 +3008,20 @@ if __name__ == "__main__":
     parser.add_argument("--peg-cap", type=float, default=PEG_CAP_DEFAULT,
                         help=f"Max total chase distance in points from the fine-tuned entry "
                              f"for --pegged-entry (default {PEG_CAP_DEFAULT}).")
+    parser.add_argument("--peg-target", action=argparse.BooleanOptionalAction, default=False,
+                        help="Simulate a peg-to-market/chasing limit order for the TARGET "
+                             "instead of a plain static one: on every wrong-side touch (price "
+                             "reaches the target but only the wrong side trades there) it "
+                             "re-quotes closer to market, same mechanism as --pegged-entry, "
+                             "applied to the exit leg. OFF by default -- changes realized R on "
+                             "every trade whose target was only ever wrong-side-touched, so "
+                             "opt in deliberately rather than silently shifting headline stats.")
+    parser.add_argument("--peg-target-step", type=float, default=PEG_STEP_DEFAULT,
+                        help=f"Re-quote increment in points for --peg-target (default "
+                             f"{PEG_STEP_DEFAULT} = one ES tick, same as --peg-step).")
+    parser.add_argument("--peg-target-cap", type=float, default=PEG_CAP_DEFAULT,
+                        help=f"Max total chase distance in points from the target for "
+                             f"--peg-target (default {PEG_CAP_DEFAULT}, same as --peg-cap).")
     parser.add_argument("--start", default=DEFAULT_START)
     parser.add_argument("--end", default=DEFAULT_END)
     parser.add_argument("--max-rows", type=int, default=None,
