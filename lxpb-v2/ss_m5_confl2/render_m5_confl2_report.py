@@ -1920,16 +1920,29 @@ def _apply_h1_p0_confluence(results):
     gate (see _h1_p0_kind's own docstring for that same point re: kind).
 
     A candidate H1 P0 is further required to have at least one H1 candle
-    between its OWN breakout (P1) and retest (P2) bars -- an immediate
+    between its OWN "start" and its own reaction (death) -- an immediate
     next-bar snap-back (0 candles between) reads as a wick round-trip, not
     a level the market spent any time respecting, so it is too weak to
-    count as confluence. Checked by BAR POSITION in R._display_h1(), not
-    wall-clock time: a weekend/holiday close sits between two truly
+    count as confluence. "Start" is breakout_time (P1) when the level
+    actually closed through -- covering fate=retested (death_time ==
+    retest_time == P2, so this is exactly the P1->P2 gap) and
+    fate=consumed_early (broke out, then got touched/gapped-past again
+    before MIN_BARS_BEFORE_RETEST bars passed -- death_time is that early
+    touch, not a formal retest_time, so checking retest_time alone missed
+    this fate entirely: an earlier version of this rule kept every
+    consumed_early level unchecked no matter how instantly it snapped
+    back). "Start" falls back to formation_time when there was no
+    breakout at all (fate=discarded_no_close: touched but never closed
+    through, so breakout_time is NaT -- checking that fate's OWN
+    formation-to-death gap is the only way to catch an immediate
+    touch-and-die there; e.g. a level formed one H1 bar and touched/died
+    on the very next is 0 candles apart even though it never had a P1 in
+    lxpb.py's strict sense). Checked by BAR POSITION in R._display_h1(),
+    not wall-clock time: a weekend/holiday close sits between two truly
     ADJACENT bars with no separating candle, and a wall-clock gap
     threshold (e.g. >=2h) would wrongly count that closure as 'a candle in
-    between'. A level with no breakout, or a breakout but no retest, has
-    no P1/P2 pair to check and passes through unaffected -- this rule
-    only screens out ones that reacted instantly.
+    between'. A level still fully open (death_time null) has no reaction
+    yet to check and passes through unaffected.
 
     This strategy is M5-only (see the module docstring -- 'drops H1
     entirely'); this is purely a review aid answering 'was there H1
@@ -1951,11 +1964,13 @@ def _apply_h1_p0_confluence(results):
         overlaps_window = ((same_type["formation_time"] <= p2) &
                            (same_type["death_time"].isna() | (same_type["death_time"] > p1)))
         same_type = same_type[overlaps_window]
-        own_p1_pos = same_type["breakout_time"].map(h1_bar_pos)
-        own_p2_pos = same_type["retest_time"].map(h1_bar_pos)
-        has_candle_between = (same_type["breakout_time"].isna() | same_type["retest_time"].isna() |
-                              own_p1_pos.isna() | own_p2_pos.isna() |
-                              ((own_p2_pos - own_p1_pos) >= 2))
+        own_start = same_type["breakout_time"].where(same_type["breakout_time"].notna(),
+                                                      same_type["formation_time"])
+        own_start_pos = own_start.map(h1_bar_pos)
+        own_death_pos = same_type["death_time"].map(h1_bar_pos)
+        has_candle_between = (same_type["death_time"].isna() |
+                              own_start_pos.isna() | own_death_pos.isna() |
+                              ((own_death_pos - own_start_pos) >= 2))
         same_type = same_type[has_candle_between]
         # assign(dist=...) BEFORE filtering, not after: assigning a
         # non-empty Series onto an already-filtered (possibly zero-row)
@@ -2780,8 +2795,9 @@ the box is checked.">Trade management</span>
             f"own P1&rarr;P2 window (same span as the P1&rarr;P2 day-gap column) -- so one "
             f"that already retested partway through that window still counts, but one dead "
             f"before this trade's own P1 does not. Also requires at least one H1 candle "
-            f"between the H1 P0's OWN breakout and retest bars -- an immediate next-bar "
-            f"snap-back is a wick round-trip, not real confluence. Any fate otherwise. This "
+            f"between the H1 P0's OWN start (its breakout bar, or its formation bar if it "
+            f"never closed through) and its own death -- an immediate next-bar snap-back is "
+            f"a wick round-trip, not real confluence. Any fate otherwise. This "
             f"strategy is M5-only (no H1 input); purely a review aid. "
             f"'none' if no H1 P0 qualified.\">H1 P0 confl (&plusmn;{H1_CONFL_RADIUS_PTS:g}pt)</th>"
             f"<th>Entry</th>"
