@@ -2941,7 +2941,7 @@ the box is checked.">Trade management</span>
         "consol_edge: that area's near edge instead -- low for a long, high for a short. "
         "m5_opposite: the newest live opposite M5 level sharing its P1 with another P0, formed "
         "in the same P1..P2 window.")
-    head = (f"<th class=\"left\">#</th><th class=\"left\">Type</th>"
+    head = (f"<th class=\"left\">Trade Id</th><th class=\"left\">Type</th>"
             f"<th class=\"left\">M5 retest</th>"
             f"<th title=\"Whole trading days between this level's own P1 (breakout) and its "
             f"P2 (retest), under the Globex/ETH reopen boundary (15:00 PT / 18:00 ET): 0 when "
