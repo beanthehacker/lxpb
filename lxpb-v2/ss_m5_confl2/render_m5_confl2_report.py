@@ -2023,6 +2023,7 @@ def _apply_globex_open_filter(results):
 
 
 H1_CONFL_RADIUS_PTS = 10.0  # this strategy is M5-only; this is a cross-timeframe REVIEW aid, not a rule input
+H1_CONFL_HOUR_TOLERANCE = pd.Timedelta(hours=1)  # see _apply_h1_p0_confluence: how far before the M5 retest's own hour an H1 P0 may have already died and still count
 
 
 def _h1_p0_kind(level_type, is_spike, is_swing):
@@ -2049,22 +2050,34 @@ def _apply_h1_p0_confluence(results):
     TYPE as this trade (an LHPB M5 trade only ever confluences with H1
     LHPB, never LLPB, and vice versa -- the two types are opposite-direction
     structure, not interchangeable S/R), within +/-H1_CONFL_RADIUS_PTS of
-    the actual fill price (res['fill_price']), that was LIVE (formed, not
-    yet dead) at some point during THIS TRADE'S OWN P1->P2 WINDOW --
-    row_d['breakout_time'] to row_d['retest_time'], the same span the
-    'P1->P2' day-gap column reports. That is an interval-overlap test
-    ([h1_formation, h1_death) intersects [P1, P2]), not a single-instant
-    liveness check: an H1 P0 that already retested BEFORE this M5 trade's
-    own P1 is unrelated old structure and excluded even if it is the
-    closest price match, but one that formed before P1 and only died
-    (retested) partway through the window -- e.g. an H1 LHPB hammer that
-    retested 42 minutes before this M5 LHPB trade finally filled, having
-    sat live throughout the whole multi-week P1->P2 span -- is exactly the
-    kind of same-setup confluence this column exists to surface. A single-
-    instant check at the fill tick would hide that (already dead by then)
-    while a plain 'formed by fill time, any age' check would flood the
-    column with unrelated levels from months earlier (both tried and
-    rejected while building this). Deliberately ANY fate otherwise --
+    the actual fill price (res['fill_price']), that was STILL UNTESTED
+    (not yet dead) up to around the clock hour this M5 trade itself
+    retested in -- this column is meant to answer 'was the H1 version of
+    this exact LXPB pattern still live when M5 confirmed the same setup',
+    i.e. price-is-fractal confluence, not merely 'was there some H1 level
+    near here at some point during a multi-week span'.
+
+    Concretely: an H1 P0 qualifies if it had already FORMED by this
+    trade's own P2 (row_d['retest_time'] -- it must exist for there to be
+    anything to call confluence) AND it did not die (react/retest) more
+    than H1_CONFL_HOUR_TOLERANCE before P2's own hour. P2's hour is
+    floored (e.g. a 09:35 PT retest floors to 09:00 PT) and the tolerance
+    is subtracted from that floor, so a 1hr tolerance means dying any time
+    at or after 08:00 PT still counts -- dying right in the 09:00 PT hour
+    (matching P2's own hour) is the tightest, cleanest case, but the
+    tolerance exists because the H1 candle containing the exact retest
+    minute is an arbitrary boundary to demand exact alignment against. An
+    H1 P0 that already died hours or days before that floor is unrelated
+    stale structure and excluded even if it is the closest price match --
+    that was the whole failure mode of the previous P1->P2-window-overlap
+    version of this check, which happily matched H1 P0s that died weeks
+    before this M5 trade's own retest merely because they had still been
+    alive somewhere earlier in the (often multi-week) P1->P2 span. A level
+    that dies AFTER the tolerance window, or never dies at all (still
+    fully open), also still counts -- there is no upper bound on how late
+    the H1 reaction may come, since 'still untested near the M5 retest
+    hour' is exactly satisfied by a level that stays untested even longer.
+    Deliberately ANY fate otherwise --
     gated_dropped/discarded_no_close H1 levels still show, since this
     column is a raw structural check, not a replay of lxpb.py's candidate
     gate (see _h1_p0_kind's own docstring for that same point re: kind).
@@ -2107,13 +2120,13 @@ def _apply_h1_p0_confluence(results):
         if not res["filled"]:
             continue
         row_d = res["row"]
-        p1 = pd.Timestamp(row_d["breakout_time"])
         p2 = pd.Timestamp(row_d["retest_time"])
         as_of = pd.Timestamp(res["touch_time_alt"])
+        window_low = p2.floor("h") - H1_CONFL_HOUR_TOLERANCE
         same_type = h1_ledger[h1_ledger["type"] == res["level_type"]]
-        overlaps_window = ((same_type["formation_time"] <= p2) &
-                           (same_type["death_time"].isna() | (same_type["death_time"] > p1)))
-        same_type = same_type[overlaps_window]
+        untested_near_retest_hour = ((same_type["formation_time"] <= p2) &
+                                     (same_type["death_time"].isna() | (same_type["death_time"] >= window_low)))
+        same_type = same_type[untested_near_retest_hour]
         own_start = same_type["breakout_time"].where(same_type["breakout_time"].notna(),
                                                       same_type["formation_time"])
         own_start_pos = own_start.map(h1_bar_pos)
@@ -2954,10 +2967,11 @@ the box is checked.">Trade management</span>
             f"confluence group's extreme price\">Own</th>"
             f"<th title=\"Every H1 P0 of THIS TRADE'S OWN LXPB TYPE (LHPB trade -> H1 LHPB "
             f"only, LLPB -> LLPB only), within +/-{H1_CONFL_RADIUS_PTS:g}pt of the actual fill "
-            f"price, that was LIVE (formed, not yet dead) at some point during this trade's "
-            f"own P1&rarr;P2 window (same span as the P1&rarr;P2 day-gap column) -- so one "
-            f"that already retested partway through that window still counts, but one dead "
-            f"before this trade's own P1 does not. Also requires at least one H1 candle "
+            f"price, that had already formed and was STILL UNTESTED up to around the clock "
+            f"hour of this trade's own P2 (retest) -- +/-{H1_CONFL_HOUR_TOLERANCE.seconds // 3600}hr "
+            f"tolerance on dying early, no limit on dying late or never. Fractal confluence: "
+            f"was the H1 version of this exact pattern still live when M5 confirmed it. "
+            f"Also requires at least one H1 candle "
             f"between the H1 P0's OWN start (its breakout bar, or its formation bar if it "
             f"never closed through) and its own death -- an immediate next-bar snap-back is "
             f"a wick round-trip, not real confluence. Any fate otherwise. This "
