@@ -11,11 +11,12 @@ the target are ALL M5 LXPB structure:
      M5-timeframe equivalent of the H1 "strong breakout" sample) within
      [--start, --end), for every contract segment with tick data on disk.
      Keep only retests whose SAME-SIDE M5 confluence count (other M5 levels
-     of the SAME type, within +/-`--m5-confluence-points` (default 5.0pt),
+     of the SAME type, within +/-`--m5-confluence-points` (default 10.0pt),
      confirmed-broken-out and not yet retested as of the subject's own P1
      breakout bar -- lxpb_levels_cache.same_side_live_confluence, same
      definition the H1 report uses, just run on the M5 ledger instead of the
-     H1 one) is >= `--ss-confl-min` (default 2, hence "confl2").
+     H1 one) is >= `--ss-confl-min` (default 1; module/report name "confl2"
+     predates this default and no longer describes it).
 
   2. DE-DUPLICATE MUTUALLY-CONFLUENT LEVELS INTO ONE TRADE. Exactly
      render_ss_confl_finetune_report.cluster_candidates's own logic (union-
@@ -133,6 +134,23 @@ the target are ALL M5 LXPB structure:
          total over 62 trades (it did NOT hold on 2025 out-of-sample, so
          untick it to see the unfiltered numbers).
 
+       * CREST REFINE (`_crest_refine_entry`, opt-in via `--crest-refine`,
+         OFF by default). Runs AFTER the swerve rule, on whatever entry is
+         currently planned. Scores how many standard deviations faster than
+         usual price fell (long) / rose (short) from its own most recently
+         CONFIRMED swing extreme (m5_structure.swing_pivots, the same
+         fractal pivot the swerve rule uses) on the way into that entry --
+         the rate (points per 5-minute bar since the pivot was confirmed)
+         against its own trailing `--crest-refine-baseline` z-score. Below
+         `--crest-refine-z` the approach is ordinary and nothing changes.
+         At or above it, the entry is pushed further favourable by
+         `--crest-refine-alpha` of the crest-to-planned distance already
+         observed, capped at `--crest-refine-cap-pts` (tag `crest_refined`).
+         Since the refined price is a synthetic offset rather than a
+         specific ledger level, the stop step (4) falls through to the
+         thrust-candle rule for these trades rather than a spike-P0
+         override.
+
 Every filled, in-R trade is resolved with the exact same tick-accurate
 machinery the rest of this repo depends on
 (render_stop_target_report.resolve_trades / _compute_excursion, which pin
@@ -179,8 +197,8 @@ import trade_management as TM                     # noqa: E402
 import m5_structure as MS                         # noqa: E402
 import liquidity as LQ                            # noqa: E402
 
-SS_CONFL_MIN_DEFAULT = 2
-M5_CONFLUENCE_N_POINTS_DEFAULT = 5.0  # same-side M5 confluence radius: selection + entry refinement
+SS_CONFL_MIN_DEFAULT = 1
+M5_CONFLUENCE_N_POINTS_DEFAULT = 10.0  # same-side M5 confluence radius: selection + entry refinement
 MIN_DYNAMIC_TARGET_PTS = SF.MIN_DYNAMIC_TARGET_PTS
 MAX_DYNAMIC_TARGET_PTS = SF.MAX_DYNAMIC_TARGET_PTS
 DYNAMIC_STOP_RADIUS_PTS = SF.DYNAMIC_STOP_RADIUS_PTS
@@ -201,6 +219,17 @@ SWERVE_LOOKBACK_HOURS_DEFAULT = 24.0  # how far back before the retest swings ar
 # the rule working, not failing.
 SWERVE_MAX_MOVE_PTS_DEFAULT = 10.0
 SWERVE_SWING_K_DEFAULT = MS.SWING_K_DEFAULT
+# CREST REFINE (opt-in, OFF by default) -- see _crest_refine_entry. Scores how
+# many standard deviations faster than usual price fell (long) / rose (short)
+# from its own most recently CONFIRMED swing extreme on the way into the
+# planned entry; an outlier-fast approach pushes the entry further favourable
+# by a fraction of the crest-to-planned distance already observed.
+CREST_REFINE_DEFAULT = False
+CREST_REFINE_SWING_K_DEFAULT = MS.SWING_K_DEFAULT     # same fractal pivot the swerve rule uses
+CREST_REFINE_BASELINE_DEFAULT = "150D"                # trailing window the z-score is measured against
+CREST_REFINE_Z_THRESHOLD_DEFAULT = 3.0                # below this the approach is ordinary -- no change
+CREST_REFINE_ALPHA_DEFAULT = 0.15                     # fraction of the crest-to-planned distance added
+CREST_REFINE_CAP_PTS_DEFAULT = 10.0                   # furthest the entry may be pushed
 LIQ_WINDOW_MINUTES_DEFAULT = LQ.WINDOW_MINUTES_DEFAULT
 LIQ_WIDE_SPREAD_SHARE_DEFAULT = LQ.WIDE_SPREAD_SHARE_MAX_DEFAULT
 PEG_STEP_DEFAULT = SF.PEG_STEP_DEFAULT
@@ -854,6 +883,123 @@ def _swerve_entry(m5_ledger, level_type, is_long, conf, row_d, args):
     return out
 
 
+# --------------------------------------------------------------------------
+# "CREST REFINE" -- push the entry further on an outlier-fast approach
+# (opt-in, OFF by default -- see CREST_REFINE_DEFAULT and the module
+# docstring's own CREST REFINE section)
+# --------------------------------------------------------------------------
+
+_CREST_REFINE_TABLES = {}
+
+
+def _crest_refine_table(k, baseline, is_long_side):
+    """{M5 bar time -> value} dicts (rate/z/crest_price/crest_time) for one
+    side, over the whole continuous M5 series (LC.m5_bars_continuous).
+
+    `rate` is how many points below (long side) / above (short side) the
+    bar's own most recently CONFIRMED swing extreme it sits, divided by
+    5-minute bars elapsed since that pivot was confirmed -- the same
+    fractal swing_pivots (m5_structure.py) the swerve rule uses, confirmed
+    `k` bars later same as there. `z` is rate's own trailing z-score
+    against its rolling mean/std over `baseline` (a pandas time-offset
+    string, e.g. '150D'), the window ending strictly before the bar itself
+    (closed='left') so a bar's own value never inflates its own baseline --
+    same shape as _m5_range_ratio_table's shift(1) convention, just via the
+    rolling window's own `closed` arg since this one is time-offset, not
+    bar-count. NaN wherever no pivot has been confirmed yet or the baseline
+    window isn't yet full. Lazily built and cached per (k, baseline, side)."""
+    key = (k, baseline, is_long_side)
+    if key in _CREST_REFINE_TABLES:
+        return _CREST_REFINE_TABLES[key]
+    bars = LC.m5_bars_continuous()
+    sh_t, sh_p, sl_t, sl_p = MS.swing_pivots(k=k)
+    piv_t, piv_p = (sh_t, sh_p) if is_long_side else (sl_t, sl_p)
+    if len(piv_t) == 0:
+        out = {"rate": {}, "z": {}, "crest_price": {}, "crest_time": {}}
+        _CREST_REFINE_TABLES[key] = out
+        return out
+    confirm_lag = pd.Timedelta(minutes=5 * k)
+    piv_times = pd.DatetimeIndex(piv_t, tz="UTC")
+    confirm_times = piv_times + confirm_lag
+    order = confirm_times.argsort()
+    confirm_times = confirm_times[order]
+    piv_times = piv_times[order]
+    piv_prices = np.asarray(piv_p)[order]
+
+    pos = confirm_times.searchsorted(bars.index, side="right") - 1
+    valid = pos >= 0
+    crest_price = pd.Series(np.nan, index=bars.index)
+    crest_time = pd.Series(pd.NaT, index=bars.index, dtype="datetime64[ns, UTC]")
+    crest_price.iloc[valid] = piv_prices[pos[valid]]
+    crest_time.iloc[valid] = piv_times[pos[valid]]
+
+    elapsed_bars = (bars.index.to_series() - crest_time).dt.total_seconds() / 300.0
+    elapsed_bars = elapsed_bars.where(elapsed_bars > 0)
+    close = bars["close"]
+    rate = ((crest_price - close) if is_long_side else (close - crest_price)) / elapsed_bars
+
+    mu = rate.rolling(baseline, closed="left").mean()
+    sigma = rate.rolling(baseline, closed="left").std()
+    z = (rate - mu) / sigma
+
+    out = {"rate": rate.to_dict(), "z": z.to_dict(),
+           "crest_price": crest_price.to_dict(), "crest_time": crest_time.to_dict()}
+    _CREST_REFINE_TABLES[key] = out
+    return out
+
+
+def _crest_refine_entry(is_long, conf, row_d, args):
+    """Crest-to-trough approach-speed override for one cluster (or None when
+    the rule is off or doesn't fire). MUTATES `conf` in place when it fires,
+    same convention as _swerve_entry -- every downstream user (the fill
+    scan, the spike-P0 stop lookup via _entry_level_row, the M5 chart's own
+    entry-level ray) follows the refined price rather than the planned one.
+
+    Runs on whatever price is CURRENTLY planned in `conf` (post-swerve, if
+    swerve fired), scores its approach for outlier speed (_crest_refine_table),
+    and if it's an outlier, pushes the entry further favourable by a
+    fraction of the crest-to-planned distance already observed.
+
+    Sets conf['alt_source'] = 'crest_refine' and conf['entry_m5_level'] =
+    None: the refined price is a synthetic offset, not a specific ledger
+    level, so _entry_level_row finds no match and the stop step falls
+    through to the thrust-candle rule rather than a spike-P0 override that
+    no longer applies to this price.
+
+    Keys: z, crest_price, crest_time, distance_pts (crest-to-planned,
+    before refinement), refine_pts (points added), planned_price, price
+    (the entry in force afterwards)."""
+    if not args.crest_refine:
+        return None
+    tables = _crest_refine_table(args.crest_refine_swing_k, args.crest_refine_baseline, is_long)
+    retest_time = pd.to_datetime(row_d["retest_time"], utc=True)
+    z = tables["z"].get(retest_time)
+    if z is None or not np.isfinite(z) or z < args.crest_refine_z:
+        return None
+    crest_price = tables["crest_price"].get(retest_time)
+    crest_time = tables["crest_time"].get(retest_time)
+    if crest_price is None or pd.isna(crest_price) or pd.isna(crest_time):
+        return None
+    planned = float(conf["alt_price"])
+    distance = (crest_price - planned) if is_long else (planned - crest_price)
+    if distance <= 0:
+        return None
+    n_pts = min(args.crest_refine_alpha * distance, args.crest_refine_cap_pts)
+    if n_pts <= 0:
+        return None
+    new_price = planned - n_pts if is_long else planned + n_pts
+
+    out = {"z": float(z), "crest_price": float(crest_price), "crest_time": pd.Timestamp(crest_time),
+           "distance_pts": float(distance), "refine_pts": float(n_pts),
+           "planned_price": planned, "price": new_price}
+    conf["alt_price"] = new_price
+    conf["alt_source"] = "crest_refine"
+    conf["entry_m5_level"] = None
+    conf["alt_formation_time"] = pd.Timestamp(crest_time)
+    conf["alt_end_time"] = retest_time
+    return out
+
+
 GLOBEX_OPEN_START_PT = pd.Timedelta(hours=15)
 GLOBEX_OPEN_END_PT = pd.Timedelta(hours=15, minutes=5)
 
@@ -922,6 +1068,7 @@ def process_cluster(cluster, args):
 
     conf = cluster_confluence(cluster)
     swerve = _swerve_entry(m5_ledger, level_type, is_long, conf, row_d, args)
+    crest_refine = _crest_refine_entry(is_long, conf, row_d, args)
     alt_price, alt_source, group_n = conf["alt_price"], conf["alt_source"], conf["group_n"]
 
     cluster_member_formations = sorted(
@@ -937,11 +1084,14 @@ def process_cluster(cluster, args):
         "entry_m5_level": conf["entry_m5_level"],
         "improved": abs(alt_price - own_price) > 1e-9,
         "swerve": swerve,
+        "crest_refine": crest_refine,
         "dyn_tags": [],
         "filled": False,
     }
     if swerve is not None:
         result["dyn_tags"].append("swerved" if swerve["moved"] else "swerve_blocked")
+    if crest_refine is not None:
+        result["dyn_tags"].append("crest_refined")
 
     # P1 breakout-bar strength: this SUBJECT level's own breakout candle
     # (row_d, not the entry level -- entry refinement/swerve can move the
@@ -2451,6 +2601,15 @@ def _render_row(idx, res, chart_stacks, fps):
                           f'level was available to move to, so this trade is NOT taken. It is '
                           f'shown at its original entry so it can still be reviewed, and left out '
                           f'of the headline stats by default.">SWERVE BLOCKED</span>')
+        if "crest_refined" in dyn_tags:
+            cr = res["crest_refine"]
+            dyn_badges += (f'<span class="dyn-tag-badge swerve-tag-badge" title="Dynamic filter '
+                          f'‘crest_refined’ (--crest-refine): the approach into '
+                          f'{cr["planned_price"]:.2f} from its own most recent confirmed swing '
+                          f'extreme {cr["crest_price"]:.2f} scored z={cr["z"]:.1f} against its own '
+                          f'trailing baseline -- an outlier-fast move -- so the entry was pushed '
+                          f'{cr["refine_pts"]:.2f}pt further to {cr["price"]:.2f}.">CREST REFINED '
+                          f'{cr["planned_price"]:.2f}&rarr;{cr["price"]:.2f}</span>')
         if "weak_p1_breakout" in dyn_tags:
             dyn_badges += (f'<span class="dyn-tag-badge" title="Dynamic filter '
                           f'‘weak_p1_breakout’: this level’s own P1 (breakout) bar range was only '
@@ -2724,6 +2883,10 @@ docstring in render_m5_confl2_report.py for the full convention.">Dynamic filter
     <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="swerved">
       Exclude swerved entries</label>
     <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="swerved">
+      Only</label>
+    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="crest_refined">
+      Exclude crest-refined entries (--crest-refine)</label>
+    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="crest_refined">
       Only</label>
     <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="eod_flat">
       Exclude end-of-day flats</label>
@@ -3181,6 +3344,26 @@ if __name__ == "__main__":
     parser.add_argument("--swerve-swing-k", type=int, default=SWERVE_SWING_K_DEFAULT,
                         help=f"Bars required on each side of a swing pivot (default "
                              f"{SWERVE_SWING_K_DEFAULT}).")
+    parser.add_argument("--crest-refine", action=argparse.BooleanOptionalAction,
+                        default=CREST_REFINE_DEFAULT,
+                        help="Push the entry further favourable when the approach into it is an "
+                             "outlier-fast crest-to-trough move (see the CREST REFINE section). "
+                             "OFF by default.")
+    parser.add_argument("--crest-refine-swing-k", type=int, default=CREST_REFINE_SWING_K_DEFAULT,
+                        help=f"Bars required on each side of the swing pivot used as the crest "
+                             f"(default {CREST_REFINE_SWING_K_DEFAULT}, same as --swerve-swing-k).")
+    parser.add_argument("--crest-refine-baseline", type=str, default=CREST_REFINE_BASELINE_DEFAULT,
+                        help=f"Trailing window (pandas offset string) the approach-speed z-score "
+                             f"is measured against (default {CREST_REFINE_BASELINE_DEFAULT!r}).")
+    parser.add_argument("--crest-refine-z", type=float, default=CREST_REFINE_Z_THRESHOLD_DEFAULT,
+                        help=f"Z-score at or above which the approach counts as an outlier and "
+                             f"triggers the refinement (default {CREST_REFINE_Z_THRESHOLD_DEFAULT:g}).")
+    parser.add_argument("--crest-refine-alpha", type=float, default=CREST_REFINE_ALPHA_DEFAULT,
+                        help=f"Fraction of the observed crest-to-planned-entry distance added to "
+                             f"the entry when triggered (default {CREST_REFINE_ALPHA_DEFAULT:g}).")
+    parser.add_argument("--crest-refine-cap-pts", type=float, default=CREST_REFINE_CAP_PTS_DEFAULT,
+                        help=f"Furthest the entry may be pushed by this rule (default "
+                             f"{CREST_REFINE_CAP_PTS_DEFAULT:g}pt).")
     parser.add_argument("--liquidity-gate", action=argparse.BooleanOptionalAction, default=True,
                         help="Tag trades whose entry landed in a measurably illiquid tape "
                              "(news/thin book -- see liquidity.py). ON by default.")
