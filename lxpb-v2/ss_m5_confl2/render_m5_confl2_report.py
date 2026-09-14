@@ -2506,6 +2506,8 @@ stop pts, fixed regardless of win or loss). Reads tr.dataset.rr, which applyTarg
 in sync with whichever target rule is ticked above -- the same generic op/value numeric-filter
 mechanism (f-num-op/f-num-val, data-target) already used for Confl./SS Confl. in
 render_stop_target_report.py's shared review panel (see numFilterOk/applyReviewFilters there).
+Unlike those, this one is also a DYNAMIC filter: changing it recomputes win rate / avg R / total
+R / total PnL above live, the same as the Dynamic filters row below, in addition to hiding rows.
 Defaults to &ge; 1 (only R &ge; 1 shown); pick any to show every row.">R</span>
     <select class="f-num-op" data-target="rr">
       <option value="any">any</option>
@@ -2859,9 +2861,14 @@ function recomputeDynStats() {
   };
   document.querySelectorAll('#lvl-table tbody tr.lvl-row').forEach(tr => {
     const tags = (tr.dataset.dynTags || '').split(' ').filter(Boolean);
-    const hidden = isolateTags.length > 0
+    // The R >= filter (f-num-op/f-num-val, data-target "rr") is a dynamic
+    // filter too: it folds into `hidden` here, alongside the tag-based
+    // filters, so changing the R threshold live recomputes the headline
+    // stats below instead of only hiding rows via applyReviewFilters.
+    const rrHidden = !numFilterOk(tr, 'rr');
+    const hidden = rrHidden || (isolateTags.length > 0
       ? !tags.some(t => isolateTags.includes(t))
-      : (excludeTags.length > 0 && tags.some(t => excludeTags.includes(t)));
+      : (excludeTags.length > 0 && tags.some(t => excludeTags.includes(t))));
     tr.classList.toggle('dyn-hidden', hidden);
     const chartRow = document.getElementById('chart-row-' + tr.dataset.idx);
     if (chartRow) chartRow.classList.toggle('dyn-hidden', hidden);
@@ -2911,13 +2918,20 @@ function recomputeDynStats() {
   setText('sum-total-pnl', (sumPnl >= 0 ? '+' : '') + sumPnl.toFixed(1));
   setText('sum-max-win-mae', maxWinMae.toFixed(2));
   setText('sum-max-loss-mfe', maxLossMfe.toFixed(2));
-  // The R >= filter below (shared applyReviewFilters/numFilterOk, data-target
-  // "rr") reads tr.dataset.rr, which applyTargetModes() just rewrote for
-  // whichever target rule is now ticked -- re-run it so that filter doesn't
-  // go stale against the rule that was active when the page last ran it.
+  // applyReviewFilters (shared JS) re-applies the review-status/valid/
+  // replayed/notes filters plus its own independent .hidden pass over the
+  // SAME R >= filter (numFilterOk, data-target "rr") against tr.dataset.rr,
+  // which applyTargetModes() just rewrote for whichever target rule is now
+  // ticked -- re-run it so that pass doesn't go stale either.
   applyReviewFilters();
 }
 document.querySelectorAll('.f-dyn-exclude, .f-dyn-isolate, .f-target-mode, .f-outcome').forEach(cb => cb.addEventListener('change', recomputeDynStats));
+// The R >= filter (data-target "rr") is folded into recomputeDynStats' own
+// stats loop above, so it needs to trigger a recompute -- not just
+// applyReviewFilters (added below by the shared .f-num-op/.f-num-val
+// listener) -- whenever its op or value changes.
+document.querySelectorAll('.f-num-op[data-target="rr"], .f-num-val[data-target="rr"]')
+  .forEach(el => el.addEventListener('input', recomputeDynStats));
 const mgmtToggleCb = document.getElementById('mgmt-thrust-trail');
 if (mgmtToggleCb) mgmtToggleCb.addEventListener('change', recomputeDynStats);
 recomputeDynStats();
