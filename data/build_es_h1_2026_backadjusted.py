@@ -74,6 +74,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+from pandas.tseries.holiday import USFederalHolidayCalendar
 
 sys.path.insert(0, r"D:\acheron\AcheronUtils")
 from scidReader import get_scid_df  # noqa: E402
@@ -102,14 +103,34 @@ def third_friday(year: int, month: int) -> pd.Timestamp:
     return first_friday + pd.Timedelta(weeks=2)
 
 
+# Market holidays that can land inside a roll's 3-business-day count. In practice
+# only Juneteenth ever does (roll windows sit on the 12th-20th of Mar/Jun/Sep/Dec,
+# clear of every other federal holiday), but the full calendar costs nothing.
+_ROLL_HOLIDAYS = frozenset(
+    USFederalHolidayCalendar().holidays("2000-01-01", "2100-12-31").normalize())
+
+
 def roll_switch_utc(year: int, month: int) -> pd.Timestamp:
     """The exact UTC instant TradingView switches its ES1! continuous contract to this
     contract as the new front month, confirmed empirically (see module docstring): the
     START of the Globex trading session that is 3 BUSINESS DAYS before the 3rd-Friday
     expiry -- i.e. 17:00 CT on the previous calendar day. Diffing our unadjusted splice
     (+ the TV_GROUND_TRUTH_OFFSETS) against the real TradingView export shows the
-    residual is EXACTLY 0.00 on either side of this instant, down to the bar."""
-    trading_day = third_friday(year, month) - pd.tseries.offsets.BDay(3)
+    residual is EXACTLY 0.00 on either side of this instant, down to the bar.
+
+    Business days skip market holidays, not just weekends, and a holiday expiry Friday
+    moves back to the prior business day before counting. Juneteenth caused all three
+    cases in the data: inside the count in Jun 2024 (Wed 19th) and Jun 2025 (Thu 19th),
+    and ON the expiry Friday in Jun 2026. TradingView rolled one session earlier than a
+    weekday-only count each time, measured session by session against .scid ticks."""
+    trading_day = third_friday(year, month)
+    while trading_day.dayofweek >= 5 or trading_day in _ROLL_HOLIDAYS:
+        trading_day -= pd.Timedelta(days=1)
+    counted = 0
+    while counted < 3:
+        trading_day -= pd.Timedelta(days=1)
+        if trading_day.dayofweek < 5 and trading_day not in _ROLL_HOLIDAYS:
+            counted += 1
     session_open = (trading_day - pd.Timedelta(days=1)).normalize() + pd.Timedelta(hours=17)
     return session_open.tz_localize("America/Chicago").tz_convert("UTC")
 

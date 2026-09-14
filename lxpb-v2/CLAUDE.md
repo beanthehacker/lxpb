@@ -45,8 +45,13 @@ export itself, over the span where that contract was genuinely front month
 offset constants such as `TV_GROUND_TRUTH_OFFSETS`, and do not reintroduce a
 "vintage delta" correction on top of them: a constant is only ever right for
 the single export vintage it was measured against, and the delta existed
-solely to patch that. Only the roll TIMING rule (`B26.roll_switch_utc`,
-`B26.CONTRACTS`) is still taken from `build_es_h1_2026_backadjusted`.
+solely to patch that. Only the roll TIMING rule (`B26.roll_switch_utc`) is still
+taken from `build_es_h1_2026_backadjusted`; the contract list itself is
+`render_labels_report.CONTRACTS` (U23 onward + `B26.CONTRACTS`). The roll rule's
+3-business-day count skips market holidays, and a holiday expiry Friday moves back a
+day first: TradingView rolled one session early in Jun 2024, Jun 2025 and Jun 2026
+(Juneteenth inside the count, or on the expiry Friday itself), and a weekday-only
+count read the wrong contract's ticks for that session.
 
 ## Validation, and what a failure means
 
@@ -59,6 +64,9 @@ Every continuous series is checked before any caller sees it:
 - `_assert_no_roll_gaps` — no unexplained close-to-open jump at a roll
   instant. A jump there means the splice is wrong. Fix the splice; falling
   back to per-contract data is never the answer.
+  A roll that lands on a weekend/holiday REOPEN is skipped with a printed
+  note, since its bar jump includes the real closure gap (Jun 2025: 29pt,
+  matching U25's own ticks); `_measure_scid_offset` still checks the splice.
 - `_assert_shares_h1_scale` — the M5 export must sit on the same scale as
   the H1 one.
 - `_report_series_gaps` — prints (does not raise) any hole longer than a

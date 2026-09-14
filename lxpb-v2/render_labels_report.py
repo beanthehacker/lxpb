@@ -85,10 +85,21 @@ from candle_utils import (  # noqa: E402
 # are deliberately NOT used: those were measured against one frozen export and
 # go stale the moment TradingView re-exports, which is what the old "vintage
 # delta" correction existed to patch. The offsets are measured live instead
-# (see _measure_scid_offset). Only valid for instants within B26.CONTRACTS'
+# (see _measure_scid_offset). Only valid for instants within CONTRACTS'
 # coverage -- moments outside it simply render with a "(no tick data in this
 # window)" placeholder.
 import build_es_h1_2026_backadjusted as B26  # noqa: E402
+
+# Every contract whose ticks this module can map. B26.CONTRACTS itself stays
+# 2026-only -- B26's own builder and retest-vol-scalp index its hardcoded
+# TV_GROUND_TRUTH_OFFSETS by it -- so earlier quarters are prepended here.
+# Only their roll timing (B26.roll_switch_utc) is borrowed; their offsets are
+# measured like every other contract's (_measure_scid_offset). Reaching back
+# to U23 also puts every roll the M5 exports cover under _assert_no_roll_gaps.
+CONTRACTS = [("EPU23", 2023, 9), ("EPZ23", 2023, 12),
+             ("EPH24", 2024, 3), ("EPM24", 2024, 6), ("EPU24", 2024, 9), ("EPZ24", 2024, 12),
+             ("EPH25", 2025, 3), ("EPM25", 2025, 6), ("EPU25", 2025, 9),
+             ("EPZ25", 2025, 12)] + list(B26.CONTRACTS)
 
 sys.path.insert(0, r"D:\acheron\AcheronUtils")  # scidReader.py lives there
 from scidReader import get_scid_df  # noqa: E402
@@ -205,13 +216,13 @@ def _to_pt_str(ts):
 def _own_roll():
     global _OWN_ROLL_CACHE
     if _OWN_ROLL_CACHE is None:
-        _OWN_ROLL_CACHE = [B26.roll_switch_utc(y, m) for _, y, m in B26.CONTRACTS]
+        _OWN_ROLL_CACHE = [B26.roll_switch_utc(y, m) for _, y, m in CONTRACTS]
     return _OWN_ROLL_CACHE
 
 
 def _segment_for(i):
     roll = _own_roll()
-    n = len(B26.CONTRACTS)
+    n = len(CONTRACTS)
     start = roll[i - 1] if i > 0 else None
     end = roll[i] if i < n - 1 else None
     return start, end
@@ -226,6 +237,16 @@ def _segment_for(i):
 # every continuous series this repo builds (H1 today via _display_h1, M5
 # once it exists) must pass this at every roll it covers.
 MAX_ROLL_JUMP_PTS = 5.0
+# A roll can land on a market REOPEN (the Sunday session, or the day after a
+# holiday) -- Jun 2024 and Jun 2025 both did once the roll count skipped
+# Juneteenth. The bar-to-bar jump there contains the real closure gap as well
+# as any splice error, and the two cannot be told apart from bars alone (the
+# Jun 2025 reopen gapped 29pt in both M25's and U25's own ticks, and the
+# continuous series matched U25's gap exactly). Such rolls are reported and
+# skipped; the splice across them is still verified by _measure_scid_offset
+# wherever ticks are used. The normal daily halt is ~1h, so anything past
+# this is a closure.
+MAX_ROLL_BAR_GAP = pd.Timedelta(hours=3)
 
 
 def _assert_no_roll_gaps(bars, label, max_jump_pts=MAX_ROLL_JUMP_PTS):
@@ -248,6 +269,14 @@ def _assert_no_roll_gaps(bars, label, max_jump_pts=MAX_ROLL_JUMP_PTS):
         prev_close = float(bars["close"].iloc[pos - 1])
         next_open = float(bars["open"].iloc[pos])
         jump = abs(next_open - prev_close)
+        closure = idx[pos] - idx[pos - 1]
+        if closure > MAX_ROLL_BAR_GAP:
+            if jump > max_jump_pts:
+                print(f"  [data] {label}: roll at {roll_ts} lands on a market reopen after "
+                      f"a {closure} closure; its {jump:.2f}pt bar jump includes the real "
+                      f"closure gap, so the roll-jump check is skipped there (tick "
+                      f"offsets still verify the splice).")
+            continue
         if jump > max_jump_pts:
             raise RuntimeError(
                 f"{label}: {jump:.2f}pt jump across the roll at {roll_ts} "
@@ -260,7 +289,7 @@ def _assert_no_roll_gaps(bars, label, max_jump_pts=MAX_ROLL_JUMP_PTS):
 def _contract_index_for(ts_utc):
     """Which CONTRACTS[i] was actually front-month (i.e. which .scid file's
     RAW, unadjusted prices are what really traded) at ts_utc."""
-    n = len(B26.CONTRACTS)
+    n = len(CONTRACTS)
     for i in range(n):
         start, end = _segment_for(i)
         if (start is None or ts_utc >= start) and (end is None or ts_utc < end):
@@ -292,10 +321,15 @@ DISPLAY_H1_PATHS = [
 # M5 equivalent of DISPLAY_H1_PATHS -- TradingView's own continuous ES1! M5
 # export, on the same back-adjusted scale as DISPLAY_H1_PATHS (checked at
 # load by _assert_shares_h1_scale, not assumed). Together these cover
-# 2024-12-08 -> present with no internal hole beyond real session closures;
+# 2023-07-23 -> present with no internal hole beyond real session closures;
 # to extend the range, add another export here rather than reaching for
 # .scid. Merged newest-wins, oldest file first, same as DISPLAY_H1_PATHS.
 DISPLAY_M5_PATHS = [
+    os.path.join(_DATA_DIR, "23jul2023-5nov2023-CME_MINI_ES1!, 5_7d463.csv"),
+    os.path.join(_DATA_DIR, "5nov2023-18feb2024-CME_MINI_ES1!, 5_7d463.csv"),
+    os.path.join(_DATA_DIR, "18feb2024-2jun2024-CME_MINI_ES1!, 5_7d463.csv"),
+    os.path.join(_DATA_DIR, "2jun2024-15Sep2024-CME_MINI_ES1!, 5_7d463.csv"),
+    os.path.join(_DATA_DIR, "15Sep2024-31Dec2024-CME_MINI_ES1!, 5_7d463.csv"),
     os.path.join(_DATA_DIR, "8dec2024-23mar2025-CME_MINI_ES1!, 5_e8128.csv"),
     os.path.join(_DATA_DIR, "23mar2025-3jul2025-CME_MINI_ES1!, 5_e8128.csv"),
     os.path.join(_DATA_DIR, "3jul2025-12oct2025-CME_MINI_ES1!, 5_e8128.csv"),
@@ -507,7 +541,7 @@ def _front_month_start(seg_idx):
     start, _end = _segment_for(seg_idx)
     if start is not None:
         return start
-    _sym, year, month = B26.CONTRACTS[seg_idx]
+    _sym, year, month = CONTRACTS[seg_idx]
     prev_year, prev_month = (year, month - 3) if month > 3 else (year - 1, 12)
     return B26.roll_switch_utc(prev_year, prev_month)
 
@@ -562,7 +596,7 @@ def _offset_for_ts(ts_utc):
     render_lxpb_retest_1s_report.py's own `_offset_for_ts` for the longer
     version of that argument."""
     i = _contract_index_for(ts_utc)
-    sym = B26.CONTRACTS[i][0]
+    sym = CONTRACTS[i][0]
     if sym not in _SCID_OFFSETS:
         _SCID_OFFSETS[sym] = _measure_scid_offset(sym, i)
     return _SCID_OFFSETS[sym], sym
@@ -583,7 +617,7 @@ def _ticks_for_window(lo_utc, hi_utc):
     front-month across that span -- almost always a single contract; only
     spans two when the window straddles an actual roll instant."""
     parts = []
-    for i, (sym, _, _) in enumerate(B26.CONTRACTS):
+    for i, (sym, _, _) in enumerate(CONTRACTS):
         seg_start, seg_end = _segment_for(i)
         lo = max(lo_utc, seg_start) if seg_start is not None else lo_utc
         hi = min(hi_utc, seg_end) if seg_end is not None else hi_utc

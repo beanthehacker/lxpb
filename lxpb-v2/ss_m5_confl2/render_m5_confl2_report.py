@@ -277,7 +277,7 @@ def select_candidates(ss_confl_min, start, end, confluence_points):
         if len(same_side_m5) < ss_confl_min:
             continue
         seg_idx = R._contract_index_for(pd.Timestamp(row_d["retest_time"]))
-        sym = R.B26.CONTRACTS[seg_idx][0]
+        sym = R.CONTRACTS[seg_idx][0]
         candidates.append({
             "row": row_d, "same_side_m5": same_side_m5,
             "m5_ledger": m5_ledger, "seg_idx": seg_idx, "sym": sym,
@@ -1369,12 +1369,19 @@ def _annotate_swerve(chart_m5, res, is_long):
         chart_m5["markers"].sort(key=lambda m: m["time"])
 
 
-def build_chart_stack_for_row(res):
+M5_ONLY_NOTE = "<p class='note'>(tick panes and footprints skipped: --m5-charts-only)</p>"
+
+
+def build_chart_stack_for_row(res, m5_only=False):
     """M5 + 1s-trio + 1min + footprint chart stack for a filled, in-R trade
     -- no H1 pane exists in this strategy. Reuses
     render_ss_confl_finetune_report.build_execution_charts verbatim (it
     never assumed an H1-anchored row) and render_stop_target_report.
-    build_m5_chart with this strategy's own 5-minute P1 bar width."""
+    build_m5_chart with this strategy's own 5-minute P1 bar width.
+
+    m5_only skips every tick-built pane (1s trio, 1-minute, footprints).
+    Only the charts go -- the trade itself was still filled and resolved on
+    real ticks by process_cluster."""
     row_d = res["row"]
     alt_price = res["fill_price"]
     resolved = res["resolved"]
@@ -1426,6 +1433,9 @@ def build_chart_stack_for_row(res):
         _annotate_mgmt_events(chart_m5, res, res["is_long"])
         _annotate_target_zone(chart_m5, res)
         _annotate_swerve(chart_m5, res, res["is_long"])
+    if m5_only:
+        return {"m5": chart_m5, "trio": None, "oneMin": None}, {"narrow": M5_ONLY_NOTE,
+                                                                "wide": M5_ONLY_NOTE}
     execution_charts, fp = SF.build_execution_charts({**res, "row": row_for_chart})
     return {"m5": chart_m5, **execution_charts}, fp
 
@@ -1478,6 +1488,9 @@ def _build_unfilled_chart_stack(res, args):
                               f"{_fail_reason_label(res.get('fail_reason'))} "
                               f"(no stop/target -- never computed)")
 
+    if getattr(args, "m5_charts_only", False):
+        return {"m5": chart_m5, "trio": None, "oneMin": None}, {"narrow": M5_ONLY_NOTE,
+                                                                "wide": M5_ONLY_NOTE}
     fill_window = SF.build_fill_window_chart(
         window_start, alt_price, level_type, args.max_alt_fill_hours,
         res.get("fail_reason"))
@@ -1554,7 +1567,8 @@ def _run_cluster_chunk_subprocess(spec):
             cand["m5_ledger"] = m5_ledger
         res = process_cluster(cluster, args)
         if res["filled"]:
-            chart_stack, fp = build_chart_stack_for_row(res)
+            chart_stack, fp = build_chart_stack_for_row(
+                res, m5_only=getattr(args, "m5_charts_only", False))
         else:
             chart_stack, fp = _build_unfilled_chart_stack(res, args)
         out[pos] = (res, chart_stack, fp)
@@ -1588,7 +1602,8 @@ def process_clusters(clusters, args):
                   flush=True)
             res = process_cluster(cluster, args)
             if res["filled"]:
-                chart_stack, fp = build_chart_stack_for_row(res)
+                chart_stack, fp = build_chart_stack_for_row(
+                    res, m5_only=getattr(args, "m5_charts_only", False))
             else:
                 chart_stack, fp = _build_unfilled_chart_stack(res, args)
             results.append(res)
@@ -2999,6 +3014,10 @@ if __name__ == "__main__":
                              "(find_alt_fill/resolve_trades/chart building); chunks are "
                              "contract-pure so each worker only memory-maps one .scid contract "
                              "at a time (default 1 = serial).")
+    parser.add_argument("--m5-charts-only", action="store_true",
+                        help="build only the M5 pane per row -- no 1s trio, 1-minute, bid/ask "
+                             "volume or footprint panes. Fills and exits are still resolved "
+                             "on real ticks; only the charts are skipped.")
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
     args.default_target_modes = (TARGET_MODES if args.target_mode == "both"
