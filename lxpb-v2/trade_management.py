@@ -100,6 +100,53 @@ def entry_blocked(ts):
     return EOD_FLAT_PT <= _pt_tod(ts) < SESSION_REOPEN_PT
 
 
+def trading_day_label(ts):
+    """The Pacific calendar date (tz-naive midnight) that instant `ts`
+    trades as, under the Globex/ETH reopen boundary (SESSION_REOPEN_PT,
+    15:00 PT / 18:00 ET): a trading day runs from one reopen to the next,
+    so an instant before its OWN day's reopen still belongs to the trading
+    day that opened the evening before, and one at/after it belongs to the
+    day opening right then. E.g. Sunday 16:00 PT (past Sunday's reopen)
+    labels as Monday; Monday 10:00 PT (still inside the session Sunday's
+    reopen started) also labels as Monday."""
+    pt_midnight = _norm_utc(ts).tz_convert(_PT).normalize().tz_localize(None)
+    return pt_midnight + pd.Timedelta(days=1) if _pt_tod(ts) >= SESSION_REOPEN_PT else pt_midnight
+
+
+_TRADING_DAY_CALENDAR = None
+
+
+def _trading_day_calendar():
+    """Sorted, deduped index of every trading-day label that actually has
+    M5 bars in the continuous series (LC.m5_bars_continuous) -- i.e. real
+    market activity, not a hardcoded weekend/holiday rule. Per this repo's
+    'TradingView continuous series only' convention, the export itself is
+    the ground truth for when the market was open. Built once, cached at
+    module scope (~222k M5 bars -> a few thousand labels)."""
+    global _TRADING_DAY_CALENDAR
+    if _TRADING_DAY_CALENDAR is None:
+        pt = LC.m5_bars_continuous().index.tz_convert(_PT)
+        tod_secs = pt.hour * 3600 + pt.minute * 60 + pt.second
+        reopen_secs = int(SESSION_REOPEN_PT.total_seconds())
+        base = pt.normalize().tz_localize(None)
+        labels = base.where(tod_secs < reopen_secs, base + pd.Timedelta(days=1))
+        _TRADING_DAY_CALENDAR = labels.unique().sort_values()
+    return _TRADING_DAY_CALENDAR
+
+
+def trading_day_gap(ts_from, ts_to):
+    """Trading-day-calendar days between two instants: 0 when both fall in
+    the same Globex/ETH reopen-to-reopen window, 1 when `ts_to` labels as
+    the very NEXT trading day that real market activity exists for, and so
+    on (negative if `ts_to` precedes `ts_from`). Ranked against
+    `_trading_day_calendar` rather than subtracted as raw calendar dates,
+    so a weekend or holiday closure between the two doesn't inflate the
+    count -- Friday's close to the following Monday's reopen is 1 trading
+    day apart, not 3 calendar days."""
+    cal = _trading_day_calendar()
+    return int(cal.get_loc(trading_day_label(ts_to)) - cal.get_loc(trading_day_label(ts_from)))
+
+
 def eod_exit_signal(entry_ts):
     """The instant the flattening MARKET order is sent for a trade entered
     at `entry_ts`: the first `EOD_FLAT_PT - EOD_EXIT_LEAD` (12:44 PT) that

@@ -956,6 +956,16 @@ def process_cluster(cluster, args):
     if p1_range_ratio is not None and p1_range_ratio < WIDE_M5_BREAKOUT_RATIO_THRESHOLD:
         result["dyn_tags"].append("weak_p1_breakout")
 
+    # P1->P2 gap: how many Globex/ETH reopen-to-reopen trading days
+    # (TM.trading_day_label) separate this level's own breakout (P1) from
+    # its retest (P2) -- 0 when both fall in the same session-to-session
+    # window, 1 when the retest is the very next trading day, etc. Tags,
+    # doesn't drop, same as p1_range_ratio above.
+    p1_p2_day_gap = TM.trading_day_gap(row_d["breakout_time"], row_d["retest_time"])
+    result["p1_p2_day_gap"] = p1_p2_day_gap
+    if p1_p2_day_gap >= 1:
+        result["dyn_tags"].append("multi_day_retest")
+
     window_start = pd.to_datetime(row_d["retest_time"], utc=True)
     touch_time_alt, fill_price = SF.find_alt_fill(
         window_start, alt_price, is_long, level_type, args.max_alt_fill_hours,
@@ -1862,7 +1872,7 @@ def _apply_globex_open_filter(results):
     return results
 
 
-N_COLS = 22  # keep in sync with `head` below and every colspan in this section
+N_COLS = 23  # keep in sync with `head` below and every colspan in this section
 
 
 def _fail_reason_label(reason):
@@ -2123,6 +2133,11 @@ def _render_row(idx, res, chart_stacks, fps):
         level_type = res["level_type"]
         type_cls = "type-lhpb" if res["is_long"] else "type-llpb"
         retest_str = R._to_pt_str(row_d["retest_time"])
+        gap_val = res.get("p1_p2_day_gap")
+        gap_cell = (f'<span title="P1 (breakout) {R._to_pt_str(row_d["breakout_time"])} '
+                   f'&rarr; P2 (retest) {retest_str}, {gap_val} trading day(s) apart '
+                   f'(Globex/ETH reopen boundary, 15:00 PT)">{gap_val}d</span>'
+                   if gap_val is not None else '-')
         members_str = ", ".join(f"{p:.2f}" for p in res["cluster_members"])
         if res.get("cluster_size", 1) > 1:
             entry_title = (f' title="{res["cluster_size"]} mutually-confluent M5 levels '
@@ -2170,6 +2185,7 @@ def _render_row(idx, res, chart_stacks, fps):
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
+  <td class="daygap-cell">{gap_cell}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
   <td>{alt_cell}</td>
@@ -2325,6 +2341,7 @@ def _render_row(idx, res, chart_stacks, fps):
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
+  <td class="daygap-cell">{gap_cell}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
   <td>{res['alt_price']:.2f}<span class="gap-slot">{act['gap']}</span><span class="{src_cls}">{res['alt_source']}{improved_flag}</span>{chase_flag}</td>
@@ -2573,6 +2590,10 @@ docstring in render_m5_confl2_report.py for the full convention.">Dynamic filter
       Exclude weak P1 breakout (&lt;__WIDE_RATIO__x avg range)</label>
     <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="weak_p1_breakout">
       Only</label>
+    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="multi_day_retest">
+      Exclude multi-day retests (P1&rarr;P2 &ge; 1 trading day)</label>
+    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="multi_day_retest">
+      Only</label>
   </div>
   <div class="filter-row">
     <span class="filter-label" title="Which TARGET RULE each trade exits on -- live, in the
@@ -2612,6 +2633,10 @@ the box is checked.">Trade management</span>
         "in the same P1..P2 window.")
     head = (f"<th class=\"left\">#</th><th class=\"left\">Type</th>"
             f"<th class=\"left\">M5 retest</th>"
+            f"<th title=\"Whole trading days between this level's own P1 (breakout) and its "
+            f"P2 (retest), under the Globex/ETH reopen boundary (15:00 PT / 18:00 ET): 0 when "
+            f"both fall in the same reopen-to-reopen session, 1 when the retest is the very "
+            f"next trading day, etc.\">P1&rarr;P2</th>"
             f"<th class=\"left\" title=\"Distinct M5 prices merged into this trade, "
             f"extreme-first: highest for LLPB, lowest for LHPB. "
             f"Single-level trades show their own M5 price.\">Merged M5 levels</th>"
