@@ -1289,7 +1289,7 @@ CSS = """
         --bull:#4ade80; --bear:#f87171; --accent:#60a5fa; --done:#16321f; --invalid:#3a1414; }
 * { box-sizing:border-box; }
 body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-       padding:16px 24px; max-width:1700px; margin:0 auto;
+       padding:16px 24px; max-width:100%; margin:0;
        background:var(--bg); color:var(--text); }
 h1 { font-size:1.4em; margin:0 0 4px; color:#e8eaed; }
 p.lead { color:var(--text-dim); margin:0 0 12px; font-size:0.87em; }
