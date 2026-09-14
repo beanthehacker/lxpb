@@ -1872,7 +1872,59 @@ def _apply_globex_open_filter(results):
     return results
 
 
-N_COLS = 23  # keep in sync with `head` below and every colspan in this section
+H1_CONFL_RADIUS_PTS = 10.0  # this strategy is M5-only; this is a cross-timeframe REVIEW aid, not a rule input
+
+
+def _h1_p0_kind(level_type, is_spike, is_swing):
+    """hammer for LHPB / shooting star for LLPB (see lxpb.py's is_hammer/
+    is_shootingstar, LHPB=bar.high+is_hammer, LLPB=bar.low+is_shootingstar --
+    same mapping render_m5_confl2_report.py already uses for its own
+    m5_p0_spike stop tooltip). 'swing' when not a spike but still a genuine
+    local extreme; 'other' otherwise (e.g. a level whose is_swing was never
+    finalized, or that qualified as neither -- these never became real M5
+    P0 candidates under lxpb.py's own gate, but H1 tracks every registered
+    level regardless, and this column is a raw structural check, not a
+    replay of the gate)."""
+    if is_spike:
+        return "hammer" if level_type == "LHPB" else "shooting star"
+    if is_swing:
+        return "swing"
+    return "other"
+
+
+def _apply_h1_p0_confluence(results):
+    """Mutates and returns `results` in place. Same dynamic-filter
+    convention as _apply_p1_reaction_filter (see that function's docstring)
+    -- for every FILLED result, looks up every H1 level (any fate) that was
+    LIVE (LC.levels_live_as_of -- formed, not yet dead) at the moment of
+    this trade's own fill (res['touch_time_alt']), within
+    +/-H1_CONFL_RADIUS_PTS of the actual fill price (res['fill_price']).
+    This strategy is M5-only (see the module docstring -- 'drops H1
+    entirely'); this is purely a review aid answering 'was there H1
+    structure sitting near where this trade entered', not a strategy input.
+    Stores the list (nearest first, [] if none) as res['h1_p0_confl'] for
+    _render_row's own column, and appends 'h1_p0_confluence' to
+    res['dyn_tags'] when the list is non-empty so the report's Dynamic
+    filters panel can Exclude/Only on it like any other tag."""
+    h1_ledger = LC.h1_levels(verbose=False)
+    for res in results:
+        if not res["filled"]:
+            continue
+        near = LC.levels_live_as_of(h1_ledger, res["touch_time_alt"],
+                                    near_price=res["fill_price"],
+                                    near_pts=H1_CONFL_RADIUS_PTS)
+        confl = [{"type": r["type"], "price": float(r["price"]),
+                  "formation_time": r["formation_time"],
+                  "kind": _h1_p0_kind(r["type"], r["is_spike"], r["is_swing"]),
+                  "dist": float(r["dist"])}
+                 for _, r in near.iterrows()]
+        res["h1_p0_confl"] = confl
+        if confl:
+            res.setdefault("dyn_tags", []).append("h1_p0_confluence")
+    return results
+
+
+N_COLS = 24  # keep in sync with `head` below and every colspan in this section
 
 
 def _fail_reason_label(reason):
@@ -1989,6 +2041,7 @@ def render(args):
           f"default -- toggle the Dynamic filters checkbox in the report to exclude "
           f"them)", flush=True)
     results = _apply_globex_open_filter(results)
+    results = _apply_h1_p0_confluence(results)
     tag_counts = {}
     for r in results:
         if not r["filled"]:
@@ -2120,6 +2173,20 @@ def _attr_json(obj):
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
+def _h1_confl_cell(confl):
+    """(cell_html, title) for the 'H1 P0 confl' column from
+    res['h1_p0_confl'] (see _apply_h1_p0_confluence) -- 'none' with no
+    tooltip when the list is empty, else each nearby H1 P0 as
+    '<price> <TYPE> <kind>', nearest first."""
+    if not confl:
+        return "none", ""
+    cell = ", ".join(f'{c["price"]:.2f} {c["type"]} {c["kind"]}' for c in confl)
+    title = "; ".join(
+        f'{c["type"]} {c["price"]:.2f} {c["kind"]}, P0 {R._to_pt_str(c["formation_time"])}, '
+        f'{c["dist"]:.2f}pt from fill' for c in confl)
+    return cell, title
+
+
 def _render_row(idx, res, chart_stacks, fps):
     """Builds (chart_entry_for_json, row_html) for one result row. A FILLED
     row carrying dynamic-filter tags (res['dyn_tags'], e.g. 'p1_reacted' --
@@ -2188,6 +2255,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="daygap-cell">{gap_cell}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
+  <td class="h1-confl-cell">-</td>
   <td>{alt_cell}</td>
   <td class="left">{entry_touch_str}</td>
   <td>{stop_cell}</td>
@@ -2319,6 +2387,7 @@ def _render_row(idx, res, chart_stacks, fps):
                           f'unconvincing thrust through the level. Left out of the headline stats by default -- untick the '
                           f'Dynamic filters checkbox above to include these.">WEAK P1</span>')
         modes_attr = _attr_json(payloads)
+        h1_confl_cell, h1_confl_title = _h1_confl_cell(res.get("h1_p0_confl"))
 
         chart_stack, fp = chart_stacks[idx], fps[idx]
         fp_narrow_html = fp.get("narrow")
@@ -2344,6 +2413,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="daygap-cell">{gap_cell}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
+  <td class="h1-confl-cell" title="{h1_confl_title}">{h1_confl_cell}</td>
   <td>{res['alt_price']:.2f}<span class="gap-slot">{act['gap']}</span><span class="{src_cls}">{res['alt_source']}{improved_flag}</span>{chase_flag}</td>
   <td class="left">{entry_touch_str}</td>
   <td title="{stop_title}">{res['stop_price']:.2f}<span class="src-tag m5">{stop_source}</span></td>
@@ -2594,6 +2664,10 @@ docstring in render_m5_confl2_report.py for the full convention.">Dynamic filter
       Exclude multi-day retests (P1&rarr;P2 &ge; 1 trading day)</label>
     <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="multi_day_retest">
       Only</label>
+    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="h1_p0_confluence">
+      Exclude H1 P0 confluence (&plusmn;__H1_CONFL_RADIUS__pt)</label>
+    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="h1_p0_confluence">
+      Only</label>
   </div>
   <div class="filter-row">
     <span class="filter-label" title="Which TARGET RULE each trade exits on -- live, in the
@@ -2641,7 +2715,12 @@ the box is checked.">Trade management</span>
             f"extreme-first: highest for LLPB, lowest for LHPB. "
             f"Single-level trades show their own M5 price.\">Merged M5 levels</th>"
             f"<th title=\"The level's original M5 entry price, before fine-tuning to the "
-            f"confluence group's extreme price\">Own</th><th>Entry</th>"
+            f"confluence group's extreme price\">Own</th>"
+            f"<th title=\"Every H1 level (any fate) that was live -- formed, not yet dead -- "
+            f"within +/-{H1_CONFL_RADIUS_PTS:g}pt of this trade's actual fill price at the "
+            f"moment it filled. This strategy is M5-only (no H1 input); purely a review aid. "
+            f"'none' if no H1 level qualified.\">H1 P0 confl (&plusmn;{H1_CONFL_RADIUS_PTS:g}pt)</th>"
+            f"<th>Entry</th>"
             f"<th class=\"left\">Entry (touch) time</th>"
             f"<th title=\"If the entry level's own P0 was a spike candle (hammer for LHPB / "
             f"shooting star for LLPB), one tick beyond THAT candle's own low/high "
@@ -2674,6 +2753,7 @@ the box is checked.">Trade management</span>
 {summary_html}
 {filter_panel.replace("__MIN_R__", f"{args.min_r:g}")
    .replace("__WIDE_RATIO__", f"{WIDE_M5_BREAKOUT_RATIO_THRESHOLD:g}")
+   .replace("__H1_CONFL_RADIUS__", f"{H1_CONFL_RADIUS_PTS:g}")
    .replace("__CONSOL_CHECKED__",
             "checked" if "consolidation" in args.default_target_modes else "")
    .replace("__OPP_CHECKED__",
@@ -2715,6 +2795,7 @@ tr.lvl-row.type-lhpb td.type-cell, tr.lvl-row.type-llpb td.type-cell {
 }
 .cluster-tag { border-bottom:1px dotted var(--text-dim); cursor:help; }
 td.merged-h1-levels { max-width:220px; white-space:normal; }
+td.h1-confl-cell { max-width:220px; white-space:normal; cursor:help; }
 /* Dynamic filters (see _apply_p1_reaction_filter's docstring): a row tagged
    res['dyn_tags'] gets data-dyn-tags plus this badge; the matching
    f-dyn-exclude checkbox hides it via .dyn-hidden (kept separate from the
