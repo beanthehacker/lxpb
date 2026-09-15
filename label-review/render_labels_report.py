@@ -15,9 +15,8 @@ Each checkbox is PRE-CHECKED with a computed default (see `defaults` in
 compute_hints) to speed up labeling -- the reviewer's tick is always the
 final ground truth and can flip any default:
   - phase0_spike         : formation bar is a genuine spike             (hint/default: patterns-pure
-                            find_hammer/find_shooting_star on the formation bar -- NOT lxpb.py's own
-                            is_hammer/is_shootingstar, per explicit instruction to source spike
-                            detection from D:\\daily-analysis\\patterns-pure)
+                            find_hammer/find_shooting_star on the formation bar, from the vendored
+                            ../lxpb-v2/patterns_pure copy -- the only spike definition allowed in this repo)
   - phase1_wide_breakout : breakout bar is unusually wide-ranging       (hint: range / 20-bar avg range;
                             default: ratio >= WIDE_BREAKOUT_RATIO_THRESHOLD)
   - confluence_cluster   : a real cluster of nearby same-type levels    (hint: count within N_TICKS;
@@ -62,8 +61,10 @@ import es_h1_display  # noqa: E402
 
 # Spike (and large-wick) detection is sourced from patterns-pure -- the
 # more rigorous/"source of truth" pattern library -- rather than
-# reimplementing hammer/shooting-star/wick logic locally.
-_PATTERNS_PURE = r"D:\daily-analysis\patterns-pure"
+# reimplementing hammer/shooting-star/wick logic locally. Always this repo's
+# vendored copy (the one lxpb.py's is_spike uses too), never the external
+# D:\daily-analysis folder, so every spike test in the repo is the same code.
+_PATTERNS_PURE = L.PATTERNS_PURE_DIR
 if _PATTERNS_PURE not in sys.path:
     sys.path.insert(0, _PATTERNS_PURE)
 
@@ -475,10 +476,12 @@ def build_all_broken_out(retests_df, touch_lv1_df):
 
 def is_spike_pp(h1_df, pos_by_ts, level_type, formation_time):
     """Spike classification for the formation bar, sourced from
-    patterns-pure (find_hammer / find_shooting_star) rather than lxpb.py's
-    own simplified is_hammer/is_shootingstar -- LHPB spikes look like a
-    shooting star (rejection of higher prices), LLPB spikes look like a
-    hammer (rejection of lower prices). Mirrors the exact 2-row slicing
+    patterns-pure (find_hammer / find_shooting_star) -- the same definition
+    lxpb.py's is_spike uses, but the opposite pattern per side: LHPB spikes
+    look like a shooting star (rejection of higher prices), LLPB spikes look like a
+    hammer (rejection of lower prices). That is the REJECTION pairing, used
+    on purpose here; don't swap it to the detector's (see "Spike candles"
+    in ../lxpb-v2/CLAUDE.md). Mirrors the exact 2-row slicing
     convention used by patterns-pure/lxpb_quality_gate.py so the
     shift(1)-based confirmation check has a valid previous bar."""
     fi = pos_by_ts[formation_time]

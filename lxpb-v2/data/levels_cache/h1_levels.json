@@ -2,7 +2,7 @@
   "kind": "h1",
   "contract": "",
   "algo_version": 3,
-  "rules": "a7ac08c4dea2-mh1",
+  "rules": "8f2474bf82bc-mh1",
   "bars_fingerprint": "20935-304bb231824088dd",
   "shape_fingerprint": "20935-1b03d60d38e85496",
   "anchor": 4834.5,
@@ -13,6 +13,6 @@
   "n_levels": 41870,
   "built_how": "rebuild",
   "resolved": "rebuild",
-  "built_seconds": 2.18,
-  "built_at": "2026-09-14T23:19:47.580485+00:00"
+  "built_seconds": 2.13,
+  "built_at": "2026-09-15T02:44:46.181004+00:00"
 }

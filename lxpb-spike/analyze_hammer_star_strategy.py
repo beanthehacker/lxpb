@@ -18,18 +18,16 @@ Rules
              LHPB is valid only if its FORMATION bar is a HAMMER.
              LLPB is valid only if its FORMATION bar is a SHOOTING STAR.
            All other formations are invalid and dropped. Both patterns are
-           judged by the canonical `D:\\daily-analysis\\patterns-pure`
-           implementations (`find_hammer.find_hammer`,
-           `find_shooting_star.find_shooting_star`) applied to the
-           formation bar -- NOT lxpb.py's own simplified inline
-           is_hammer/is_shootingstar, and NOT
-           render_labels_report.is_spike_pp's mapping either (that helper
+           judged by the canonical patterns-pure implementations
+           (`find_hammer.find_hammer`, `find_shooting_star.find_shooting_star`,
+           vendored in ../lxpb-v2/patterns_pure) applied to the formation
+           bar -- the only spike definition allowed in this repo, and NOT
+           render_labels_report.is_spike_pp's mapping (that helper
            uses the OPPOSITE polarity: LHPB->shooting-star,
            LLPB->hammer -- see its own docstring / patterns_pure/README.md
            "Spike-side mapping"). This strategy's polarity is a deliberate,
            explicit instruction and matches lxpb.py's own native `is_spike`
-           mapping, just computed from the more rigorous patterns-pure
-           logic instead of lxpb.py's inline version.
+           mapping, which is judged by the same patterns-pure functions.
   filter 2 Breakout strength: the ORIGINAL breakout bar (the one that broke
            the level out) must be a "strong" impulse, using the same
            `breakout_range_ratio` definition as
@@ -72,12 +70,12 @@ for _p in (_LXPB_V2, _HERE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-# render_labels_report puts D:\lxpb (for lxpb.py), D:\lxpb\data and
-# D:\daily-analysis\patterns-pure on sys.path as a side effect of import,
+# render_labels_report puts D:\lxpb (for lxpb.py), D:\lxpb\data and the
+# vendored lxpb-v2/patterns_pure on sys.path as a side effect of import,
 # and already imports patterns-pure's find_hammer/find_shooting_star as
 # R._pp_find_hammer / R._pp_find_shooting_star -- reused verbatim below
 # rather than re-imported, to avoid a second, differently-ordered sys.path
-# insert for the same D:\daily-analysis\patterns-pure directory.
+# insert for the same patterns_pure directory.
 import render_labels_report as R  # noqa: E402
 import analyze_breakout_exits as A  # noqa: E402
 import analyze_breakout_exits_1min as M  # noqa: E402

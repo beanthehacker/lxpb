@@ -84,10 +84,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_HERE, ".."))
 _DATA_DIR = os.path.join(_REPO_ROOT, "data")   # lxpb.py + build_es_h1_2026_backadjusted.py live there
 _VENDORED_PP = os.path.join(_HERE, "patterns_pure")
-# The vendored patterns-pure copy goes on sys.path FIRST, before
-# render_labels_report is imported (which puts the external
-# D:\daily-analysis\patterns-pure ahead of it), so `find_hammer` &co. always
-# resolve to this repo's own vendored, byte-identical copies. See
+# The vendored patterns-pure copy goes on sys.path so `find_hammer` &co.
+# resolve to this repo's own vendored, byte-identical copies -- the same
+# directory render_labels_report and lxpb.py load them from. See
 # patterns_pure/README.md.
 for _p in (_DATA_DIR, _REPO_ROOT, _HERE, _VENDORED_PP):
     if _p not in sys.path:
@@ -265,7 +264,7 @@ def snapshot_pending(h1_df, positions):
     want = set(int(p) for p in positions)
     out = {}
     state = L.new_state()
-    for i, bar in enumerate(h1_df.itertuples(index=True)):
+    for i, bar in enumerate(L.iter_bars(state, h1_df)):
         if i in want:
             out[i] = L._strip_internal(state["touch_lv1"])
         L.advance_one_bar(state, bar)
@@ -325,7 +324,9 @@ def is_swing_pp(h1_df, level_type, formation_time, price, anchor_pos, **kw):
 
 def is_spike_pp(h1_df, pos_by_ts, level_type, formation_time):
     """patterns-pure spike on the formation bar: shooting star for an LHPB
-    (a bar HIGH rejecting higher prices), hammer for an LLPB. Sliced 2 bars
+    (a bar HIGH rejecting higher prices), hammer for an LLPB -- the REJECTION
+    pairing, on purpose; lxpb.py's own is_spike (carried as is_spike_lxpb)
+    uses the detector pairing (see "Spike candles" in CLAUDE.md). Sliced 2 bars
     deep so the library's own shift(1) confirmation has a previous bar,
     mirroring render_labels_report.is_spike_pp / patterns-pure's
     lxpb_quality_gate.py convention."""

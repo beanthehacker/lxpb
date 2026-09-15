@@ -43,7 +43,7 @@ SKIP_REPORT = "--skip-report" in sys.argv
 def direct_live_at(bars, cut_pos):
     """Ground truth: run the machine over bars[:cut_pos] and read its buckets."""
     state = L.new_state()
-    for bar in bars.iloc[:cut_pos].itertuples(index=True):
+    for bar in L.iter_bars(state, bars.iloc[:cut_pos]):
         L.advance_one_bar(state, bar)
     out = {}
     for lv in state["touch_lv0"]:

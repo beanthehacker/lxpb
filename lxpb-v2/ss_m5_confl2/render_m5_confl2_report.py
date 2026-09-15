@@ -2027,8 +2027,8 @@ H1_CONFL_HOUR_TOLERANCE = pd.Timedelta(hours=1)  # see _apply_h1_p0_confluence: 
 
 
 def _h1_p0_kind(level_type, is_spike, is_swing):
-    """hammer for LHPB / shooting star for LLPB (see lxpb.py's is_hammer/
-    is_shootingstar, LHPB=bar.high+is_hammer, LLPB=bar.low+is_shootingstar --
+    """hammer for LHPB / shooting star for LLPB (lxpb.py's is_spike, judged by
+    patterns-pure: LHPB=bar.high+find_hammer, LLPB=bar.low+find_shooting_star --
     same mapping render_m5_confl2_report.py already uses for its own
     m5_p0_spike stop tooltip). 'swing' when not a spike but still a genuine
     local extreme; 'other' otherwise (e.g. a level whose is_swing was never

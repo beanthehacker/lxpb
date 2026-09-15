@@ -90,7 +90,10 @@ via `not (retest_low <= entry_price <= retest_high)`.
 
 Every level is classified when formed:
 - **`is_spike`**: the formation bar itself is a hammer (LHPB) or shooting
-  star (LLPB) — single-bar pattern, finalized immediately.
+  star (LLPB), judged by patterns-pure's `find_hammer` / `find_shooting_star`
+  (vendored in `lxpb-v2/patterns_pure`; body ≤ 35% of range, long wick > 50%,
+  opposite wick ≤ 25%, and the close must hold the previous bar's low/high) —
+  finalized immediately. See "Spike candles" in `lxpb-v2/CLAUDE.md`.
 - **`is_swing`**: the formation bar's high/low is more extreme than both
   the bar immediately before and immediately after it. Since the "after"
   bar isn't known until the next iteration, this is finalized one bar

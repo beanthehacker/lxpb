@@ -2,7 +2,7 @@
   "kind": "m5",
   "contract": "",
   "algo_version": 3,
-  "rules": "a7ac08c4dea2-mh1",
+  "rules": "8f2474bf82bc-mh1",
   "bars_fingerprint": "222719-b11f730fabe3b474",
   "shape_fingerprint": "222719-f8bf7260e8db42ff",
   "anchor": 5327.75,
@@ -13,6 +13,6 @@
   "n_levels": 445438,
   "built_how": "rebuild",
   "resolved": "rebuild",
-  "built_seconds": 62.94,
-  "built_at": "2026-09-15T00:05:25.657251+00:00"
+  "built_seconds": 62.68,
+  "built_at": "2026-09-15T02:45:49.346931+00:00"
 }

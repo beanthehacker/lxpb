@@ -311,7 +311,7 @@ GLOSSARY = [
      "awaiting their own retest, within 20 ticks of this level at the moment of this retest -- "
      "captured via a live snapshot of lxpb.py's internal touch_lv1 state (not just the final "
      "end-of-history state)."),
-    ("is_spike / is_swing", "Single-bar hammer/shooting-star pattern (is_spike) vs. a genuine "
+    ("is_spike / is_swing", "Patterns-pure hammer/shooting-star pattern (is_spike) vs. a genuine "
      "3-bar swing pivot -- both from lxpb.py's own formation-bar classification."),
     ("Outcome labels (mfe_30m, mae_before_peak_30m, quality_30m)",
      "MFE = maximum favorable excursion (biggest paper profit reached, no stop/target) within 30 "

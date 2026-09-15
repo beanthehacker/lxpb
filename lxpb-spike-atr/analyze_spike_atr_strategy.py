@@ -111,8 +111,8 @@ for _p in (_LXPB_V2, _HERE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-# render_labels_report puts D:\lxpb (for lxpb.py), D:\lxpb\data and
-# D:\daily-analysis\patterns-pure on sys.path as a side effect of import.
+# render_labels_report puts D:\lxpb (for lxpb.py), D:\lxpb\data and the
+# vendored lxpb-v2/patterns_pure on sys.path as a side effect of import.
 import render_labels_report as R  # noqa: E402
 import analyze_breakout_exits as A  # noqa: E402
 import analyze_breakout_exits_1min as M  # noqa: E402

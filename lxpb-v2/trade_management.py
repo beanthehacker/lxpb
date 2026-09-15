@@ -20,7 +20,8 @@ mirror images of each other -- see each rule's own docstring):
   candle closes below the low wicks of several still-live P0 LLPB
   candles, the stop trails to one tick above that candle's own high.
   "Several" is a tiered threshold: 1 P0 is enough if any member is a
-  swing or a spike candle (lxpb.py's own is_swing/is_spike), 2 if every
+  swing or a spike candle (lxpb.py's own is_swing/is_spike -- detector
+  pairing: hammer for LHPB, shooting star for LLPB), 2 if every
   member's own wick is at least MIN_WICK_RATIO (20%) of that candle's own
   range, 3 otherwise. No requirement on the breakout candle's own body size --
   any candle closing past enough still-live P0s qualifies. The stop only

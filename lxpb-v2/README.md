@@ -156,7 +156,7 @@ Workflow:
   from a computed default** (not just an unchecked hint) -- the grey text
   below each checkbox explains the underlying number, but the checkbox
   state itself is the default; reviewer ticks/unticks are what get saved:
-  - **P0 Spike** -- default: detected via `D:\daily-analysis\patterns-pure`
+  - **P0 Spike** -- default: detected via patterns-pure (vendored `patterns_pure/`)
     (`find_shooting_star`/`find_hammer` for LHPB/LLPB respectively).
   - **P1 Wide Breakout** -- default: breakout bar range >= `WIDE_BREAKOUT_RATIO_THRESHOLD`
     (2.0x) trailing 20-bar average range.
@@ -177,8 +177,8 @@ Workflow:
 
 - `render_labels_report.py` -- the entire tool (data pipeline + HTML/JS
   template, self-contained, no external Python deps beyond pandas/numpy
-  already used by `../lxpb.py`; imports spike/wick helpers from
-  `D:\daily-analysis\patterns-pure` via `sys.path`).
+  already used by `../lxpb.py`; imports spike/wick helpers from the
+  vendored `patterns_pure/` via `sys.path`).
 - `public/reports/lxpb_labels_report.html` -- example generated output
   (most recent 300 completed 2026 retests from the bundled dataset,
   default args). Regenerate any time; this file is a disposable build
@@ -387,7 +387,7 @@ comparable across rules.
 |---|---------|--------------------|
 | a | **Recency to breakout** | `recency_bars` = H1 bars from the level's **formation** bar to its **breakout** bar (LXPB = "last high *pre-breakout*"). The alternative reading, breakout -> retest, is also computed and shown in grey as `bars_breakout_to_event` -- see "Assumptions" below. |
 | b | **Swing level** | `find_swings` from `patterns_pure/` (ATR ZigZag, `atr_mult 0.75`, ATR-21) run over the trailing 750 bars **ending at the event's first bar**, so no future data. The level counts as a swing only if the pivot's own high/low equals the level price. `lxpb.py`'s cruder 3-bar `is_swing` is carried alongside as `is_swing_lxpb`. |
-| c | **Spike candle** | `find_shooting_star` for an LHPB, `find_hammer` for an LLPB, from `patterns_pure/`. **Note:** `lxpb.py` uses the opposite mapping (LHPB -> hammer); that is carried as `is_spike_lxpb` for comparison and `lxpb.py` was left untouched. |
+| c | **Spike candle** | `find_shooting_star` for an LHPB, `find_hammer` for an LLPB, from `patterns_pure/`. **Note:** `lxpb.py` uses the same patterns-pure functions but the opposite mapping (LHPB -> hammer); that is carried as `is_spike_lxpb` for comparison. |
 | d | **Large wick** | `candle_utils.has_large_upper_wick` for LHPB / `has_large_lower_wick` for LLPB (40% of range), with the raw `wick_pct` shown too. |
 
 Recency is min-max normalised **within each cluster** (1.0 = the level
@@ -467,7 +467,9 @@ and the hand-check columns exist to correct them:
 Byte-identical copies of `find_ATR.py`, `find_swings.py`, `find_hammer.py`,
 `find_shooting_star.py` and `candle_utils.py` from
 `D:\daily-analysis\patterns-pure`, vendored so this repo is
-self-contained. Imported via `sys.path`, not as a package. See
+self-contained. Imported via `sys.path`, not as a package (`../lxpb.py` loads
+the hammer/shooting-star files by path). Every spike test in the repo uses
+these copies -- see "Spike candles" in `CLAUDE.md`. See
 `patterns_pure/README.md` for provenance and the refresh command.
 
 ## Same-side confluence fine-tuning (`render_ss_confl_finetune_report.py`)
@@ -632,7 +634,8 @@ It is a pure **external observer**: it steps `lxpb.advance_one_bar` and diffs
 the bucket lists between bars to see which levels departed and when. It never
 re-implements a rule, so it cannot drift from the strategy definition. This
 matters because `../lxpb.py` is a synced copy of
-`D:\daily-analysis\lxpb-h1-apr2026\lxpb_h1_detect.py` and must stay untouched.
+`D:\daily-analysis\lxpb-h1-apr2026\lxpb_h1_detect.py` and must stay untouched
+(apart from `is_spike`, which is patterns-pure's -- see "Spike candles" in `CLAUDE.md`).
 
 ### Keeping it current
 
