@@ -202,15 +202,18 @@ PRICE_COLS = (
 
 
 def _rules_fingerprint():
-    """Hash of lxpb.py's source + MIN_BARS_BEFORE_RETEST.
+    """Hash of lxpb.py's source + the patterns-pure hammer/shooting-star files
+    it takes is_spike from + MIN_BARS_BEFORE_RETEST.
 
-    lxpb.py is a synced copy of a file maintained elsewhere, so it can change
-    under us. Keying on its bytes means a re-sync that alters the detection
-    rules invalidates every cached ledger instead of silently serving levels
-    built by the old rules."""
-    src = open(L.__file__, "rb").read()
-    h = hashlib.sha1(src).hexdigest()[:12]
-    return f"{h}-mh{L.MIN_BARS_BEFORE_RETEST}"
+    lxpb.py is a synced copy of a file maintained elsewhere, and patterns_pure/
+    a vendored copy of another, so either can change under us. Keying on their
+    bytes means a re-sync that alters the detection rules invalidates every
+    cached ledger instead of silently serving levels built by the old rules."""
+    h = hashlib.sha1()
+    for path in (L.__file__,) + L.SPIKE_PATTERN_FILES:
+        with open(path, "rb") as f:
+            h.update(f.read())
+    return f"{h.hexdigest()[:12]}-mh{L.MIN_BARS_BEFORE_RETEST}"
 
 
 def _bars_fingerprint(bars):
@@ -308,6 +311,10 @@ class _LedgerObserver:
             "type": lv["type"],
             "price": float(lv["price"]),
             "formation_time": lv["formation_time"],
+            # lxpb.py's DETECTOR pairing: hammer for an LHPB, shooting star
+            # for an LLPB -- not the labels reports' rejection pairing. Every
+            # reader of this column inherits that (see "Spike candles" in
+            # CLAUDE.md).
             "is_spike": bool(lv["is_spike"]),
             # is_swing is finalized on the bar AFTER formation; a level can
             # never die before then, so by the time we read it here it is
@@ -458,7 +465,7 @@ def build_ledger(bars, timeframe, contract="", resume=None):
     else:
         state, obs = resume
 
-    for bar in bars.itertuples(index=True):
+    for bar in L.iter_bars(state, bars):
         finalized_swing, gated_dropped = L.advance_one_bar(state, bar)
         obs.apply_finalized_swing(finalized_swing)
         obs.observe(state, bar.Index, gated_dropped)

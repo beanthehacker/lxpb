@@ -73,7 +73,7 @@ def run_with_snapshots(df):
     retest without re-deriving lxpb.py's internal state."""
     state = L.new_state()
     snapshots = {}
-    for bar in df.itertuples(index=True):
+    for bar in L.iter_bars(state, df):
         L.advance_one_bar(state, bar)
         snapshots[bar.Index] = [(lv["type"], lv["price"]) for lv in state["touch_lv1"]]
     touch_lv0 = pd.DataFrame(L._strip_internal(state["touch_lv0"]))

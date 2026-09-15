@@ -255,9 +255,11 @@ Two things about how it is built matter:
   steps `lxpb.advance_one_bar` and diffs the bucket lists to see which levels
   departed on which bar. `lxpb.py` is a synced copy of
   `D:\daily-analysis\lxpb-h1-apr2026\lxpb_h1_detect.py` and must stay untouched
-  — the ledger exists precisely so it can.
-- A `_rules_fingerprint()` (hash of `lxpb.py`'s bytes plus
-  `MIN_HOURS_BEFORE_RETEST`) is stored in each cache's meta, so a re-sync of the
+  — the ledger exists precisely so it can. (One deliberate exception: its
+  `is_spike` is patterns-pure's hammer/shooting-star, see below.)
+- A `_rules_fingerprint()` (hash of `lxpb.py`'s bytes, the vendored
+  `patterns_pure/find_hammer.py` + `find_shooting_star.py`, plus
+  `MIN_BARS_BEFORE_RETEST`) is stored in each cache's meta, so a re-sync of the
   rules invalidates every ledger automatically.
 
 ### Keeping the cache current — do NOT just rebuild
@@ -307,6 +309,28 @@ ledger identical to a from-scratch build). Two gotchas when comparing: ~120 H1
 retests have `fta = NaN` (breakout and retest separated by a weekend gap, so no
 bar updated `running_fta`) and NaN never equals itself, so stringify floats
 before set-comparing.
+
+## Spike candles (hammer / shooting star): patterns-pure only
+
+Repo-wide rule: every hammer or shooting-star test is patterns-pure's
+`find_hammer` / `find_shooting_star` from the vendored `lxpb-v2/patterns_pure`
+copy — body ≤ 35% of range, long wick > 50%, opposite wick ≤ 25%, and the close
+must hold the previous bar's low (hammer) / high (shooting star). Never a
+hand-written or single-bar version, never the external `D:\daily-analysis`
+copy. `lxpb.py`'s `is_spike` follows it through `lxpb.iter_bars`.
+
+The pairing differs by place and both are deliberate: the **detector** pairing
+(`lxpb.py`, the level caches and all their `is_spike` readers, `lxpb-spike`)
+is LHPB = hammer / LLPB = shooting star; the **rejection** pairing (labels
+reports, cluster selection, retest features, `lxpb-spike-atr`) is LHPB =
+shooting star / LLPB = hammer. Never swap or merge them without the user
+deciding. Full rule and table: "Spike candles" in `lxpb-v2/CLAUDE.md`.
+
+A **spike-thrust** is the candle right after a spike that closes up after a
+hammer / down after a shooting star and meets one of exactly four (range vs
+spike, body %) rows: 0.75×/80%, 1.0×/60%, 1.2×/50%, 1.5×/40%. Only
+patterns-pure's `find_spike_thrust` decides it. It is not the P1 "thrust
+candle" of `ss_m5_confl2` / `trade_management.py`.
 
 ## Parallelism — up to 4 cores available
 Independent report/analysis runs (e.g. multiple `render_stop_target_report.py

@@ -113,3 +113,74 @@ exactly +67.75pt on every bar back to Jul 2023). So after each roll:
 The new front month's ticks cannot be mapped until an export holds at least
 100 of its front-month M5 bars (`_SCID_OFFSET_MIN_OVERLAP`, ~8 trading hours);
 `_measure_scid_offset` raises before then.
+
+# Spike candles (hammer / shooting star): patterns-pure only
+
+**Every hammer or shooting-star test in this repo is patterns-pure's
+`find_hammer` / `find_shooting_star`, from the vendored copy in
+`patterns_pure/`, and nothing else.** Repo-wide, like the data rule above.
+That definition is:
+
+- body <= 35% of the bar's range, long wick > 50%, opposite wick <= 25%, AND
+- a hammer closes at or above the PREVIOUS bar's low; a shooting star closes
+  at or below the previous bar's high.
+
+The wider 35% / 25% thresholds and the previous-bar close are both essential.
+A single-bar version, or one with its own thresholds, is wrong even if it
+looks close.
+
+- Never restate the thresholds in code. Call the functions (they need the
+  previous bar in the frame; see `render_labels_report.is_spike_pp`).
+- `../lxpb.py`'s `is_spike` loads them by path; feed `advance_one_bar` only
+  through `lxpb.iter_bars(state, bars)`, which attaches the per-bar verdict
+  and seeds the previous bar from `state` on a resume.
+- Never import from `D:\daily-analysis\patterns-pure` directly. To pick up an
+  upstream change, refresh the vendored copy (`patterns_pure/README.md`); the
+  level caches' rules fingerprint hashes those files and rebuilds on its own.
+## Which pattern is the spike for each level type: two pairings, both deliberate
+
+The definition above is shared; the pairing is not. Two pairings exist, and
+mixing them up silently flips which P0s count as spikes:
+
+| Pairing | LHPB (level = bar's high) | LLPB (level = bar's low) | Where |
+|---|---|---|---|
+| Detector | hammer | shooting star | `../lxpb.py`'s `is_spike`, which drives its candidate gate. So also the H1/M5 level caches and every reader of their `is_spike`: `ss_m5_confl2` (spike-P0 stop, H1 P0 kind), `trade_management.py`, `../retest-vol-scalp`. Also `../lxpb-spike` (own helper, same pairing). |
+| Rejection | shooting star | hammer | `render_labels_report.is_spike_pp` (both copies) and its P0 Spike hint, `analyze_retest_cluster_selection.py`, `analyze_retest_features.py`, `../lxpb-spike-atr`. |
+
+- Anything that reads a level's cached `is_spike` is on the detector pairing,
+  whatever it calls the candle. Don't reinterpret it as the other pairing.
+- New code that tests the formation candle itself must say which pairing it
+  uses, in its docstring.
+- Never switch a place from one pairing to the other, or merge them, without
+  the user deciding it. It is a strategy change: for the detector it changes
+  which levels pass the gate, so every ledger and report changes.
+- Full table with file paths: `patterns_pure/README.md`.
+
+## Spike-thrust candle
+
+**A spike-thrust is the candle IMMEDIATELY after a spike** (a hammer or
+shooting star by the definition above) that closes in the spike's direction
+(up, close > open, after a hammer; down after a shooting star) AND meets at
+least one of these four combinations -- the ONLY ones, nothing between or
+beyond them:
+
+| Thrust range vs spike candle's range | Thrust body vs its own range |
+|---|---|
+| >= 0.75x | >= 80% |
+| >= 1.0x | >= 60% |
+| >= 1.2x | >= 50% |
+| >= 1.5x | >= 40% |
+
+A candle between two rows needs the body of the row below it (1.4x needs 50%,
+3x still needs 40%); nothing under 0.75x or under a 40% body qualifies.
+
+It is patterns-pure's `find_spike_thrust` (vendored in `patterns_pure/`, rows
+in its `SPIKE_THRUST_TIERS`) and nothing else, under the same rules as the
+spike itself: never restate the rows or the close test inline, and change
+them only in patterns-pure and then refresh the vendored copy.
+Example: H1 20 Dec 2024 05:00 PT (spike = the 04:00 PT hammer; 1.76x, 48% body).
+
+- It describes two consecutive candles and knows nothing about LHPB/LLPB. Code
+  that ties it to a level must say which pairing (above) picks the spike.
+- It is NOT the "thrust candle" of `ss_m5_confl2` / `trade_management.py`,
+  which just means a level's P1 breakout candle, with no shape test at all.

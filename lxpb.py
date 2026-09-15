@@ -9,6 +9,11 @@ This is the canonical LXPB detection algorithm, ported from
 D:\\daily-analysis\\lxpb-h1-apr2026\\lxpb_h1_detect.py (kept as the source of
 truth there; this file is a synced copy for use in this repo/its tests).
 
+Hammer / shooting-star (spike) detection is NOT defined here: it is
+patterns-pure's own find_hammer / find_shooting_star, from this repo's vendored
+copy in lxpb-v2/patterns_pure -- the repo-wide rule (see lxpb-v2/CLAUDE.md).
+Feed advance_one_bar through iter_bars(), which attaches that verdict per bar.
+
 Usage:
     python lxpb.py --data data/es-h1-continuous-backadjusted.csv
     python lxpb.py --data data/nq-h1-4apr2021-11apr2025.csv --output retests.csv
@@ -17,6 +22,7 @@ Usage:
 import os
 import sys
 import argparse
+import importlib.util
 import numpy as np
 import pandas as pd
 
@@ -48,34 +54,63 @@ def load_ohlc_data(csv_path: str) -> pd.DataFrame:
     return ohlc
 
 
-def is_shootingstar(o: float, h: float, l: float, c: float) -> bool:
-    """Single-bar shooting-star pattern (small body, long upper wick, tiny lower wick)."""
-    body_size = abs(c - o)
-    upper_wick = h - max(o, c)
-    lower_wick = min(o, c) - l
-    total_length = h - l
-    if total_length == 0:
-        return False
-    body_to_wick_ratio = 0.3
-    small_body = body_size <= (total_length * body_to_wick_ratio)
-    long_upper_wick = upper_wick > (total_length * 0.5)
-    small_lower_wick = lower_wick < (total_length * 0.2)
-    return small_body and long_upper_wick and small_lower_wick
+# The repo's one hammer / shooting-star definition: patterns-pure's own
+# functions, loaded by FILE PATH from the vendored copy so no sys.path order
+# can substitute another copy. Both need the previous bar as well as the bar
+# itself -- body <= 35% of range, long wick > 50%, opposite wick <= 25%, AND a
+# hammer closes at/above the previous bar's low (a shooting star at/below its
+# high). Never restate those thresholds anywhere; refresh the vendored copy.
+#
+# PAIRING -- this detector's own, and deliberate: an LHPB (the bar's HIGH) is a
+# spike if its bar is a HAMMER, an LLPB (the bar's LOW) if it is a SHOOTING
+# STAR. The labels / cluster-selection / spike-atr reports use the opposite
+# "rejection" pairing (LHPB = shooting star). Both are intended; never swap
+# either one without the user deciding, since this pairing drives the
+# candidate gate and so every ledger. See "Spike candles" in lxpb-v2/CLAUDE.md.
+PATTERNS_PURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "lxpb-v2", "patterns_pure")
+SPIKE_PATTERN_FILES = tuple(os.path.join(PATTERNS_PURE_DIR, f)
+                            for f in ("find_hammer.py", "find_shooting_star.py"))
 
 
-def is_hammer(o: float, h: float, l: float, c: float) -> bool:
-    """Single-bar hammer pattern (small body, long lower wick, tiny upper wick)."""
-    body_size = abs(c - o)
-    upper_wick = h - max(o, c)
-    lower_wick = min(o, c) - l
-    total_length = h - l
-    if total_length == 0:
-        return False
-    body_to_wick_ratio = 0.3
-    small_body = body_size <= (total_length * body_to_wick_ratio)
-    long_lower_wick = lower_wick > (total_length * 0.5)
-    small_upper_wick = upper_wick < (total_length * 0.2)
-    return small_body and long_lower_wick and small_upper_wick
+def _load_pattern(path, name):
+    spec = importlib.util.spec_from_file_location(f"_lxpb_pp_{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, name)
+
+
+find_hammer = _load_pattern(SPIKE_PATTERN_FILES[0], "find_hammer")
+find_shooting_star = _load_pattern(SPIKE_PATTERN_FILES[1], "find_shooting_star")
+
+
+def iter_bars(state: dict, ohlc: pd.DataFrame):
+    """`ohlc`'s bars in the form advance_one_bar takes (itertuples rows), each
+    carrying patterns-pure's verdict for that bar: `pp_hammer`,
+    `pp_shooting_star`.
+
+    Computed over the whole frame in one pass (per-bar DataFrame calls would
+    be far too slow on M5). The first bar is judged against the last bar
+    `state` has already processed, so a resumed state (lxpb_levels_cache's
+    extend route) gets the same verdicts as a from-scratch run; a fresh
+    state has no previous bar, so its first bar is never a spike -- exactly
+    patterns-pure's own shift(1) on a series' first row."""
+    frame = ohlc[["open", "high", "low", "close"]]
+    if frame.empty:
+        return iter(())
+    resumed = state["prev_high"] is not None
+    if resumed:
+        # Only the previous bar's high/low enter the close check; its own
+        # verdict (NaN open/close -> never a match) is dropped below.
+        prior = pd.DataFrame({"open": [np.nan], "high": [state["prev_high"]],
+                              "low": [state["prev_low"]], "close": [np.nan]},
+                             index=frame.index[:1] - pd.Timedelta(1, "ns"))
+        frame = pd.concat([prior, frame])
+    hammer = frame.index.isin(find_hammer(frame, atr=0.0).index)
+    star = frame.index.isin(find_shooting_star(frame, atr=0.0).index)
+    if resumed:
+        hammer, star = hammer[1:], star[1:]
+    return ohlc.assign(pp_hammer=hammer, pp_shooting_star=star).itertuples(index=True)
 
 
 def _efficiency_ratio(closes):
@@ -147,7 +182,8 @@ def new_state() -> dict:
 
 
 def advance_one_bar(state: dict, bar) -> tuple:
-    """Advance LXPB state by one OHLC bar (namedtuple from itertuples(index=True)).
+    """Advance LXPB state by one OHLC bar -- a row from iter_bars(state, ohlc),
+    which carries patterns-pure's hammer/shooting-star verdict for it.
 
     Returns (finalized_swing, gated_dropped):
       finalized_swing -- the levels whose `is_swing` was just finalized
@@ -194,8 +230,10 @@ def advance_one_bar(state: dict, bar) -> tuple:
     which requires a body cross).
 
     Spike/swing classification: `is_spike` (hammer for LHPB, shooting
-    star for LLPB) is single-bar and finalized immediately at
-    formation. `is_swing` needs the bar *after* formation, so it is
+    star for LLPB -- this detector's deliberate pairing, the opposite of
+    the labels reports'; both patterns-pure's, see iter_bars) only needs the
+    formation bar and the bar before it, so it is finalized immediately
+    at formation. `is_swing` needs the bar *after* formation, so it is
     finalized here in Phase 0 — one bar after the level was created,
     always before that same level's earliest possible breakout (Phase
     2 of this same call).
@@ -203,7 +241,7 @@ def advance_one_bar(state: dict, bar) -> tuple:
     Candidate gate (Phase 2): a level only gets promoted to touch_lv1
     (tracked as a live breakout awaiting retest) if:
       `is_spike` (its own formation candle was a hammer/shooting star --
-        a self-contained reversal that doesn't need neighbor-bar
+        a self-contained reversal that doesn't need the NEXT bar's
         confirmation, since a lower-timeframe view of that one candle is
         itself a low-high-low / high-low-high pattern), OR
       `is_swing` (a genuine local extreme against its immediate neighbor
@@ -391,24 +429,32 @@ def advance_one_bar(state: dict, bar) -> tuple:
     state["pending_er"] = still_pending
 
     # Phase 1: register this bar's high/low as new zero-touch levels.
-    # is_spike is a single-bar pattern, finalized now. is_swing needs the
+    # is_spike is patterns-pure's verdict, already on the bar (iter_bars)
+    # and final now. is_swing needs the
     # bar after formation, so it starts as None (pending) unless this is
     # the very first bar (no look-back bar exists → not a swing, per the
     # original is_swing_high/is_swing_low boundary behavior). er_closes
     # seeds from the rolling recent_closes buffer plus this bar's own
     # close -- ER_BARS_BEFORE prior closes and the formation bar's own,
     # ready for the loop above to extend forward on later bars.
+    try:
+        is_hammer, is_shooting_star = bar.pp_hammer, bar.pp_shooting_star
+    except AttributeError:
+        raise TypeError("advance_one_bar needs bars from lxpb.iter_bars(state, ohlc), "
+                        "which carry patterns-pure's hammer/shooting-star verdict") from None
     is_first_bar = state["prev_high"] is None
     er_seed = state["recent_closes"] + [bar.close]
+    # Detector pairing (see the PAIRING note above iter_bars): LHPB = hammer,
+    # LLPB = shooting star. Deliberately NOT the labels reports' pairing.
     lhpb = {
         "type": "LHPB", "price": bar.high, "formation_time": bar.Index,
-        "is_spike": is_hammer(bar.open, bar.high, bar.low, bar.close),
+        "is_spike": is_hammer,
         "is_swing": False if is_first_bar else None,
         "er_closes": list(er_seed),
     }
     llpb = {
         "type": "LLPB", "price": bar.low, "formation_time": bar.Index,
-        "is_spike": is_shootingstar(bar.open, bar.high, bar.low, bar.close),
+        "is_spike": is_shooting_star,
         "is_swing": False if is_first_bar else None,
         "er_closes": list(er_seed),
     }
@@ -464,7 +510,7 @@ def detect_lxpb_h1(ohlc_h1: pd.DataFrame):
     retests   : completed retests  (one-touch level returned to after MIN_BARS_BEFORE_RETEST)
     """
     state = new_state()
-    for bar in ohlc_h1.itertuples(index=True):
+    for bar in iter_bars(state, ohlc_h1):
         advance_one_bar(state, bar)
 
     return (

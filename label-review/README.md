@@ -99,7 +99,7 @@ Workflow:
   from a computed default** (not just an unchecked hint) -- the grey text
   below each checkbox explains the underlying number, but the checkbox
   state itself is the default; reviewer ticks/unticks are what get saved:
-  - **P0 Spike** -- default: detected via `D:\daily-analysis\patterns-pure`
+  - **P0 Spike** -- default: detected via patterns-pure (vendored `../lxpb-v2/patterns_pure`)
     (`find_shooting_star`/`find_hammer` for LHPB/LLPB respectively).
   - **P1 Wide Breakout** -- default: breakout bar range >= `WIDE_BREAKOUT_RATIO_THRESHOLD`
     (2.0x) trailing 20-bar average range.
@@ -120,8 +120,8 @@ Workflow:
 
 - `render_labels_report.py` -- the entire tool (data pipeline + HTML/JS
   template, self-contained, no external Python deps beyond pandas/numpy
-  already used by `../lxpb.py`; imports spike/wick helpers from
-  `D:\daily-analysis\patterns-pure` via `sys.path`).
+  already used by `../lxpb.py`; imports spike/wick helpers from the
+  vendored `../lxpb-v2/patterns_pure` via `sys.path`).
 - `lxpb_labels_report.html` -- example generated output (most recent 300
   completed 2026 retests from the bundled dataset, default args).
   Regenerate any time; this file is a disposable build artifact, not
