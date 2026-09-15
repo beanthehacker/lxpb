@@ -3,16 +3,16 @@
   "contract": "",
   "algo_version": 3,
   "rules": "8f2474bf82bc-mh1",
-  "bars_fingerprint": "222719-b11f730fabe3b474",
-  "shape_fingerprint": "222719-f8bf7260e8db42ff",
+  "bars_fingerprint": "222929-1833a5d2a92f4f2a",
+  "shape_fingerprint": "222929-e098b587936c475f",
   "anchor": 5327.75,
   "state_anchor": 5327.75,
-  "n_bars": 222719,
+  "n_bars": 222929,
   "first_bar": "2023-07-23 22:00:00+00:00",
-  "last_bar": "2026-09-14 23:05:00+00:00",
-  "n_levels": 445438,
+  "last_bar": "2026-09-15 16:35:00+00:00",
+  "n_levels": 445858,
   "built_how": "rebuild",
   "resolved": "rebuild",
-  "built_seconds": 62.68,
-  "built_at": "2026-09-15T02:45:49.346931+00:00"
+  "built_seconds": 63.87,
+  "built_at": "2026-09-15T16:42:16.068385+00:00"
 }
