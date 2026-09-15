@@ -184,8 +184,8 @@ Workflow:
   default args). Regenerate any time; this file is a disposable build
   artifact, not source of truth (labels live in Postgres via `/api/rows`
   when deployed, or your exported CSV, not in this HTML).
-- `data/*CME_MINI_ES1!, 60.csv` (`DISPLAY_H1_PATHS`) -- the default input,
-  TradingView's own continuous ES1! H1 exports. `../data/*, 5_e8128.csv`
+- `../data/*CME_MINI_ES1!, 60*.csv` (`DISPLAY_H1_PATHS`) -- the default input,
+  TradingView's own continuous ES1! H1 exports. `../data/*CME_MINI_ES1!, 5_*.csv`
   (`DISPLAY_M5_PATHS`) are the M5 equivalent. See "ES H1 data" below.
 
 ## ES H1 data
@@ -212,8 +212,13 @@ two different exports (verified by diffing two vintages ~16 months apart:
 average +280pt, up to +412pt on the same bar). Mixing two vintages in one
 series plants a step change that no roll explains.
 
-`_assert_one_vintage` now checks every overlap between exports in a list and
-raises on disagreement, so this cannot happen silently. Three more guards run
+The H1 list must be one vintage (`_assert_one_vintage` checks every overlap and
+raises on disagreement). The M5 list may keep pre-roll exports, because old M5
+history can't be re-exported after a roll: `DISPLAY_M5_PATHS` holds one list
+per roll vintage, and `_merge_vintages` shifts all older history onto the next
+vintage by an offset measured on a large overlap, only when it
+is one constant in every contract segment and a roll separates the two
+vintages. Three more guards run
 before any caller sees a series: `_assert_no_roll_gaps` (no unexplained jump
 at a roll instant), `_assert_shares_h1_scale` (M5 on the same scale as H1),
 and `_report_series_gaps` (prints, does not raise, any hole longer than a
@@ -248,7 +253,9 @@ Those offsets are measured at load by `_measure_scid_offset` -- the mode of
 month. The restriction matters: a quarterly trades thinly at its own
 calendar-spread distance for months before going front, so measuring over
 EPH26's whole file gives 60% agreement versus 99.8% over its front-month span.
-Current values are EPH26 +112.75, EPM26 +62.25, EPU26 +0.00. There are no
+Every roll adds its spread to every older contract's value: before the U26->Z26
+roll they were EPH26 +112.75, EPM26 +62.25, EPU26 +0.00; after it EPU26
+measures +67.75 and EPZ26 +0.00 (see "Rollover checklist" in `CLAUDE.md`). There are no
 hardcoded offset constants any more, and no "vintage delta" correction on top
 of them; only `B26`'s roll TIMING rule is still used.
 

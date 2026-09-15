@@ -91,15 +91,16 @@ from candle_utils import (  # noqa: E402
 import build_es_h1_2026_backadjusted as B26  # noqa: E402
 
 # Every contract whose ticks this module can map. B26.CONTRACTS itself stays
-# 2026-only -- B26's own builder and retest-vol-scalp index its hardcoded
-# TV_GROUND_TRUTH_OFFSETS by it -- so earlier quarters are prepended here.
-# Only their roll timing (B26.roll_switch_utc) is borrowed; their offsets are
-# measured like every other contract's (_measure_scid_offset). Reaching back
-# to U23 also puts every roll the M5 exports cover under _assert_no_roll_gaps.
+# H26..U26 -- B26's own builder and retest-vol-scalp index its hardcoded
+# TV_GROUND_TRUTH_OFFSETS by it -- so earlier quarters are prepended here and
+# later ones appended (add each new front month at its roll). Only their roll
+# timing (B26.roll_switch_utc) is borrowed; their offsets are measured like
+# every other contract's (_measure_scid_offset). Reaching back to U23 also puts
+# every roll the M5 exports cover under _assert_no_roll_gaps.
 CONTRACTS = [("EPU23", 2023, 9), ("EPZ23", 2023, 12),
              ("EPH24", 2024, 3), ("EPM24", 2024, 6), ("EPU24", 2024, 9), ("EPZ24", 2024, 12),
              ("EPH25", 2025, 3), ("EPM25", 2025, 6), ("EPU25", 2025, 9),
-             ("EPZ25", 2025, 12)] + list(B26.CONTRACTS)
+             ("EPZ25", 2025, 12)] + list(B26.CONTRACTS) + [("EPZ26", 2026, 12)]
 
 sys.path.insert(0, r"D:\acheron\AcheronUtils")  # scidReader.py lives there
 from scidReader import get_scid_df  # noqa: E402
@@ -297,6 +298,13 @@ def _contract_index_for(ts_utc):
     return n - 1
 
 
+def _segment_indices(idx):
+    """Vectorised _contract_index_for: the CONTRACTS position that was front
+    month at every timestamp of a UTC-aware DatetimeIndex."""
+    rolls = pd.DatetimeIndex(_own_roll())
+    return np.minimum(rolls.searchsorted(idx, side="right"), len(CONTRACTS) - 1)
+
+
 # --- TradingView continuous exports: the ONE source of structural OHLC -------
 # Every H1/M5 series this repo runs the LXPB state machine over comes from
 # TradingView's own continuous ES1! exports and nothing else. See the "data
@@ -304,45 +312,60 @@ def _contract_index_for(ts_utc):
 # never resampled into H1 or M5 structural bars, not even to fill a hole --
 # where an export stops, the series stops, and the range is simply absent.
 #
-# All exports in one list MUST share a single splice vintage. TradingView
-# recomputes its back-adjustment on every export, so two vintages of the same
-# bar can differ by points (the H26/M26 segments moved -1.75/-5.75 between the
-# 14aug and the 24aug/1jan/2sep H1 vintages). Mixing them inside one series
-# would plant a step change in the middle of history that no roll explains.
-# _assert_one_vintage checks this on every overlap instead of trusting it, so
-# a newly dropped-in export that was re-exported on a different anchor fails
-# loudly at load rather than silently reshaping levels.
+# A merged series must sit on ONE back-adjustment scale. TradingView
+# recomputes its back-adjustment at every roll -- the U26->Z26 roll
+# (2026-09-14) moved every bar of every segment back to 2023 by exactly
+# +67.75pt -- and a re-export can revise it outright too (the H26/M26 segments
+# moved -1.75/-5.75 between the 14aug and the 24aug/1jan/2sep H1 vintages,
+# with no roll between them). Mixing scales inside one series would plant a
+# step change in the middle of history that no roll explains.
+#
+# H1 is one vintage only (_assert_one_vintage). After each roll, export one
+# fresh H1 file reaching back as far as TradingView allows and make it the
+# only entry: it is the genuine post-roll reference every M5 contract segment
+# is checked against (_assert_shares_h1_scale), so it is never shifted itself.
 DISPLAY_H1_PATHS = [
-    os.path.join(_HERE, "data", "1jan2026-CME_MINI_ES1!, 60.csv"),
-    os.path.join(_HERE, "data", "24aug-CME_MINI_ES1!, 60.csv"),
-    os.path.join(_HERE, "data", "2sep-CME_MINI_ES1!, 60.csv"),
+    os.path.join(_DATA_DIR, "until-14sep2026-CME_MINI_ES1!, 60_589b3.csv"),
 ]
 
-# M5 equivalent of DISPLAY_H1_PATHS -- TradingView's own continuous ES1! M5
-# export, on the same back-adjusted scale as DISPLAY_H1_PATHS (checked at
-# load by _assert_shares_h1_scale, not assumed). Together these cover
-# 2023-07-23 -> present with no internal hole beyond real session closures;
-# to extend the range, add another export here rather than reaching for
-# .scid. Merged newest-wins, oldest file first, same as DISPLAY_H1_PATHS.
+# M5 equivalent of DISPLAY_H1_PATHS, grouped by the front month each export
+# was made under -- one inner list per back-adjustment vintage, oldest vintage
+# first, oldest file first inside each. Old M5 history cannot be re-exported
+# once a roll has happened, so after each roll a new inner list is started
+# with a post-roll export that overlaps the previous vintage by weeks, and
+# _merge_vintages shifts all older history onto it by the offset measured on
+# that overlap. The result is then checked contract segment by contract
+# segment against the H1 export. Together these cover 2023-07-23 -> present
+# with no internal hole beyond real session closures; to extend the range, add
+# another export here rather than reaching for .scid.
 DISPLAY_M5_PATHS = [
-    os.path.join(_DATA_DIR, "23jul2023-5nov2023-CME_MINI_ES1!, 5_7d463.csv"),
-    os.path.join(_DATA_DIR, "5nov2023-18feb2024-CME_MINI_ES1!, 5_7d463.csv"),
-    os.path.join(_DATA_DIR, "18feb2024-2jun2024-CME_MINI_ES1!, 5_7d463.csv"),
-    os.path.join(_DATA_DIR, "2jun2024-15Sep2024-CME_MINI_ES1!, 5_7d463.csv"),
-    os.path.join(_DATA_DIR, "15Sep2024-31Dec2024-CME_MINI_ES1!, 5_7d463.csv"),
-    os.path.join(_DATA_DIR, "8dec2024-23mar2025-CME_MINI_ES1!, 5_e8128.csv"),
-    os.path.join(_DATA_DIR, "23mar2025-3jul2025-CME_MINI_ES1!, 5_e8128.csv"),
-    os.path.join(_DATA_DIR, "3jul2025-12oct2025-CME_MINI_ES1!, 5_e8128.csv"),
-    os.path.join(_DATA_DIR, "12oct2025-2feb2026-CME_MINI_ES1!, 5_e8128.csv"),
-    os.path.join(_DATA_DIR, "Feb2026-CME_MINI_ES1!, 5_e8128.csv"),
-    os.path.join(_DATA_DIR, "15feb2026-31may2026-CME_MINI_ES1!, 5_e8128.csv"),
-    os.path.join(_DATA_DIR, "31may2026-10sep2026-CME_MINI_ES1!, 5_e8128.csv"),
+    [  # exported while EPU26 was front month (before the 2026-09-14 roll)
+        os.path.join(_DATA_DIR, "23jul2023-5nov2023-CME_MINI_ES1!, 5_7d463.csv"),
+        os.path.join(_DATA_DIR, "5nov2023-18feb2024-CME_MINI_ES1!, 5_7d463.csv"),
+        os.path.join(_DATA_DIR, "18feb2024-2jun2024-CME_MINI_ES1!, 5_7d463.csv"),
+        os.path.join(_DATA_DIR, "2jun2024-15Sep2024-CME_MINI_ES1!, 5_7d463.csv"),
+        os.path.join(_DATA_DIR, "15Sep2024-31Dec2024-CME_MINI_ES1!, 5_7d463.csv"),
+        os.path.join(_DATA_DIR, "8dec2024-23mar2025-CME_MINI_ES1!, 5_e8128.csv"),
+        os.path.join(_DATA_DIR, "23mar2025-3jul2025-CME_MINI_ES1!, 5_e8128.csv"),
+        os.path.join(_DATA_DIR, "3jul2025-12oct2025-CME_MINI_ES1!, 5_e8128.csv"),
+        os.path.join(_DATA_DIR, "12oct2025-2feb2026-CME_MINI_ES1!, 5_e8128.csv"),
+        os.path.join(_DATA_DIR, "Feb2026-CME_MINI_ES1!, 5_e8128.csv"),
+        os.path.join(_DATA_DIR, "15feb2026-31may2026-CME_MINI_ES1!, 5_e8128.csv"),
+        os.path.join(_DATA_DIR, "31may2026-10sep2026-CME_MINI_ES1!, 5_e8128.csv"),
+    ],
+    [  # exported after the U26->Z26 roll (EPZ26 front month)
+        os.path.join(_DATA_DIR, "31may2026-14Sep2026-CME_MINI_ES1!, 5_7d463.csv"),
+    ],
 ]
 
 # Two exports of the same vintage agree to the tick on every shared bar, so
 # any disagreement at all is a different vintage -- but allow a handful of
 # single-bar revisions rather than demanding literal perfection.
 _VINTAGE_MIN_AGREE_SHARE = 0.99
+# Bars an older vintage must share with the newer series before its
+# re-anchoring offset is measured: enough that "one constant on 99% of them"
+# describes weeks of market structure, not a lucky handful of bars.
+_REANCHOR_MIN_OVERLAP = 1000
 # Bars the M5 export must share with the H1 one before their agreement means
 # anything -- a handful of matching bars could agree by coincidence.
 _SCALE_CHECK_MIN_OVERLAP = 100
@@ -430,17 +453,110 @@ def _report_series_gaps(bars, label):
         print(f"    {end_ts - delta} -> {end_ts}  ({delta})")
 
 
+def _merge_newest_wins(frames):
+    """Concatenate OHLC frames given oldest first, keeping the later frame's
+    bar on any timestamp collision. Duplicates are dropped before sorting
+    because sort_index is not a stable sort."""
+    frames = list(frames)
+    merged = pd.concat(frames) if len(frames) > 1 else frames[0]
+    return merged[~merged.index.duplicated(keep="last")].sort_index()
+
+
 def _merge_tv_exports(paths, label):
-    """The shared body of _display_h1/_display_m5: load every export that
-    exists, check they are one vintage, merge newest-wins, then validate the
-    result at every roll boundary it covers."""
+    """The body of _display_h1: load every export that exists, check they are
+    one vintage, merge newest-wins, then validate the result at every roll
+    boundary it covers."""
     frames = {p: _load_tv_csv(p) for p in paths if os.path.exists(p)}
     if not frames:
         raise RuntimeError(f"no {label} exports exist: {paths}")
     _assert_one_vintage(frames, label)
-    merged = (pd.concat(frames.values()) if len(frames) > 1
-              else next(iter(frames.values())))
-    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    merged = _merge_newest_wins(frames.values())
+    _assert_no_roll_gaps(merged, label)
+    _report_series_gaps(merged, label)
+    return merged
+
+
+def _merge_vintages(vintages, label):
+    """The body of _display_m5. `vintages` is a list of export lists, oldest
+    vintage first, each holding the exports made under one front month (one
+    back-adjustment anchor). Each list is merged as one vintage, newest wins;
+    then ALL older history is shifted onto the next vintage's scale by one
+    offset measured on their overlap, and so on up to the newest vintage,
+    which wins wherever it has a bar.
+
+    Old M5 history cannot be re-exported once a roll has happened, and a roll
+    adds its spread to every older bar, so the whole pre-roll series and a
+    post-roll export describe the same bars one constant apart. The shift is
+    applied only if all of these hold, otherwise this raises:
+      - they share at least _REANCHOR_MIN_OVERLAP bars;
+      - the difference there is one constant on >= _VINTAGE_MIN_AGREE_SHARE
+        of those bars, and that same constant in every contract segment the
+        overlap spans (given enough bars in it to judge);
+      - a roll lies between the older series' last bar and the newer
+        vintage's, since a roll is the only thing that legitimately
+        re-anchors history (a shift without one is a revised export).
+    The offset is measured on every load and never stored. History outside
+    the overlap is verified afterwards, contract segment by contract segment,
+    against the H1 export by _assert_shares_h1_scale."""
+    rolls = pd.DatetimeIndex(_own_roll())
+    merged = None
+    for paths in vintages:
+        frames = {p: _load_tv_csv(p) for p in paths if os.path.exists(p)}
+        if not frames:
+            continue
+        _assert_one_vintage(frames, label)
+        bars = _merge_newest_wins(frames.values())
+        if merged is None:
+            merged = bars
+            continue
+        names = ", ".join(os.path.basename(p) for p in frames)
+        common = merged.index.intersection(bars.index)
+        if len(common) < _REANCHOR_MIN_OVERLAP:
+            raise RuntimeError(
+                f"{label}: the vintage starting with {names} shares only "
+                f"{len(common)} bars with the older history (need >= "
+                f"{_REANCHOR_MIN_OVERLAP}) -- too few to measure the re-anchoring "
+                "offset. Export a post-roll range overlapping the newest pre-roll "
+                "export by weeks. See 'Rollover checklist' in CLAUDE.md.")
+        diff = (bars.loc[common, "close"] - merged.loc[common, "close"]).round(4)
+        offset = float(diff.mode().iloc[0])
+        share = float((diff == offset).mean())
+        if share < _VINTAGE_MIN_AGREE_SHARE:
+            raise RuntimeError(
+                f"{label}: {names} differs from the older history by {offset:+.2f}pt "
+                f"on only {share:.1%} of their {len(common)} shared bars -- not one "
+                "uniform re-anchor, so older history cannot be shifted onto it.")
+        seg = _segment_indices(common)
+        checked = []
+        for i in np.unique(seg):
+            d = diff.to_numpy()[seg == i]
+            if len(d) < _SCALE_CHECK_MIN_OVERLAP:
+                continue
+            seg_share = float((d == offset).mean())
+            if seg_share < _VINTAGE_MIN_AGREE_SHARE:
+                raise RuntimeError(
+                    f"{label}: {names} differs from the older history by "
+                    f"{offset:+.2f}pt on {share:.1%} of shared bars overall but on "
+                    f"only {seg_share:.1%} of the {len(d)} in {CONTRACTS[i][0]}'s "
+                    "segment -- not one uniform re-anchor, so older history cannot "
+                    "be shifted onto it.")
+            checked.append(CONTRACTS[i][0])
+        if offset != 0:
+            crossed = rolls[(rolls > merged.index[-1]) & (rolls <= bars.index[-1])]
+            if len(crossed) == 0:
+                raise RuntimeError(
+                    f"{label}: {names} sits {offset:+.2f}pt off the older history, "
+                    f"but no roll lies between the older last bar ({merged.index[-1]}) "
+                    f"and its own ({bars.index[-1]}) -- that is a revised export, not "
+                    "a roll re-anchor, so nothing is shifted. Drop one.")
+            print(f"  [data] {label}: re-anchored all history before {names} by "
+                  f"{offset:+.2f}pt across the roll at {crossed[-1]} -- measured on "
+                  f"{len(common):,} shared bars, {share:.2%} agreement, same offset "
+                  f"in {', '.join(checked)}.")
+        shifted = merged.assign(**{c: merged[c] + offset for c in ("open", "high", "low", "close")})
+        merged = _merge_newest_wins([shifted, bars])
+    if merged is None:
+        raise RuntimeError(f"no {label} exports exist: {vintages}")
     _assert_no_roll_gaps(merged, label)
     _report_series_gaps(merged, label)
     return merged
@@ -470,8 +586,12 @@ def _assert_shares_h1_scale(m5):
     Both are TradingView continuous ES1! exports, so the M5 bar that opens an
     hour opens on the same print as that hour's H1 bar. Comparing the two is
     therefore a direct read of whether the files were adjusted against the
-    same anchor -- the check that matters most now that nothing downstream
-    re-scales either series."""
+    same anchor.
+
+    Checked contract segment by contract segment, not just overall: the M5
+    series may hold pre-roll history shifted by _merge_vintages, and this
+    is what verifies that shift against a genuine post-roll export in every
+    segment H1 covers, rather than assuming the roll moved them all alike."""
     h1 = _display_h1()
     common = m5.index.intersection(h1.index)
     if len(common) < _SCALE_CHECK_MIN_OVERLAP:
@@ -479,20 +599,30 @@ def _assert_shares_h1_scale(m5):
             f"display M5 series: only {len(common)} bars line up with the "
             f"display H1 series -- too few to confirm they share a "
             f"back-adjustment scale (need >= {_SCALE_CHECK_MIN_OVERLAP}).")
-    same = (m5.loc[common, "open"].round(4) == h1.loc[common, "open"].round(4))
-    share = float(same.mean())
-    if share < _VINTAGE_MIN_AGREE_SHARE:
-        diff = (m5.loc[common, "open"] - h1.loc[common, "open"]).round(4)
-        raise RuntimeError(
-            f"display M5 series: {(1 - share):.1%} of the {len(common)} bars it "
-            f"shares with the display H1 series disagree (modal difference "
-            f"{float(diff.mode().iloc[0]):+.2f}pt) -- the two exports are on "
-            "different back-adjustment scales, so levels and prices taken from "
-            "them are not comparable. Re-export both from the same anchor.")
+    same = (m5.loc[common, "open"].round(4) == h1.loc[common, "open"].round(4)).to_numpy()
+    diff = (m5.loc[common, "open"] - h1.loc[common, "open"]).round(4).to_numpy()
+    seg = _segment_indices(common)
+    for i in np.unique(seg):
+        mask = seg == i
+        if mask.sum() < _SCALE_CHECK_MIN_OVERLAP:
+            continue
+        share = float(same[mask].mean())
+        if share < _VINTAGE_MIN_AGREE_SHARE:
+            raise RuntimeError(
+                f"display M5 series: in {CONTRACTS[i][0]}'s segment {(1 - share):.1%} "
+                f"of the {int(mask.sum())} bars it shares with the display H1 series "
+                f"disagree (modal difference "
+                f"{float(pd.Series(diff[mask]).mode().iloc[0]):+.2f}pt) -- the two are "
+                "on different back-adjustment scales there, so levels and prices "
+                "taken from them are not comparable.")
+    if m5.index[0] < h1.index[0]:
+        print(f"  [data] display M5 series: bars before {h1.index[0]} predate the H1 "
+              "export, so any re-anchoring there is verified only by the export "
+              "overlap, not per contract segment.")
 
 
 def _display_m5():
-    """DISPLAY_M5_PATHS merged newest-wins -- TradingView's own continuous
+    """DISPLAY_M5_PATHS merged onto the newest vintage -- TradingView's own continuous
     ES1! M5 series, and the ONLY source of M5 structural bars (see
     "continuous contracts only" in CLAUDE.md).
 
@@ -501,7 +631,7 @@ def _display_m5():
     as the H1 series. Cached -- these are static files."""
     global _DISPLAY_M5_CACHE
     if _DISPLAY_M5_CACHE is None:
-        merged = _merge_tv_exports(DISPLAY_M5_PATHS, "display M5 series")
+        merged = _merge_vintages(DISPLAY_M5_PATHS, "display M5 series")
         _assert_shares_h1_scale(merged)
         _DISPLAY_M5_CACHE = merged
     return _DISPLAY_M5_CACHE

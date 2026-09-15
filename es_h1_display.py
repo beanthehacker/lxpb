@@ -17,7 +17,8 @@ and measures `.scid` offsets against it. That one is not reused here for the
 same reason those subprojects reimplement their tick splicing standalone:
 importing it drags in scidReader, the patterns-pure library and a chain of
 report modules. The export list and the merge rule are identical; keep them in
-step if either changes.
+step if either changes. (Only lxpb-v2's M5 list re-anchors pre-roll exports;
+the H1 list is one fresh post-roll export, and a mixed vintage raises here.)
 
     import es_h1_display
     h1 = es_h1_display.load()   # naive-UTC index, open/high/low/close
@@ -33,9 +34,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 # Oldest first; merged newest-wins so a later export supersedes an earlier one
 # wherever they overlap. Must match render_labels_report.DISPLAY_H1_PATHS.
 DISPLAY_H1_PATHS = [
-    os.path.join(_HERE, "lxpb-v2", "data", "1jan2026-CME_MINI_ES1!, 60.csv"),
-    os.path.join(_HERE, "lxpb-v2", "data", "24aug-CME_MINI_ES1!, 60.csv"),
-    os.path.join(_HERE, "lxpb-v2", "data", "2sep-CME_MINI_ES1!, 60.csv"),
+    os.path.join(_HERE, "data", "until-14sep2026-CME_MINI_ES1!, 60_589b3.csv"),
 ]
 
 # Two exports of the same back-adjustment vintage agree to the tick on every
