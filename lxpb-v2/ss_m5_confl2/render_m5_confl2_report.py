@@ -1109,12 +1109,12 @@ def process_cluster(cluster, args):
     # P1->P2 gap: how many Globex/ETH reopen-to-reopen trading days
     # (TM.trading_day_label) separate this level's own breakout (P1) from
     # its retest (P2) -- 0 when both fall in the same session-to-session
-    # window, 1 when the retest is the very next trading day, etc. Tags,
-    # doesn't drop, same as p1_range_ratio above.
+    # window, 1 when the retest is the very next trading day, etc. Shipped
+    # as a plain number (data-daygap), not a boolean tag: the report's
+    # numeric daygap filter (same op/value mechanism as R) lets the
+    # threshold N be picked live in the browser instead of being fixed here.
     p1_p2_day_gap = TM.trading_day_gap(row_d["breakout_time"], row_d["retest_time"])
     result["p1_p2_day_gap"] = p1_p2_day_gap
-    if p1_p2_day_gap >= 1:
-        result["dyn_tags"].append("multi_day_retest")
 
     window_start = pd.to_datetime(row_d["retest_time"], utc=True)
     touch_time_alt, fill_price = SF.find_alt_fill(
@@ -2441,6 +2441,7 @@ def _render_row(idx, res, chart_stacks, fps):
                    f'&rarr; P2 (retest) {retest_str}, {gap_val} trading day(s) apart '
                    f'(Globex/ETH reopen boundary, 15:00 PT)">{gap_val}d</span>'
                    if gap_val is not None else '-')
+        daygap_attr = gap_val if gap_val is not None else ""
         members_str = ", ".join(f"{p:.2f}" for p in res["cluster_members"])
         if res.get("cluster_size", 1) > 1:
             entry_title = (f' title="{res["cluster_size"]} mutually-confluent M5 levels '
@@ -2485,6 +2486,7 @@ def _render_row(idx, res, chart_stacks, fps):
 
             row_html = f"""
 <tr class="lvl-row unfilled-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
+    data-daygap="{daygap_attr}"
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
@@ -2647,7 +2649,7 @@ def _render_row(idx, res, chart_stacks, fps):
 
         row_html = f"""
 <tr class="lvl-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
-    data-dyn-tags="{dyn_tags_attr}" data-base-tags="{base_tags_attr}"
+    data-dyn-tags="{dyn_tags_attr}" data-base-tags="{base_tags_attr}" data-daygap="{daygap_attr}"
     data-r="{act['r']}" data-rr="{act['rrVal']}" data-pnl-pts="{act['pnlPts']}" data-outcome="{act['outcome']}"
     data-mgmt-r="{act['mgmtR']}" data-mgmt-pnl-pts="{act['mgmtPnl']}"
     data-mgmt-outcome="{act['mgmtOutcome']}" data-mgmt-fired="{act['mgmtFired']}"
@@ -2852,6 +2854,25 @@ Defaults to &ge; 1 (only R &ge; 1 shown); pick any to show every row.">R</span>
     <input type="number" class="f-num-val" data-target="rr" value="1" min="0" max="5" step="0.1">
   </div>
   <div class="filter-row">
+    <span class="filter-label" title="How many Globex/ETH reopen-to-reopen trading days (15:00 PT
+boundary) separate this level's own P1 (breakout) from its P2 (retest): 0 when both fall in the
+same session-to-session window, 1 when the retest is the very next trading day, etc. -- see
+trading_day_gap in trade_management.py. Reads tr.dataset.daygap, the SAME generic op/value
+numeric-filter mechanism (f-num-op/f-num-val, data-target) as R above, and is likewise a DYNAMIC
+filter: changing it recomputes win rate / avg R / total R / total PnL above live, not just which
+rows are shown. Defaults to any (no filtering) -- pick, e.g., &lt; 1 to keep only same-day
+retests, or &le; 2 to allow retests up to 2 trading days later.">P1&rarr;P2 gap</span>
+    <select class="f-num-op" data-target="daygap">
+      <option value="any" selected>any</option>
+      <option value="gte">&ge;</option>
+      <option value="gt">&gt;</option>
+      <option value="eq">=</option>
+      <option value="lte">&le;</option>
+      <option value="lt">&lt;</option>
+    </select>
+    <input type="number" class="f-num-val" data-target="daygap" value="1" min="0" step="1">
+  </div>
+  <div class="filter-row">
     <span class="filter-label" title="Live, in-browser toggle -- no Python regen needed. Win =
 outcome-cell reads WIN under the target rule / trade-management state currently ticked above.
 Loss = every other row that DID resolve to a numeric R (LOSS, EOD FLAT, RR FLOOR, CANDLE, all
@@ -2908,10 +2929,6 @@ docstring in render_m5_confl2_report.py for the full convention.">Dynamic filter
     <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="weak_p1_breakout" checked>
       Exclude weak P1 breakout (&lt;__WIDE_RATIO__x avg range)</label>
     <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="weak_p1_breakout">
-      Only</label>
-    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="multi_day_retest">
-      Exclude multi-day retests (P1&rarr;P2 &ge; 1 trading day)</label>
-    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="multi_day_retest">
       Only</label>
     <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="h1_p0_confluence">
       Exclude H1 P0 confluence (&plusmn;__H1_CONFL_RADIUS__pt)</label>
@@ -3229,7 +3246,11 @@ function recomputeDynStats() {
     // filters, so changing the R threshold live recomputes the headline
     // stats below instead of only hiding rows via applyReviewFilters.
     const rrHidden = !numFilterOk(tr, 'rr');
-    const hidden = rrHidden || (isolateTags.length > 0
+    // The P1->P2 gap filter (f-num-op/f-num-val, data-target "daygap") is a
+    // dynamic filter too, same reasoning as rrHidden above -- tr.dataset.daygap
+    // is a static number (unlike rr, it never changes with target mode).
+    const daygapHidden = !numFilterOk(tr, 'daygap');
+    const hidden = rrHidden || daygapHidden || (isolateTags.length > 0
       ? !tags.some(t => isolateTags.includes(t))
       : (excludeTags.length > 0 && tags.some(t => excludeTags.includes(t))));
     tr.classList.toggle('dyn-hidden', hidden);
@@ -3294,6 +3315,11 @@ document.querySelectorAll('.f-dyn-exclude, .f-dyn-isolate, .f-target-mode, .f-ou
 // applyReviewFilters (added below by the shared .f-num-op/.f-num-val
 // listener) -- whenever its op or value changes.
 document.querySelectorAll('.f-num-op[data-target="rr"], .f-num-val[data-target="rr"]')
+  .forEach(el => el.addEventListener('input', recomputeDynStats));
+// Same reasoning for the P1->P2 gap filter (data-target "daygap"): it also
+// folds into recomputeDynStats' own stats loop above, not just
+// applyReviewFilters, so it needs the same recompute trigger as rr.
+document.querySelectorAll('.f-num-op[data-target="daygap"], .f-num-val[data-target="daygap"]')
   .forEach(el => el.addEventListener('input', recomputeDynStats));
 const mgmtToggleCb = document.getElementById('mgmt-thrust-trail');
 if (mgmtToggleCb) mgmtToggleCb.addEventListener('change', recomputeDynStats);
