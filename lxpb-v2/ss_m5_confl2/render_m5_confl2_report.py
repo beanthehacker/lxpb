@@ -1116,6 +1116,21 @@ def process_cluster(cluster, args):
     p1_p2_day_gap = TM.trading_day_gap(row_d["breakout_time"], row_d["retest_time"])
     result["p1_p2_day_gap"] = p1_p2_day_gap
 
+    # P1->P2 gap, H1 candles: how many whole H1 candles CLOSE strictly
+    # between P1 and P2 (TM.h1_bar_gap) -- 0 when both fall in the same H1
+    # bar or in two back-to-back ones (nothing closes between them), 1 when
+    # exactly one H1 bar's close sits between them, etc.
+    p1_p2_h1_gap = TM.h1_bar_gap(row_d["breakout_time"], row_d["retest_time"])
+    result["p1_p2_h1_gap"] = p1_p2_h1_gap
+
+    # P1->P2 gap, minutes: breakout_time/retest_time are themselves real M5
+    # bar timestamps (not day- or hour-bucketed), so the elapsed minutes
+    # between them is exact from a plain subtraction -- no scid/M1 lookup
+    # needed, since there's no coarser precision here to refine away.
+    p1_p2_minutes = (pd.to_datetime(row_d["retest_time"], utc=True)
+                      - pd.to_datetime(row_d["breakout_time"], utc=True)).total_seconds() / 60.0
+    result["p1_p2_minutes"] = p1_p2_minutes
+
     window_start = pd.to_datetime(row_d["retest_time"], utc=True)
     touch_time_alt, fill_price = SF.find_alt_fill(
         window_start, alt_price, is_long, level_type, args.max_alt_fill_hours,
@@ -2442,6 +2457,18 @@ def _render_row(idx, res, chart_stacks, fps):
                    f'(Globex/ETH reopen boundary, 15:00 PT)">{gap_val}d</span>'
                    if gap_val is not None else '-')
         daygap_attr = gap_val if gap_val is not None else ""
+        h1gap_val = res.get("p1_p2_h1_gap")
+        h1gap_cell = (f'<span title="P1 (breakout) {R._to_pt_str(row_d["breakout_time"])} '
+                     f'&rarr; P2 (retest) {retest_str}, {h1gap_val} H1 candle(s) close in between">'
+                     f'{h1gap_val}h1</span>'
+                     if h1gap_val is not None else '-')
+        h1gap_attr = h1gap_val if h1gap_val is not None else ""
+        mingap_val = res.get("p1_p2_minutes")
+        mingap_cell = (f'<span title="P1 (breakout) {R._to_pt_str(row_d["breakout_time"])} '
+                      f'&rarr; P2 (retest) {retest_str}, {mingap_val:.0f} minute(s) apart">'
+                      f'{mingap_val:.0f}m</span>'
+                      if mingap_val is not None else '-')
+        mingap_attr = f"{mingap_val:.2f}" if mingap_val is not None else ""
         members_str = ", ".join(f"{p:.2f}" for p in res["cluster_members"])
         if res.get("cluster_size", 1) > 1:
             entry_title = (f' title="{res["cluster_size"]} mutually-confluent M5 levels '
@@ -2486,11 +2513,13 @@ def _render_row(idx, res, chart_stacks, fps):
 
             row_html = f"""
 <tr class="lvl-row unfilled-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
-    data-daygap="{daygap_attr}"
+    data-daygap="{daygap_attr}" data-h1gap="{h1gap_attr}" data-mingap="{mingap_attr}"
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
   <td class="daygap-cell">{gap_cell}</td>
+  <td class="h1gap-cell">{h1gap_cell}</td>
+  <td class="mingap-cell">{mingap_cell}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
   <td class="h1-confl-cell">-</td>
@@ -2650,6 +2679,7 @@ def _render_row(idx, res, chart_stacks, fps):
         row_html = f"""
 <tr class="lvl-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
     data-dyn-tags="{dyn_tags_attr}" data-base-tags="{base_tags_attr}" data-daygap="{daygap_attr}"
+    data-h1gap="{h1gap_attr}" data-mingap="{mingap_attr}"
     data-r="{act['r']}" data-rr="{act['rrVal']}" data-pnl-pts="{act['pnlPts']}" data-outcome="{act['outcome']}"
     data-mgmt-r="{act['mgmtR']}" data-mgmt-pnl-pts="{act['mgmtPnl']}"
     data-mgmt-outcome="{act['mgmtOutcome']}" data-mgmt-fired="{act['mgmtFired']}"
@@ -2658,6 +2688,8 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
   <td class="daygap-cell">{gap_cell}</td>
+  <td class="h1gap-cell">{h1gap_cell}</td>
+  <td class="mingap-cell">{mingap_cell}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
   <td class="h1-confl-cell" title="{h1_confl_title}">{h1_confl_cell}</td>
@@ -2873,6 +2905,42 @@ retests, or &le; 2 to allow retests up to 2 trading days later.">P1&rarr;P2 gap<
     <input type="number" class="f-num-val" data-target="daygap" value="1" min="0" step="1">
   </div>
   <div class="filter-row">
+    <span class="filter-label" title="How many whole H1 candles CLOSE strictly between this
+level's own P1 (breakout) and its P2 (retest) -- see h1_bar_gap in trade_management.py. 0
+when both fall inside the same H1 bar or in two back-to-back bars (nothing closes between
+them), 1 when exactly one H1 bar's close sits between them, etc. Reads tr.dataset.h1gap, the
+SAME generic op/value numeric-filter mechanism (f-num-op/f-num-val, data-target) as R and the
+P1&rarr;P2 gap above, and is likewise a DYNAMIC filter: changing it recomputes win rate /
+avg R / total R / total PnL above live, not just which rows are shown. Defaults to any (no
+filtering).">P1&rarr;P2 gap (H1)</span>
+    <select class="f-num-op" data-target="h1gap">
+      <option value="any" selected>any</option>
+      <option value="gte">&ge;</option>
+      <option value="gt">&gt;</option>
+      <option value="eq">=</option>
+      <option value="lte">&le;</option>
+      <option value="lt">&lt;</option>
+    </select>
+    <input type="number" class="f-num-val" data-target="h1gap" value="1" min="0" step="1">
+  </div>
+  <div class="filter-row">
+    <span class="filter-label" title="Minutes elapsed between this level's own P1 (breakout)
+and its P2 (retest) -- a plain subtraction of their own M5 bar timestamps. Reads
+tr.dataset.mingap, the SAME generic op/value numeric-filter mechanism (f-num-op/f-num-val,
+data-target) as R and the two gap filters above, and is likewise a DYNAMIC filter: changing
+it recomputes win rate / avg R / total R / total PnL above live, not just which rows are
+shown. Defaults to any (no filtering).">P1&rarr;P2 gap (min)</span>
+    <select class="f-num-op" data-target="mingap">
+      <option value="any" selected>any</option>
+      <option value="gte">&ge;</option>
+      <option value="gt">&gt;</option>
+      <option value="eq">=</option>
+      <option value="lte">&le;</option>
+      <option value="lt">&lt;</option>
+    </select>
+    <input type="number" class="f-num-val" data-target="mingap" value="30" min="0" step="5">
+  </div>
+  <div class="filter-row">
     <span class="filter-label" title="Live, in-browser toggle -- no Python regen needed. Win =
 outcome-cell reads WIN under the target rule / trade-management state currently ticked above.
 Loss = every other row that DID resolve to a numeric R (LOSS, EOD FLAT, RR FLOOR, CANDLE, all
@@ -2977,6 +3045,12 @@ the box is checked.">Trade management</span>
             f"P2 (retest), under the Globex/ETH reopen boundary (15:00 PT / 18:00 ET): 0 when "
             f"both fall in the same reopen-to-reopen session, 1 when the retest is the very "
             f"next trading day, etc.\">P1&rarr;P2</th>"
+            f"<th title=\"Whole H1 candles that CLOSE strictly between this level's own P1 "
+            f"(breakout) and its P2 (retest) (trade_management.py's h1_bar_gap): 0 when both "
+            f"fall inside the same H1 bar or in two back-to-back bars, 1 when exactly one H1 "
+            f"bar's close sits between them, etc.\">P1&rarr;P2 (H1)</th>"
+            f"<th title=\"Minutes between this level's own P1 (breakout) and its P2 (retest), "
+            f"a plain subtraction of their own M5 bar timestamps.\">P1&rarr;P2 (min)</th>"
             f"<th class=\"left\" title=\"Distinct M5 prices merged into this trade, "
             f"extreme-first: highest for LLPB, lowest for LHPB. "
             f"Single-level trades show their own M5 price.\">Merged M5 levels</th>"
@@ -3250,7 +3324,13 @@ function recomputeDynStats() {
     // dynamic filter too, same reasoning as rrHidden above -- tr.dataset.daygap
     // is a static number (unlike rr, it never changes with target mode).
     const daygapHidden = !numFilterOk(tr, 'daygap');
-    const hidden = rrHidden || daygapHidden || (isolateTags.length > 0
+    // Same reasoning for the H1-candle and minutes P1->P2 gap filters
+    // (data-target "h1gap" / "mingap") -- also static numbers, so they fold
+    // into `hidden` here alongside daygap rather than only being handled by
+    // applyReviewFilters' generic numeric-filter pass.
+    const h1gapHidden = !numFilterOk(tr, 'h1gap');
+    const mingapHidden = !numFilterOk(tr, 'mingap');
+    const hidden = rrHidden || daygapHidden || h1gapHidden || mingapHidden || (isolateTags.length > 0
       ? !tags.some(t => isolateTags.includes(t))
       : (excludeTags.length > 0 && tags.some(t => excludeTags.includes(t))));
     tr.classList.toggle('dyn-hidden', hidden);
@@ -3320,6 +3400,12 @@ document.querySelectorAll('.f-num-op[data-target="rr"], .f-num-val[data-target="
 // folds into recomputeDynStats' own stats loop above, not just
 // applyReviewFilters, so it needs the same recompute trigger as rr.
 document.querySelectorAll('.f-num-op[data-target="daygap"], .f-num-val[data-target="daygap"]')
+  .forEach(el => el.addEventListener('input', recomputeDynStats));
+// Same reasoning for the H1-candle and minutes P1->P2 gap filters
+// (data-target "h1gap" / "mingap"): they also fold into recomputeDynStats'
+// own stats loop above, not just applyReviewFilters.
+document.querySelectorAll('.f-num-op[data-target="h1gap"], .f-num-val[data-target="h1gap"], '
+  + '.f-num-op[data-target="mingap"], .f-num-val[data-target="mingap"]')
   .forEach(el => el.addEventListener('input', recomputeDynStats));
 const mgmtToggleCb = document.getElementById('mgmt-thrust-trail');
 if (mgmtToggleCb) mgmtToggleCb.addEventListener('change', recomputeDynStats);

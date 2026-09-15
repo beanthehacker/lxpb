@@ -148,6 +148,39 @@ def trading_day_gap(ts_from, ts_to):
     return int(cal.get_loc(trading_day_label(ts_to)) - cal.get_loc(trading_day_label(ts_from)))
 
 
+_H1_BAR_INDEX = None
+
+
+def _h1_bar_index():
+    """Sorted DatetimeIndex of every H1 bar OPEN time in the continuous H1
+    series (R._display_h1()) -- this repo's single source of truth for real
+    market hours, per the 'TradingView continuous series only' convention.
+    Built once, cached at module scope."""
+    global _H1_BAR_INDEX
+    if _H1_BAR_INDEX is None:
+        _H1_BAR_INDEX = R._display_h1().index.sort_values()
+    return _H1_BAR_INDEX
+
+
+def h1_bar_gap(ts_from, ts_to):
+    """Whole H1 candles that CLOSE strictly between the two instants' own
+    containing H1 bars: 0 when both fall inside the same H1 bar or in two
+    adjacent ones (nothing closes between back-to-back bars), 1 when
+    exactly one H1 bar's close sits between them, and so on (negative if
+    `ts_to` precedes `ts_from` by more than one bar). Ranked by POSITION in
+    `_h1_bar_index()` rather than a raw hour subtraction, so an overnight/
+    weekend closure between the two doesn't inflate the count -- Friday's
+    last H1 bar to the following Monday's first is 0 H1 bars apart, not
+    dozens of hours."""
+    idx = _h1_bar_index()
+    pos_from = idx.searchsorted(_norm_utc(ts_from), side="right") - 1
+    pos_to = idx.searchsorted(_norm_utc(ts_to), side="right") - 1
+    raw = pos_to - pos_from
+    if raw >= 0:
+        return int(max(0, raw - 1))
+    return int(min(0, raw + 1))
+
+
 def eod_exit_signal(entry_ts):
     """The instant the flattening MARKET order is sent for a trade entered
     at `entry_ts`: the first `EOD_FLAT_PT - EOD_EXIT_LEAD` (12:44 PT) that
