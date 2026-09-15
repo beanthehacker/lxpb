@@ -1019,6 +1019,10 @@ def _in_globex_open_window(ts_utc):
 M5_AVG_RANGE_WINDOW = R.AVG_RANGE_WINDOW                        # same trailing-bar count as the H1 hint
 WIDE_M5_BREAKOUT_RATIO_THRESHOLD = R.WIDE_BREAKOUT_RATIO_THRESHOLD  # same 2x cutoff, run on M5 bars
 
+PRE_P1_ER_MAX_K = 60                                  # largest lookback the live k control may select
+PRE_P1_ER_K_DEFAULT = 10                              # k the report starts with
+PRE_P1_ER_MAX_DEFAULT = R.L.ER_CONSOLIDATION_MAX      # 0.5 -- lxpb.py's own "consolidating enough" cutoff
+
 _M5_RANGE_RATIO = None
 
 
@@ -1048,6 +1052,43 @@ def _m5_p1_range_ratio(breakout_time):
     breakout_time = pd.to_datetime(breakout_time, utc=True)
     ratio = _m5_range_ratio_table().get(breakout_time)
     return float(ratio) if ratio is not None and not pd.isna(ratio) else None
+
+
+_M5_BAR_POS = None
+
+
+def _m5_bar_position_table():
+    """{M5 bar time -> its integer position in LC.m5_bars_continuous()}.
+    Backs _pre_p1_er_by_k's slice into the series; lazily built once per
+    process, same pattern as _m5_range_ratio_table above."""
+    global _M5_BAR_POS
+    if _M5_BAR_POS is None:
+        _M5_BAR_POS = {t: i for i, t in enumerate(LC.m5_bars_continuous().index)}
+    return _M5_BAR_POS
+
+
+def _pre_p1_er_by_k(breakout_time, max_k=PRE_P1_ER_MAX_K):
+    """Kaufman efficiency ratio (R.L._efficiency_ratio -- net move / total
+    path traveled; 0 = round-tripped chop, 1 = a straight run) of the M5
+    closes immediately preceding this level's own P1 breakout bar, for
+    every lookback k = 2..max_k. Same measure m5_structure.py's own
+    consolidation-area rule and lxpb.py's own candidate gate use, aimed
+    backward from a breakout instead of forward from a level's own
+    formation. Returned as a list indexed [0] -> k=2, [1] -> k=3, ...,
+    with None where the continuous M5 series doesn't reach back that far.
+
+    Shipped as the WHOLE array (not one fixed reading) so the report's live
+    'Pre-P1 structure' filter can pick any k in the browser -- see the
+    filter panel and applyPreP1Er() in JS -- without restating the ratio
+    formula there; only array indexing happens client-side."""
+    breakout_time = pd.to_datetime(breakout_time, utc=True)
+    pos = _m5_bar_position_table().get(breakout_time)
+    if pos is None:
+        return [None] * (max_k - 1)
+    closes = LC.m5_bars_continuous()["close"].to_numpy(float)[max(0, pos - max_k):pos]
+    n = len(closes)
+    return [R.L._efficiency_ratio(list(closes[-k:])) if k <= n else None
+            for k in range(2, max_k + 1)]
 
 
 # --------------------------------------------------------------------------
@@ -1105,6 +1146,11 @@ def process_cluster(cluster, args):
     result["p1_range_ratio"] = p1_range_ratio
     if p1_range_ratio is not None and p1_range_ratio < WIDE_M5_BREAKOUT_RATIO_THRESHOLD:
         result["dyn_tags"].append("weak_p1_breakout")
+
+    # Structure just before P1: see _pre_p1_er_by_k. Ships the whole
+    # k=2..PRE_P1_ER_MAX_K array; the report's live Pre-P1 structure filter
+    # picks k and a cutoff in the browser (no regen).
+    result["pre_p1_er_by_k"] = _pre_p1_er_by_k(row_d["breakout_time"])
 
     # P1->P2 gap: how many Globex/ETH reopen-to-reopen trading days
     # (TM.trading_day_label) separate this level's own breakout (P1) from
@@ -2172,7 +2218,7 @@ def _apply_h1_p0_confluence(results):
     return results
 
 
-N_COLS = 24  # keep in sync with `head` below and every colspan in this section
+N_COLS = 25  # keep in sync with `head` below and every colspan in this section
 
 
 def _fail_reason_label(reason):
@@ -2469,6 +2515,11 @@ def _render_row(idx, res, chart_stacks, fps):
                       f'{mingap_val:.0f}m</span>'
                       if mingap_val is not None else '-')
         mingap_attr = f"{mingap_val:.2f}" if mingap_val is not None else ""
+        er_by_k = res.get("pre_p1_er_by_k") or []
+        er_by_k_attr = _attr_json(er_by_k)
+        er_default = (er_by_k[PRE_P1_ER_K_DEFAULT - 2]
+                     if len(er_by_k) >= PRE_P1_ER_K_DEFAULT - 1 else None)
+        prep1er_cell = f"{er_default:.2f}" if er_default is not None else "-"
         members_str = ", ".join(f"{p:.2f}" for p in res["cluster_members"])
         if res.get("cluster_size", 1) > 1:
             entry_title = (f' title="{res["cluster_size"]} mutually-confluent M5 levels '
@@ -2514,12 +2565,14 @@ def _render_row(idx, res, chart_stacks, fps):
             row_html = f"""
 <tr class="lvl-row unfilled-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
     data-daygap="{daygap_attr}" data-h1gap="{h1gap_attr}" data-mingap="{mingap_attr}"
+    data-er-by-k="{er_by_k_attr}"
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
   <td class="daygap-cell">{gap_cell}</td>
   <td class="h1gap-cell">{h1gap_cell}</td>
   <td class="mingap-cell">{mingap_cell}</td>
+  <td class="prep1er-cell">{prep1er_cell}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
   <td class="h1-confl-cell">-</td>
@@ -2679,7 +2732,7 @@ def _render_row(idx, res, chart_stacks, fps):
         row_html = f"""
 <tr class="lvl-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
     data-dyn-tags="{dyn_tags_attr}" data-base-tags="{base_tags_attr}" data-daygap="{daygap_attr}"
-    data-h1gap="{h1gap_attr}" data-mingap="{mingap_attr}"
+    data-h1gap="{h1gap_attr}" data-mingap="{mingap_attr}" data-er-by-k="{er_by_k_attr}"
     data-r="{act['r']}" data-rr="{act['rrVal']}" data-pnl-pts="{act['pnlPts']}" data-outcome="{act['outcome']}"
     data-mgmt-r="{act['mgmtR']}" data-mgmt-pnl-pts="{act['mgmtPnl']}"
     data-mgmt-outcome="{act['mgmtOutcome']}" data-mgmt-fired="{act['mgmtFired']}"
@@ -2690,6 +2743,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="daygap-cell">{gap_cell}</td>
   <td class="h1gap-cell">{h1gap_cell}</td>
   <td class="mingap-cell">{mingap_cell}</td>
+  <td class="prep1er-cell">{prep1er_cell}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
   <td class="h1-confl-cell" title="{h1_confl_title}">{h1_confl_cell}</td>
@@ -2941,6 +2995,33 @@ shown. Defaults to any (no filtering).">P1&rarr;P2 gap (min)</span>
     <input type="number" class="f-num-val" data-target="mingap" value="30" min="0" step="5">
   </div>
   <div class="filter-row">
+    <span class="filter-label" title="Kaufman efficiency ratio (R._efficiency_ratio: net move /
+total path traveled over k M5 closes; 0 = round-tripped chop, 1 = a straight run) of the k M5
+closes immediately BEFORE this level's own P1 (breakout) bar -- same measure m5_structure.py's
+consolidation-area rule and lxpb.py's own candidate gate use (lxpb.ER_CONSOLIDATION_MAX = 0.5),
+aimed backward from the breakout instead of forward from a level's own formation. A trade that
+breaks out of a trending/grinding run rather than a contained, overlapping range has a HIGH ER
+here (no structure); a trade that breaks out of real consolidation has a LOW one. BOTH k and the
+cutoff below are live in the browser -- changing either recomputes tr.dataset.er from the row's
+own precomputed k=2..__PRE_P1_MAX_K__ array (no ratio math client-side, no regen) and reads back
+through the SAME generic op/value numeric-filter mechanism (f-num-op/f-num-val, data-target) as
+R and the three gap filters above. Likewise a DYNAMIC filter: changing k or the cutoff recomputes
+win rate / avg R / total R / total PnL live, not just which rows are shown. Defaults to any (no
+filtering) with k=__PRE_P1_K__ and cutoff __PRE_P1_ER_MAX__ pre-filled -- pick, e.g., &lt;
+__PRE_P1_ER_MAX__ to keep only trades with real consolidation just before P1.">Pre-P1 structure</span>
+    <span class="filter-sublabel">k=</span>
+    <input type="number" id="f-prep1-k" value="__PRE_P1_K__" min="2" max="__PRE_P1_MAX_K__" step="1">
+    <select class="f-num-op" data-target="er">
+      <option value="any" selected>any</option>
+      <option value="gte">&ge;</option>
+      <option value="gt">&gt;</option>
+      <option value="eq">=</option>
+      <option value="lte">&le;</option>
+      <option value="lt">&lt;</option>
+    </select>
+    <input type="number" class="f-num-val" data-target="er" value="__PRE_P1_ER_MAX__" min="0" max="1" step="0.05">
+  </div>
+  <div class="filter-row">
     <span class="filter-label" title="Live, in-browser toggle -- no Python regen needed. Win =
 outcome-cell reads WIN under the target rule / trade-management state currently ticked above.
 Loss = every other row that DID resolve to a numeric R (LOSS, EOD FLAT, RR FLOOR, CANDLE, all
@@ -3051,6 +3132,14 @@ the box is checked.">Trade management</span>
             f"bar's close sits between them, etc.\">P1&rarr;P2 (H1)</th>"
             f"<th title=\"Minutes between this level's own P1 (breakout) and its P2 (retest), "
             f"a plain subtraction of their own M5 bar timestamps.\">P1&rarr;P2 (min)</th>"
+            f"<th title=\"Kaufman efficiency ratio (net move / total path traveled; 0 = "
+            f"round-tripped chop, 1 = a straight run) of the k M5 closes immediately BEFORE "
+            f"this level's own P1 (breakout) bar -- same measure m5_structure.py's "
+            f"consolidation-area rule and lxpb.py's own candidate gate use "
+            f"(R._efficiency_ratio), aimed backward from the breakout instead of forward from "
+            f"a level's own formation. k (default {PRE_P1_ER_K_DEFAULT}) and the filter cutoff "
+            f"below are both live in the Pre-P1 structure filter above -- no regen "
+            f"needed.\">Pre-P1 ER</th>"
             f"<th class=\"left\" title=\"Distinct M5 prices merged into this trade, "
             f"extreme-first: highest for LLPB, lowest for LHPB. "
             f"Single-level trades show their own M5 price.\">Merged M5 levels</th>"
@@ -3102,6 +3191,9 @@ the box is checked.">Trade management</span>
 {filter_panel.replace("__MIN_R__", f"{args.min_r:g}")
    .replace("__WIDE_RATIO__", f"{WIDE_M5_BREAKOUT_RATIO_THRESHOLD:g}")
    .replace("__H1_CONFL_RADIUS__", f"{H1_CONFL_RADIUS_PTS:g}")
+   .replace("__PRE_P1_K__", f"{PRE_P1_ER_K_DEFAULT:g}")
+   .replace("__PRE_P1_MAX_K__", f"{PRE_P1_ER_MAX_K:g}")
+   .replace("__PRE_P1_ER_MAX__", f"{PRE_P1_ER_MAX_DEFAULT:g}")
    .replace("__CONSOL_CHECKED__",
             "checked" if "consolidation" in args.default_target_modes else "")
    .replace("__OPP_CHECKED__",
@@ -3298,8 +3390,34 @@ function applyTargetModes() {
 function activeOutcomeBuckets() {
   return Array.from(document.querySelectorAll('.f-outcome:checked')).map(cb => cb.value);
 }
+// ---------------------------------------------------------------------
+// Pre-P1 structure filter -- see _pre_p1_er_by_k's docstring in
+// render_m5_confl2_report.py. Each row ships its WHOLE k=2..max array
+// (tr.dataset.erByK) rather than one fixed reading, so the ratio formula
+// itself never has to be restated here -- this only re-indexes that array
+// for whichever k the f-prep1-k control currently holds, the same "swap a
+// live-picked field" trick applyTargetModes uses for tr.dataset.rr, and
+// writes the result into tr.dataset.er for the generic op/value numeric
+// filter (f-num-op/f-num-val, data-target "er") to read.
+// ---------------------------------------------------------------------
+function applyPreP1Er() {
+  const kEl = document.getElementById('f-prep1-k');
+  let k = kEl ? parseInt(kEl.value, 10) : NaN;
+  if (!Number.isFinite(k) || k < 2) k = 2;
+  document.querySelectorAll('#lvl-table tbody tr.lvl-row').forEach(tr => {
+    let er = null;
+    if (tr.dataset.erByK) {
+      const arr = JSON.parse(tr.dataset.erByK);
+      const v = arr[k - 2];
+      if (v !== null && v !== undefined) er = v;
+    }
+    tr.dataset.er = er === null ? '' : String(er);
+    setCell(tr, '.prep1er-cell', er === null ? '-' : er.toFixed(2), 'prep1er-cell');
+  });
+}
 function recomputeDynStats() {
   applyTargetModes();
+  applyPreP1Er();
   const excludeTags = activeDynExcludeTags();
   const isolateTags = activeDynIsolateTags();
   const outcomeOn = activeOutcomeBuckets();
@@ -3330,7 +3448,11 @@ function recomputeDynStats() {
     // applyReviewFilters' generic numeric-filter pass.
     const h1gapHidden = !numFilterOk(tr, 'h1gap');
     const mingapHidden = !numFilterOk(tr, 'mingap');
-    const hidden = rrHidden || daygapHidden || h1gapHidden || mingapHidden || (isolateTags.length > 0
+    // The Pre-P1 structure filter (f-num-op/f-num-val, data-target "er") is a
+    // dynamic filter too, same reasoning as rrHidden above -- tr.dataset.er
+    // was just rewritten by applyPreP1Er() for whichever k is now ticked.
+    const erHidden = !numFilterOk(tr, 'er');
+    const hidden = rrHidden || daygapHidden || h1gapHidden || mingapHidden || erHidden || (isolateTags.length > 0
       ? !tags.some(t => isolateTags.includes(t))
       : (excludeTags.length > 0 && tags.some(t => excludeTags.includes(t))));
     tr.classList.toggle('dyn-hidden', hidden);
@@ -3407,6 +3529,14 @@ document.querySelectorAll('.f-num-op[data-target="daygap"], .f-num-val[data-targ
 document.querySelectorAll('.f-num-op[data-target="h1gap"], .f-num-val[data-target="h1gap"], '
   + '.f-num-op[data-target="mingap"], .f-num-val[data-target="mingap"]')
   .forEach(el => el.addEventListener('input', recomputeDynStats));
+// The Pre-P1 structure filter (data-target "er") also folds into
+// recomputeDynStats' own stats loop above, not just applyReviewFilters, and
+// its k control (f-prep1-k) changes which value tr.dataset.er even IS
+// (applyPreP1Er), so both need the same recompute trigger as rr/daygap.
+document.querySelectorAll('.f-num-op[data-target="er"], .f-num-val[data-target="er"]')
+  .forEach(el => el.addEventListener('input', recomputeDynStats));
+const prep1KEl = document.getElementById('f-prep1-k');
+if (prep1KEl) prep1KEl.addEventListener('input', recomputeDynStats);
 const mgmtToggleCb = document.getElementById('mgmt-thrust-trail');
 if (mgmtToggleCb) mgmtToggleCb.addEventListener('change', recomputeDynStats);
 recomputeDynStats();
