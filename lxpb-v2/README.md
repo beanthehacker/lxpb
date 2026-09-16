@@ -11,36 +11,12 @@ features.
 
 ## Deploying (Vercel)
 
-**Connect the GitHub repo to a Vercel project and that is the whole setup
--- no dashboard settings to change, no env vars, no database.** The repo
-root's `vercel.json` runs `lxpb-v2/scripts/build-index.mjs`, which builds
-the whole site into `dist/`: everything under `lxpb-v2/public/` (the
-reports, plus `js/`) alongside a generated `index.html` landing page
-listing every report, grouped by family. Reports keep their natural
-`/reports/*.html` URLs, and the index is regenerated on every deploy, so it
-can never drift from what the `render_*.py` scripts actually wrote.
-
-Vercel reads `vercel.json` from the repo root but runs the build from
-`lxpb-v2/`, so the build command tries both locations and the script writes
-`dist/` relative to whichever directory it ran in. That means the
-deployment works whether **Root Directory** is left empty or set to
-`lxpb-v2` -- there is no setting you need to get right.
-
-Two things a plain static deploy does not include:
-
-- **The site is public.** Anyone with the URL can read every report.
-- **Checkbox/label state does not persist.** Reviewed/Valid/Replayed/Notes
-  toggles work within a page visit but are forgotten on reload, since
-  `/api/rows` does not exist on a static deployment. `public/js/row-store.js`
-  degrades quietly here -- no console errors, just no saving.
-
-### Optional: the full Next.js app (sign-in + saved labels)
-
-`lxpb-v2/` is also a Next.js app providing the same index page plus Google
-sign-in gating and `/api/rows`, a Postgres-backed store for the review/label
-state so it syncs across devices. Deploying *that* instead is what needs
-configuration: set the Vercel project's **Root Directory** to `lxpb-v2`,
-then:
+`lxpb-v2/` is a Next.js app providing the report index page, Google
+sign-in gating (every route redirects to `/login` unless signed in as the
+one allowed account), and `/api/rows`, a Postgres-backed store for the
+review/label state so it syncs across devices. There is no plain static
+deploy path anymore -- set the Vercel project's **Root Directory** to
+`lxpb-v2` (Settings -> General -> Root Directory), then:
 
 1. **Database** -- in the Vercel dashboard, Storage tab, add a Postgres
    database (Neon integration). This sets `DATABASE_URL` (and friends) as
