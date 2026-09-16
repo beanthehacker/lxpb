@@ -831,7 +831,7 @@ def consolidation_areas_for(args):
 # convention in _apply_p1_reaction_filter's docstring.
 # --------------------------------------------------------------------------
 
-def _swerve_entry(m5_ledger, level_type, is_long, conf, row_d, args):
+def _swerve_entry(m5_ledger, level_type, is_long, conf, row_d, args, hi_ts=None):
     """Swerve-rule verdict for one cluster, as a dict (or None when the rule
     is off). MUTATES `conf` in place when the entry actually moves, so every
     downstream user of conf -- the fill scan, the spike-P0 stop override
@@ -843,24 +843,32 @@ def _swerve_entry(m5_ledger, level_type, is_long, conf, row_d, args):
     row moved to, if any), blocked (bool -- triggered but nowhere to move).
 
     The window searched is the level's OWN wait -- from its P1 breakout bar
-    to its retest -- since that is exactly the span over which price could
-    have come back towards the entry and turned away without reaching it.
-    `--swerve-lookback-hours` caps it, for the levels that sit broken out
-    for weeks before anything comes back."""
+    to the point the entry is actually known to be filled, since that is
+    exactly the span over which price could have come back towards the
+    entry and turned away before the order was in. `hi_ts` carries that
+    upper bound in (default the ledger's own retest instant, when the
+    caller has no better one); `--swerve-lookback-hours` caps the lower
+    bound off the ledger's retest either way, for the levels that sit
+    broken out for weeks before anything comes back. Passing the entry's
+    OWN tick-level fill touch time as `hi_ts` (rather than the ledger
+    retest) is what lets this rule see a swing that only formed during a
+    pegged/chasing wait for a passive fill -- see process_cluster's own
+    probe call, which resolves that touch time before swerve runs."""
     if not args.swerve:
         return None
     planned = float(conf["alt_price"])
     retest_time = pd.to_datetime(row_d["retest_time"], utc=True)
+    hi_ts = retest_time if hi_ts is None else pd.to_datetime(hi_ts, utc=True)
     breakout_time = pd.to_datetime(row_d["breakout_time"], utc=True)
     lo_ts = max(breakout_time, retest_time - pd.Timedelta(hours=args.swerve_lookback_hours))
-    swings = MS.swings_near(planned, args.swerve_tol_pts, lo_ts, retest_time,
+    swings = MS.swings_near(planned, args.swerve_tol_pts, lo_ts, hi_ts,
                             is_low=is_long, k=args.swerve_swing_k)
     if not swings:
         return None
 
     out = {"swings": swings, "moved": False, "blocked": False,
            "planned_price": planned, "price": planned, "level": None}
-    cand = SF._live_m5_before_entry(m5_ledger, level_type, retest_time)
+    cand = SF._live_m5_before_entry(m5_ledger, level_type, hi_ts)
     if cand.empty:
         out["blocked"] = True
         return out
@@ -874,7 +882,7 @@ def _swerve_entry(m5_ledger, level_type, is_long, conf, row_d, args):
     cand = cand.assign(_dist=(cand["price"] - planned).abs()).sort_values("_dist")
     for _, lv in cand.iterrows():
         price = float(lv["price"])
-        if MS.swings_near(price, args.swerve_tol_pts, lo_ts, retest_time,
+        if MS.swings_near(price, args.swerve_tol_pts, lo_ts, hi_ts,
                           is_low=is_long, k=args.swerve_swing_k):
             continue   # same problem one level down -- keep stepping
         out.update({"moved": True, "price": price, "level": lv.to_dict()})
@@ -882,8 +890,8 @@ def _swerve_entry(m5_ledger, level_type, is_long, conf, row_d, args):
         conf["alt_source"] = "m5"
         conf["entry_m5_level"] = lv.to_dict()
         conf["alt_formation_time"] = pd.Timestamp(lv["formation_time"])
-        conf["alt_end_time"] = (retest_time if pd.isna(lv["death_time"])
-                                else min(pd.Timestamp(lv["death_time"]), retest_time))
+        conf["alt_end_time"] = (hi_ts if pd.isna(lv["death_time"])
+                                else min(pd.Timestamp(lv["death_time"]), hi_ts))
         return out
     out["blocked"] = True
     return out
@@ -1119,7 +1127,20 @@ def process_cluster(cluster, args):
                            reverse=(level_type == "LLPB"))
 
     conf = cluster_confluence(cluster)
-    swerve = _swerve_entry(m5_ledger, level_type, is_long, conf, row_d, args)
+    # Probe the pre-swerve entry's own tick-level fill touch time so the
+    # swerve rule can see swings that only formed during a pegged/chasing
+    # wait, not just up to the ledger's own retest instant -- see
+    # _swerve_entry's docstring. Reused below as the actual fill, unmodified,
+    # if neither swerve nor crest-refine ends up moving the entry.
+    retest_time = pd.to_datetime(row_d["retest_time"], utc=True)
+    planned_before = float(conf["alt_price"])
+    probe_touch = probe_fill = None
+    if args.swerve:
+        probe_touch, probe_fill = SF.find_alt_fill(
+            retest_time, planned_before, is_long, level_type, args.max_alt_fill_hours,
+            pegged=args.pegged_entry, peg_step=args.peg_step, peg_cap=args.peg_cap)
+    swerve = _swerve_entry(m5_ledger, level_type, is_long, conf, row_d, args,
+                           hi_ts=probe_touch if probe_touch is not None else retest_time)
     crest_refine = _crest_refine_entry(is_long, conf, row_d, args)
     alt_price, alt_source, group_n = conf["alt_price"], conf["alt_source"], conf["group_n"]
 
@@ -1192,10 +1213,15 @@ def process_cluster(cluster, args):
                       - pd.to_datetime(row_d["breakout_time"], utc=True)).total_seconds() / 60.0
     result["p1_p2_minutes"] = p1_p2_minutes
 
-    window_start = pd.to_datetime(row_d["retest_time"], utc=True)
-    touch_time_alt, fill_price = SF.find_alt_fill(
-        window_start, alt_price, is_long, level_type, args.max_alt_fill_hours,
-        pegged=args.pegged_entry, peg_step=args.peg_step, peg_cap=args.peg_cap)
+    # Neither swerve nor crest-refine moved the entry off the price the probe
+    # above already resolved a fill for -- reuse it rather than re-scanning
+    # the same ticks. (No probe ran at all when --no-swerve; always rescan then.)
+    if args.swerve and abs(alt_price - planned_before) <= 1e-9:
+        touch_time_alt, fill_price = probe_touch, probe_fill
+    else:
+        touch_time_alt, fill_price = SF.find_alt_fill(
+            retest_time, alt_price, is_long, level_type, args.max_alt_fill_hours,
+            pegged=args.pegged_entry, peg_step=args.peg_step, peg_cap=args.peg_cap)
     if touch_time_alt is None:
         result["fail_reason"] = "unfilled_within_window"
         return result
