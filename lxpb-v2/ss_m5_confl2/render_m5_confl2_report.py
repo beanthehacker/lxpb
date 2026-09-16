@@ -88,13 +88,13 @@ the target are ALL M5 LXPB structure:
      whose reward:risk (target points / stop points, fixed at entry) comes
      out below `--min-r` (default 1.0) IS still taken, resolved and charted
      -- tagged `r_below_min`, and dropped from the headline stats by the
-     report's own dynamic filter, which ships checked. The target is only
-     knowable just before entry, so what those setups actually did is worth
-     being able to look at.
+     report's own R filter, which defaults to &ge; 1 (see the "R" row in
+     the filter panel). The target is only knowable just before entry, so
+     what those setups actually did is worth being able to look at.
 
   7. TRADE BLOCKS AND ENTRY ADJUSTMENTS. Three further rules, each of which
      TAGS its trades for the report's live dynamic filters rather than
-     silently deleting them (see _apply_p1_reaction_filter's docstring for
+     silently deleting them (see _apply_globex_open_filter's docstring for
      that convention):
 
        * SWERVED (`_swerve_entry`). A confirmed M5 swing low (long) or
@@ -126,19 +126,24 @@ the target are ALL M5 LXPB structure:
          w-bar M5 average range -- the same range-ratio calc and
          `WIDE_BREAKOUT_RATIO_THRESHOLD` (2x) cutoff render_labels_report.py
          uses to flag a 'wide breakout' H1 P1 for the strong-breakout
-         sample, just run on M5 bars. Below 2x is tagged `weak_p1_breakout`
-         -- a thin thrust that barely out-ranged the recent tape, as
-         distinct from a genuine impulsive break. The window w defaults to
-         `M5_RANGE_RATIO_WINDOW_DEFAULT` (20) but is LIVE in the browser
-         (the Weak P1 window control, 1..`M5_RANGE_RATIO_MAX_WINDOW`/50):
-         every row ships its whole w=1..50 ratio array, so changing the
-         window re-tags rows and recomputes the headline stats with no
-         regen, the same "ship the array, pick the reading client-side"
-         convention as the Pre-P1 structure filter's k. Excluded by
-         default, like the two filters above: on the 2026 data dropping
-         these lifts the default view to +0.55R avg / +67.3R total over 62
-         trades (it did NOT hold on 2025 out-of-sample, so untick it to see
-         the unfiltered numbers).
+         sample, just run on M5 bars. A thin ratio here is a thin thrust
+         that barely out-ranged the recent tape, as distinct from a genuine
+         impulsive break. This is its own row in the filter panel (the "P1
+         range ratio" row, not a Dynamic filters tag): the window w
+         (default `M5_RANGE_RATIO_WINDOW_DEFAULT`/20, 1..
+         `M5_RANGE_RATIO_MAX_WINDOW`/50) AND the cutoff itself (default
+         `WIDE_M5_BREAKOUT_RATIO_THRESHOLD`/2x, 0.1x..3x) are both LIVE in
+         the browser, through the same generic op/value numeric-filter
+         mechanism (f-num-op/f-num-val, data-target "p1ratio") as R and the
+         Pre-P1 structure filter -- every row ships its whole w=1..50 ratio
+         array (no ratio math client-side, just array indexing), and its
+         own "P1 range ratio" column shows the reading for whichever window
+         is currently picked, so the cutoff can be tuned against real
+         numbers instead of blind. Defaults to &ge; 2x (only ratio &ge; 2x
+         shown): on the 2026 data this lifts the default view to +0.55R
+         avg / +67.3R total over 62 trades (it did NOT hold on 2025
+         out-of-sample, so widen the filter to any to see the unfiltered
+         numbers).
 
        * CREST REFINE (`_crest_refine_entry`, opt-in via `--crest-refine`,
          OFF by default). Runs AFTER the swerve rule, on whatever entry is
@@ -257,45 +262,17 @@ pd.set_option("display.max_columns", 20)
 # Selection: every M5 retest with same-side M5 confluence >= threshold
 # --------------------------------------------------------------------------
 
-_DEPARTED_FATES = (LC.FATE_RETESTED, LC.FATE_CONSUMED_EARLY)
-
-
-def _seg_departed_levels(m5_ledger, start_ts, end_ts):
-    """Every M5 level that left its 'awaiting retest' watch window in
-    [start_ts, end_ts): fate 'retested' (a clean retest, entry_price/
-    stop_loss populated) OR 'consumed_early' (price touched/gapped past the
-    level too soon after ITS OWN P1 to count as a clean retest, per
-    lxpb_levels_cache.retests's own MIN_BARS_BEFORE_RETEST gate -- see
-    lxpb_levels_cache.py's own fate table). A consumed_early level was
-    never a tradeable retest in this strategy's own selection logic, but
-    price DID reach its price and move on, which is exactly the kind of
-    reaction the p1_reacted dynamic filter needs to detect: a level dying this way
-    right after its own breakout is if anything a SHARPER rejection than a
-    clean retest hours later. Adds a single unified 'touch_time' column
-    (retest_time for a clean retest, death_time for consumed_early, since
-    consumed_early rows never populate retest_time/retest_open/etc)."""
-    d = m5_ledger[m5_ledger["fate"].isin(_DEPARTED_FATES)].copy()
-    d["touch_time"] = d["retest_time"].where(d["fate"] == LC.FATE_RETESTED, d["death_time"])
-    return d[(d["touch_time"] >= start_ts) & (d["touch_time"] < end_ts)]
-
-
 def select_candidates(ss_confl_min, start, end, confluence_points):
     """M5-native candidate rows over the one continuous M5 ledger (see the
     "continuous contracts only" convention in CLAUDE.md -- LC.m5_levels()
     now spans every contract rollover in one state-machine run, so a P0
     formed on one contract can be retested by a later contract's bars).
-    Returns (candidates, departed): candidates is a list of dicts
-    (candidate index `i`, the row itself, its own same-side M5 confluence
-    set, the shared ledger -- kept per-candidate since dynamic_target/
-    dynamic_stop need the full ledger, not just the confluence subset --
-    and `seg_idx`, which RAW contract's own ticks cover this candidate's
-    own instant, still needed for chart/tick work even though level
-    detection itself no longer cares); departed is every 'departed' M5
-    level (see _seg_departed_levels -- clean retests AND consumed_early)
-    in [start, end), BEFORE the ss_confl_min filter -- kept separately so
-    the p1_reacted dynamic filter (see _p1_group_reaction_cutoffs) can see
-    a P1 group's full membership, including P0s that don't themselves
-    clear ss_confl_min or were never a tradeable retest at all."""
+    Returns a list of dicts (candidate index `i`, the row itself, its own
+    same-side M5 confluence set, the shared ledger -- kept per-candidate
+    since dynamic_target/dynamic_stop need the full ledger, not just the
+    confluence subset -- and `seg_idx`, which RAW contract's own ticks
+    cover this candidate's own instant, still needed for chart/tick work
+    even though level detection itself no longer cares)."""
     if not np.isfinite(confluence_points) or confluence_points < 0:
         raise ValueError("M5 confluence radius must be finite and non-negative")
     start_ts = pd.Timestamp(start, tz="UTC")
@@ -303,10 +280,9 @@ def select_candidates(ss_confl_min, start, end, confluence_points):
     candidates = []
     m5_ledger = LC.m5_levels(verbose=False)
     if m5_ledger is None or m5_ledger.empty:
-        return candidates, pd.DataFrame()
+        return candidates
     retests = LC.retests(m5_ledger)
     retests = retests[(retests["retest_time"] >= start_ts) & (retests["retest_time"] < end_ts)]
-    departed = _seg_departed_levels(m5_ledger, start_ts, end_ts)
     for _, row_d in retests.iterrows():
         same_side_m5 = SF._same_side_confluence(m5_ledger, row_d, confluence_points)
         if len(same_side_m5) < ss_confl_min:
@@ -320,7 +296,7 @@ def select_candidates(ss_confl_min, start, end, confluence_points):
     candidates.sort(key=lambda c: pd.Timestamp(c["row"]["retest_time"]))
     for i, cand in enumerate(candidates):
         cand["i"] = i
-    return candidates, departed
+    return candidates
 
 
 # --------------------------------------------------------------------------
@@ -828,7 +804,7 @@ def consolidation_areas_for(args):
 # If no such level exists the trade is not taken (tag `swerve_blocked`);
 # it is still processed and charted at its ORIGINAL entry so the report can
 # show what the untaken trade would have done -- see the dynamic-filter
-# convention in _apply_p1_reaction_filter's docstring.
+# convention in _apply_globex_open_filter's docstring.
 # --------------------------------------------------------------------------
 
 def _swerve_entry(m5_ledger, level_type, is_long, conf, row_d, args, hi_ts=None):
@@ -1052,10 +1028,10 @@ def _m5_p1_range_ratio_by_window(breakout_time, max_window=M5_RANGE_RATIO_MAX_WI
     itself picked per-call instead of fixed.
 
     Shipped as the WHOLE array (not one fixed reading), same reasoning as
-    _pre_p1_er_by_k, so the report's live 'weak P1 breakout' window control
-    can pick any w in the browser -- see applyWeakP1Window() in JS -- without
-    restating the ratio formula there; only array indexing happens
-    client-side. Indexed [0] -> w=1, [1] -> w=2, ..., None where the
+    _pre_p1_er_by_k, so the report's live 'P1 range ratio' filter window
+    control can pick any w in the browser -- see applyP1RatioWindow() in JS
+    -- without restating the ratio formula there; only array indexing
+    happens client-side. Indexed [0] -> w=1, [1] -> w=2, ..., None where the
     continuous M5 series doesn't reach back that far."""
     breakout_time = pd.to_datetime(breakout_time, utc=True)
     pos = _m5_bar_position_table().get(breakout_time)
@@ -1171,17 +1147,16 @@ def process_cluster(cluster, args):
     # fill onto a different M5 level, but the retest signal being traded is
     # still row_d's own P1) measured against its trailing M5-bar average
     # range, same calc/threshold as the H1 report's phase1_wide_breakout
-    # hint. Tags, doesn't drop -- a thin P1 thrust is a candidate for a
-    # tighter gate, not proof one is needed, so it's left in the baseline
-    # stats behind an off-by-default checkbox.
+    # hint. Shipped as a plain number (its own "P1 range ratio" column and
+    # data-p1-ratio-by-window), not a boolean tag: the report's numeric P1
+    # range ratio filter (same op/value mechanism as R) lets the threshold
+    # AND the window be picked live in the browser instead of being fixed
+    # here.
     p1_range_ratio_by_window = _m5_p1_range_ratio_by_window(row_d["breakout_time"])
     result["p1_range_ratio_by_window"] = p1_range_ratio_by_window
     default_idx = M5_RANGE_RATIO_WINDOW_DEFAULT - 1
-    p1_range_ratio = (p1_range_ratio_by_window[default_idx]
-                       if 0 <= default_idx < len(p1_range_ratio_by_window) else None)
-    result["p1_range_ratio"] = p1_range_ratio
-    if p1_range_ratio is not None and p1_range_ratio < WIDE_M5_BREAKOUT_RATIO_THRESHOLD:
-        result["dyn_tags"].append("weak_p1_breakout")
+    result["p1_range_ratio"] = (p1_range_ratio_by_window[default_idx]
+                                if 0 <= default_idx < len(p1_range_ratio_by_window) else None)
 
     # Structure just before P1: see _pre_p1_er_by_k. Ships the whole
     # k=2..PRE_P1_ER_MAX_K array; the report's live Pre-P1 structure filter
@@ -1931,191 +1906,41 @@ def process_clusters(clusters, args):
     return results, chart_stacks, fps
 
 
-# --------------------------------------------------------------------------
-# The p1_reacted dynamic filter (always computed, tags -- see the "Dynamic
-# filters" convention in _apply_p1_reaction_filter's own docstring below):
-# a single P1 (breakout) bar can
-# be shared by several DIFFERENT P0 levels of the same type (dynamic_target's
-# own "P1 shared by >=2 P0s" rule already leans on this) even when those P0s
-# are too far apart in price to be confluence-clustered into one trade (see
-# cluster_candidates -- that union-find only merges within
-# +/-args.m5_confluence_points). Each such P0 still gets retested
-# independently, at its own later time. If ANY P0 sharing that P1 -- not
-# just the ones that clear ss_confl_min and become a trade in THIS report --
-# already bounced all the way back to the opposite M5 level, the P1 group's
-# "breakout continuation" thesis has already played out once, so a later
-# trade on a DIFFERENT P0 under the same P1 is not a fresh, independent
-# signal. Detecting that requires resolving EVERY raw P0 in the group (its
-# own un-fine-tuned price is the entry, and the retest bar IS the touch by
-# definition of `retests`, so there is no fill-window search here) with the
-# exact same target/stop rules real trades use, not just the subset that
-# happens to also be an SS-confl-qualifying candidate.
-# --------------------------------------------------------------------------
-
-def _naive_bracket_touch(bars, entry_adj, is_long, stop_pts, target_pts, offset):
-    """Whichever of stop/target price is touched FIRST by a bar's own
-    high/low, in bar order -- a raw 'did price get there' fact, unlike
-    SR.resolve_trades' full fill-realism pipeline (which additionally
-    requires TARGET, a resting limit order, to see a qualifying
-    OPPOSITE-side print -- a same-side print merely brushing the price
-    doesn't count there). The p1_reacted dynamic filter cares whether the market
-    actually reacted off this P0 and ran to the opposite level, not
-    whether a specific resting order would have filled there, so this
-    intentionally skips that refinement. Returns 'target', 'stop', or
-    'no_hit'."""
-    raw_entry = entry_adj - offset
-    highs, lows = bars["high"].to_numpy(float), bars["low"].to_numpy(float)
-    if is_long:
-        stop_price, target_price = raw_entry - stop_pts, raw_entry + target_pts
-        stop_hit, target_hit = lows <= stop_price, highs >= target_price
-    else:
-        stop_price, target_price = raw_entry + stop_pts, raw_entry - target_pts
-        stop_hit, target_hit = highs >= stop_price, lows <= target_price
-    s_idx = np.flatnonzero(stop_hit)
-    t_idx = np.flatnonzero(target_hit)
-    s0 = s_idx[0] if s_idx.size else None
-    t0 = t_idx[0] if t_idx.size else None
-    if t0 is not None and (s0 is None or t0 <= s0):
-        return "target"
-    if s0 is not None:
-        return "stop"
-    return "no_hit"
-
-
-def _resolve_raw_retest(m5_ledger, row_d, args):
-    """(outcome, touch_time) for one RAW 'departed' M5 level -- a clean
-    retest OR a consumed_early death (see _seg_departed_levels) -- not
-    fine-tuned, not fill-window-searched: row_d['touch_time'] itself is the
-    touch. outcome is from _naive_bracket_touch (a raw OHLC touch race, no
-    fill-quality requirement -- see its own docstring for why that differs
-    from a real trade's own resolution). Returns (None, None) if no
-    qualifying target/stop exists or there's no tick data to check
-    against, same 'no trade' cases process_cluster itself would hit.
-    _pick_targets/_dynamic_stop_m5 still pick the SAME bracket a real trade
-    on this P0 alone would have used (including this run's own
-    --target-mode) -- only the touch-vs-fill distinction differs."""
-    level_type = row_d["type"]
-    is_long = level_type == "LHPB"
-    price = float(row_d["price"])
-    touch_time = pd.Timestamp(row_d["touch_time"])
-    if touch_time.tzinfo is None:
-        touch_time = touch_time.tz_localize("UTC")
-
-    targets = _pick_targets(m5_ledger, level_type, price, is_long, touch_time, args,
-                            p1_time=row_d["breakout_time"], p2_time=touch_time)
-    mode = _active_mode(targets, price, enabled=args.default_target_modes)
-    if mode is None:
-        return None, None
-    target_price = targets[mode][0]
-    stop_price, _, _ = _dynamic_stop_m5(
-        level_type, price, is_long, row_d.to_dict(), m5_ledger, touch_time)
-    if stop_price is None:
-        return None, None
-    stop_pts = abs(stop_price - price)
-    target_pts = abs(target_price - price)
-    if stop_pts <= 0:
-        return None, None
-
-    bars = SF.build_minute_bars(touch_time)
-    if bars is None or bars.empty:
-        return None, None
-    offset, _ = R._offset_for_ts(touch_time)
-    outcome = _naive_bracket_touch(bars, price, is_long, stop_pts, target_pts, offset)
-    return outcome, touch_time
-
-
-def _p1_group_reaction_cutoffs(relevant_keys, departed, args):
-    """{(seg_idx, type, breakout_time): earliest reacting touch_time} for
-    every relevant_keys entry whose FULL P1 group (every DEPARTED M5 level
-    -- clean retest or consumed_early, see _seg_departed_levels -- sharing
-    that type+breakout_time, including P0s below ss_confl_min or that
-    never became a tradeable retest at all) has >=2 members. Walks each
-    such group in touch_time order and resolves every member with
-    _resolve_raw_retest until one reaches outcome=='target', which sets
-    that group's cutoff; a group with no reacting member is absent from
-    the returned dict (never filtered). Single-member groups have no
-    OTHER P0 to react on their behalf, so they are skipped without ever
-    touching tick data.
-
-    `seg_idx` is kept in relevant_keys/the returned dict's key purely for
-    the caller's own lookup convenience (_apply_p1_reaction_filter keys
-    off it too) -- level detection itself is one continuous ledger now,
-    so it is never used here to pick which ledger to query. A given
-    breakout_time deterministically implies one seg_idx (R._contract_index_for
-    of an absolute timestamp), so every relevant_keys entry sharing a
-    (type, breakout_time) already shares the same seg_idx too -- deduping
-    on the 2-tuple below is exact, not an approximation."""
-    if departed is None or departed.empty:
-        return {}
-    keys = {(level_type, breakout_time) for _, level_type, breakout_time in relevant_keys}
-    m5_ledger = LC.m5_levels(verbose=False)
-    if m5_ledger is None or m5_ledger.empty:
-        return {}
-
-    cutoffs = {}
-    seg_idx_by_key = {(level_type, breakout_time): seg_idx
-                      for seg_idx, level_type, breakout_time in relevant_keys}
-    for (level_type, breakout_time), group in departed.groupby(["type", "breakout_time"]):
-        key2 = (level_type, pd.Timestamp(breakout_time))
-        if key2 not in keys or len(group) < 2:
-            continue
-        group = group.sort_values("touch_time")
-        for _, row_d in group.iterrows():
-            outcome, touch_time = _resolve_raw_retest(m5_ledger, row_d, args)
-            if outcome == "target":
-                cutoffs[(seg_idx_by_key[key2], level_type, key2[1])] = touch_time
-                break
-    return cutoffs
-
-
-def _apply_p1_reaction_filter(results, cutoffs):
+def _apply_globex_open_filter(results):
     """Mutates and returns `results` in place.
 
     DYNAMIC FILTER CONVENTION -- read this before adding another one. This
     does NOT remove trades from the report or from the server-computed
-    baseline stats. It only TAGS each originally-filled result whose own P1
-    group (seg_idx, type, breakout_time) has a reaction cutoff STRICTLY
-    earlier than its own retest_time -- i.e. a DIFFERENT P0 sharing that P1
-    already reacted first -- by appending 'p1_reacted' to
+    baseline stats. It only TAGS a qualifying result by appending to
     res['dyn_tags'] (a list; a row can carry more than one dynamic-filter
-    tag) and setting res['p1_reaction_cutoff']. _render_row turns each tag
-    into a `data-dyn-tags` attribute (plus data-r/data-pnl-pts/data-outcome
-    for live recompute) on that row's <tr>, and the report's JS (see the
-    'Dynamic filters' block appended to JS below _finish_report) lets the
-    user toggle an Exclude or an Only (isolate) checkbox per tag IN THE
-    BROWSER to hide/show those rows and recompute win rate / avg R /
-    total R / total PnL live, with NO Python regen required. This is
-    deliberately generic: to add a new dynamic filter, (1) tag qualifying
-    results with one more entry in dyn_tags (their own detection logic,
-    wherever that lives), (2) add one <label class="chip"> checkbox with
-    class f-dyn-exclude and one more with class f-dyn-isolate, both
-    data-tag="<your tag>", to the filter panel in _finish_report. Nothing
-    else needs to change -- the JS's recomputeDynStats() is tag-agnostic."""
-    for res in results:
-        if not res["filled"]:
-            continue
-        row_d = res["row"]
-        key = (res["seg_idx"], row_d["type"], pd.Timestamp(row_d["breakout_time"]))
-        cutoff = cutoffs.get(key)
-        if cutoff is not None and pd.Timestamp(row_d["retest_time"]) > cutoff:
-            res.setdefault("dyn_tags", []).append("p1_reacted")
-            res["p1_reaction_cutoff"] = cutoff
-    return results
+    tag). _render_row turns each tag into a `data-dyn-tags` attribute (plus
+    data-r/data-pnl-pts/data-outcome for live recompute) on that row's
+    <tr>, and the report's JS (see the 'Dynamic filters' block appended to
+    JS below _finish_report) lets the user toggle an Exclude checkbox per
+    tag, plus an Only (isolate) RADIO stacked under it -- all the Only
+    radios share one <input name>, so the browser itself enforces at most
+    one isolated tag at a time (clicking an already-selected radio unchecks
+    it again, see the click handler in JS) -- IN THE BROWSER to hide/show
+    those rows and recompute win rate / avg R / total R / total PnL live,
+    with NO Python regen required. This is deliberately generic: to add a
+    new dynamic filter, (1) tag qualifying results with one more entry in
+    dyn_tags (their own detection logic, wherever that lives), (2) add one
+    <div class="chip-stack"> holding one <label class="chip"> checkbox with
+    class f-dyn-exclude and one <label class="chip chip-iso"> radio with
+    class f-dyn-isolate (same shared name="f-dyn-isolate-radio" as the
+    others), both data-tag="<your tag>", to the filter panel in
+    _finish_report. Nothing else needs to change -- the JS's
+    recomputeDynStats() is tag-agnostic.
 
-
-def _apply_globex_open_filter(results):
-    """Mutates and returns `results` in place. Same dynamic-filter
-    convention as _apply_p1_reaction_filter (see that function's docstring)
-    -- tags, doesn't remove: a filled result whose actual fill
-    (touch_time_alt) landed in [15:00, 15:05) Pacific time -- the daily
-    Globex/ETH reopen (6pm ET), when the M5 stop/target structure this
-    strategy trades against isn't reliable across the reopen gap -- gets
-    'globex_eth_open' appended to res['dyn_tags']. Unlike p1_reacted's
-    checkbox (unchecked by default, an open hypothesis), this one ships
-    checked by default in _finish_report's filter panel: on the full
-    [2026-07-01, 2026-08-31] dataset it tags 6 of 167 baseline trades, all
-    6 losers (0 wins dropped) -- excluding them takes total R from -0.8 to
-    +5.2, so the default view already reflects that."""
+    This particular filter tags, doesn't remove: a filled result whose
+    actual fill (touch_time_alt) landed in [15:00, 15:05) Pacific time --
+    the daily Globex/ETH reopen (6pm ET), when the M5 stop/target structure
+    this strategy trades against isn't reliable across the reopen gap --
+    gets 'globex_eth_open' appended to res['dyn_tags']. Ships checked by
+    default in _finish_report's filter panel: on the full [2026-07-01,
+    2026-08-31] dataset it tags 6 of 167 baseline trades, all 6 losers (0
+    wins dropped) -- excluding them takes total R from -0.8 to +5.2, so the
+    default view already reflects that."""
     for res in results:
         if not res["filled"]:
             continue
@@ -2147,7 +1972,7 @@ def _h1_p0_kind(level_type, is_spike, is_swing):
 
 def _apply_h1_p0_confluence(results):
     """Mutates and returns `results` in place. Same dynamic-filter
-    convention as _apply_p1_reaction_filter (see that function's docstring)
+    convention as _apply_globex_open_filter (see that function's docstring)
     -- for every FILLED result, looks up every H1 level of the SAME LXPB
     TYPE as this trade (an LHPB M5 trade only ever confluences with H1
     LHPB, never LLPB, and vice versa -- the two types are opposite-direction
@@ -2213,9 +2038,8 @@ def _apply_h1_p0_confluence(results):
     entirely'); this is purely a review aid answering 'was there H1
     structure sitting near where this trade entered', not a strategy input.
     Stores the list (nearest first, [] if none) as res['h1_p0_confl'] for
-    _render_row's own column, and appends 'h1_p0_confluence' to
-    res['dyn_tags'] when the list is non-empty so the report's Dynamic
-    filters panel can Exclude/Only on it like any other tag."""
+    _render_row's own column (a plain count, with the full detail in that
+    cell's tooltip -- see _h1_confl_cell)."""
     h1_ledger = LC.h1_levels(verbose=False)
     h1_bar_pos = {ts: i for i, ts in enumerate(R._display_h1().index)}
     for res in results:
@@ -2254,12 +2078,10 @@ def _apply_h1_p0_confluence(results):
                   "dead_by_fill": bool(pd.notna(r["death_time"]) and r["death_time"] <= as_of)}
                  for _, r in near.iterrows()]
         res["h1_p0_confl"] = confl
-        if confl:
-            res.setdefault("dyn_tags", []).append("h1_p0_confluence")
     return results
 
 
-N_COLS = 25  # keep in sync with `head` below and every colspan in this section
+N_COLS = 29  # keep in sync with `head` below and every colspan in this section
 
 
 def _fail_reason_label(reason):
@@ -2299,7 +2121,7 @@ def _target_title(info):
 def _compute_report_stats(filled):
     """(stats, improved_n, max_win_mae, max_loss_mfe, gapped_entries,
     pctile_html) for a population of FILLED results -- the server-computed
-    BASELINE (dynamic-filter-tagged trades, e.g. p1_reacted, are still
+    BASELINE (dynamic-filter-tagged trades, e.g. globex_eth_open, are still
     counted here; excluding them is a live, client-side toggle -- see the
     'Dynamic filters' block in _finish_report's JS)."""
     stats = SF._stats_block(filled, "resolved", "r")
@@ -2344,7 +2166,7 @@ def render(args):
     if not np.isfinite(args.max_alt_fill_hours) or args.max_alt_fill_hours <= 0:
         raise ValueError("Fill-window hours must be finite and positive")
 
-    candidates, departed = select_candidates(
+    candidates = select_candidates(
         args.ss_confl_min, args.start, args.end, args.m5_confluence_points)
     radius = SR._fmt_pts(args.m5_confluence_points)
     print(f"{len(candidates)} M5 retests have SS Confl >= {args.ss_confl_min} "
@@ -2359,22 +2181,7 @@ def render(args):
         print(f"{len(candidates)} candidate rows collapse into {len(clusters)} distinct "
               f"confluence clusters ({n_merged} duplicate row(s) merged)", flush=True)
 
-    relevant_keys = set()
-    for cluster in clusters:
-        anchor_row = SF.cluster_anchor(cluster)["row"]
-        relevant_keys.add((cluster[0]["seg_idx"], anchor_row["type"],
-                          pd.Timestamp(anchor_row["breakout_time"])))
-    print(f"p1_reacted: checking {len(relevant_keys)} distinct P1 group(s) "
-          f"for an already-reacted sibling P0...", flush=True)
-    p1_cutoffs = _p1_group_reaction_cutoffs(relevant_keys, departed, args)
-
     results, chart_stacks, fps = process_clusters(clusters, args)
-    results = _apply_p1_reaction_filter(results, p1_cutoffs)
-    n_tagged = sum(1 for r in results if "p1_reacted" in r.get("dyn_tags", ()))
-    print(f"p1_reacted: {len(p1_cutoffs)} P1 group(s) had an already-reacted "
-          f"sibling P0; {n_tagged} trade(s) tagged 'p1_reacted' (still shown/counted by "
-          f"default -- toggle the Dynamic filters checkbox in the report to exclude "
-          f"them)", flush=True)
     results = _apply_globex_open_filter(results)
     results = _apply_h1_p0_confluence(results)
     tag_counts = {}
@@ -2387,8 +2194,6 @@ def render(args):
         for tag in tags:
             tag_counts[tag] = tag_counts.get(tag, 0) + 1
     for tag, n in sorted(tag_counts.items(), key=lambda kv: -kv[1]):
-        if tag == "p1_reacted":
-            continue  # already reported above, with its own P1-group detail
         print(f"{n} filled trade(s) tagged '{tag}' -- toggle its Dynamic filters checkbox "
               f"in the report to include/exclude it", flush=True)
 
@@ -2417,11 +2222,12 @@ GAP_FLAG_HTML = ('<span class="gap-flag" title="Entry price never traded between
                  'actually available.">⚠</span>')
 
 
-def _mode_badges(res, mode):
-    """The badges belonging to ONE target rule's own outcome: its sub-min-R
-    tag, its end-of-day flat tag, and its trade-management summary. All three
-    differ between the rules on the same row, so they are swapped along with
-    the rest of the cells (see _mode_payload)."""
+def _mode_tag_badges(res, mode):
+    """The dynamic-filter-tag badges belonging to ONE target rule's own
+    outcome: its sub-min-R tag and its end-of-day flat tag. Both differ
+    between the rules on the same row, so they are swapped (along with the
+    rest of the mode-dependent cells, see _mode_payload) into the Tags
+    column's own '.mode-tag-badges' span -- see applyTargetModes() in JS."""
     m = res["modes"][mode]
     out = ""
     if "r_below_min" in m["dyn_tags"]:
@@ -2434,20 +2240,29 @@ def _mode_badges(res, mode):
                 '12:44 PT and was flattened at market under the end-of-day rule '
                 '(trade_management.py rule 3) instead of reaching its stop or '
                 'target.">EOD FLAT</span>')
-    mgmt = m["mgmt"] or {}
-    if mgmt.get("fired"):
-        bits = []
-        if mgmt.get("trail_events"):
-            bits.append(f"stop trailed x{len(mgmt['trail_events'])}")
-        if mgmt.get("rr_floor_fired"):
-            bits.append("RR-floor exit")
-        mgmt_r_str = f"{mgmt['r']:+.2f}R" if mgmt.get("r") is not None else "?"
-        out += (f'<span class="dyn-tag-badge mgmt-tag-badge" '
-                f'title="Trade management ({", ".join(bits)}) would change this '
-                f'trade to {mgmt_r_str} ({mgmt.get("outcome")}). Toggle the Trade '
-                f'management checkbox in the panel above to use it in the summary '
-                f'stats.">MGMT {mgmt_r_str}</span>')
     return out
+
+
+def _mgmt_badge(res, mode):
+    """The trade-management summary badge for ONE target rule's own
+    outcome -- unlike _mode_tag_badges, this isn't a dynamic-filter tag (no
+    Exclude/Only pair drives it), so it stays in the Outcome cell rather
+    than the Tags column."""
+    m = res["modes"][mode]
+    mgmt = m["mgmt"] or {}
+    if not mgmt.get("fired"):
+        return ""
+    bits = []
+    if mgmt.get("trail_events"):
+        bits.append(f"stop trailed x{len(mgmt['trail_events'])}")
+    if mgmt.get("rr_floor_fired"):
+        bits.append("RR-floor exit")
+    mgmt_r_str = f"{mgmt['r']:+.2f}R" if mgmt.get("r") is not None else "?"
+    return (f'<span class="dyn-tag-badge mgmt-tag-badge" '
+            f'title="Trade management ({", ".join(bits)}) would change this '
+            f'trade to {mgmt_r_str} ({mgmt.get("outcome")}). Toggle the Trade '
+            f'management checkbox in the panel above to use it in the summary '
+            f'stats.">MGMT {mgmt_r_str}</span>')
 
 
 def _mode_payload(res, mode):
@@ -2479,7 +2294,8 @@ def _mode_payload(res, mode):
         "rrVal": f'{m["r_multiple"]:.6f}',
         "outcomeLabel": outcome_label,
         "outcomeCls": outcome_cls,
-        "modeBadges": _mode_badges(res, mode),
+        "modeTagBadges": _mode_tag_badges(res, mode),
+        "mgmtBadge": _mgmt_badge(res, mode),
         "exit": (R._to_pt_str(resolved["exit_time"])
                  if resolved.get("exit_time") is not None else "-"),
         "exitPx": (f"{exit_px:.2f}" if resolved.get("outcome") != "no_hit"
@@ -2508,27 +2324,82 @@ def _attr_json(obj):
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
+def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
+    """Badge HTML for the ROW-level dynamic-filter tags (globex_eth_open,
+    low_liquidity, swerved, swerve_blocked, crest_refined) -- the ones that
+    don't depend on which target rule is active, so they render once and
+    never get rewritten by applyTargetModes() (unlike _mode_tag_badges'
+    r_below_min/eod_flat). Lives in the Tags column (see _render_row).
+
+    Shared by both the filled and unfilled row paths: swerve_blocked and
+    crest_refined can land on either (swerve/crest_refine are decided
+    before the fill-window search even runs), while globex_eth_open and
+    low_liquidity only ever tag a FILLED result (their own apply_* filters
+    skip unfilled rows), so those two branches are simply never reached
+    when dyn_tags came from an unfilled row's tags alone."""
+    out = ""
+    if "globex_eth_open" in dyn_tags:
+        out += (f'<span class="dyn-tag-badge" title="Dynamic filter '
+                f'‘globex_eth_open’: this fill landed at {entry_touch_str}, inside the '
+                f'daily Globex/ETH reopen window (15:00-15:05 PT) -- excluded by default. '
+                f'Toggle the Dynamic filters checkbox in the panel above to include '
+                f'it.">GLOBEX OPEN</span>')
+    if "low_liquidity" in dyn_tags:
+        out += (f'<span class="dyn-tag-badge liq-tag-badge" title="Dynamic filter '
+                f'‘low_liquidity’: the tape was measurably illiquid at this fill '
+                f'({LQ.describe(res.get("liquidity"))}) -- a news/thin-book window. '
+                f'The strategy skips these; they are left out of the headline stats by '
+                f'default.">NEWS / THIN</span>')
+    if "swerved" in dyn_tags:
+        sw = res["swerve"]
+        sw_str = ", ".join(f"{px:.2f} @ {R._to_pt_str(t)}" for t, px in sw["swings"][:3])
+        out += (f'<span class="dyn-tag-badge swerve-tag-badge" title="Dynamic filter '
+                f'‘swerved’: a confirmed M5 swing sat on the planned entry '
+                f'{sw["planned_price"]:.2f} ({sw_str}), so the order was moved to the '
+                f'next live M5 {level_type} level at {sw["price"]:.2f}.">'
+                f'SWERVED {sw["planned_price"]:.2f}&rarr;{sw["price"]:.2f}</span>')
+    if "swerve_blocked" in dyn_tags:
+        sw = res["swerve"]
+        sw_str = ", ".join(f"{px:.2f} @ {R._to_pt_str(t)}" for t, px in sw["swings"][:3])
+        out += (f'<span class="dyn-tag-badge swerve-tag-badge" title="Dynamic filter '
+                f'‘swerve_blocked’: a confirmed M5 swing sat on the planned entry '
+                f'{sw["planned_price"]:.2f} ({sw_str}) and no other live M5 {level_type} '
+                f'level was available to move to, so this trade is NOT taken. It is '
+                f'shown at its original entry so it can still be reviewed, and left out '
+                f'of the headline stats by default.">SWERVE BLOCKED</span>')
+    if "crest_refined" in dyn_tags:
+        cr = res["crest_refine"]
+        out += (f'<span class="dyn-tag-badge swerve-tag-badge" title="Dynamic filter '
+                f'‘crest_refined’ (--crest-refine): the approach into '
+                f'{cr["planned_price"]:.2f} from its own most recent confirmed swing '
+                f'extreme {cr["crest_price"]:.2f} scored z={cr["z"]:.1f} against its own '
+                f'trailing baseline -- an outlier-fast move -- so the entry was pushed '
+                f'{cr["refine_pts"]:.2f}pt further to {cr["price"]:.2f}.">CREST REFINED '
+                f'{cr["planned_price"]:.2f}&rarr;{cr["price"]:.2f}</span>')
+    return out
+
+
 def _h1_confl_cell(confl):
     """(cell_html, title) for the 'H1 P0 confl' column from
-    res['h1_p0_confl'] (see _apply_h1_p0_confluence) -- 'none' with no
-    tooltip when the list is empty, else each same-type H1 P0 as
-    '<price> <TYPE> <kind>', nearest first (type is always the trade's own
-    type -- see _apply_h1_p0_confluence -- shown anyway for clarity)."""
+    res['h1_p0_confl'] (see _apply_h1_p0_confluence) -- a plain count of
+    qualifying same-type H1 P0s, with no tooltip when the count is 0, else
+    each one's own detail ('<price> <TYPE> <kind>', nearest first -- type
+    is always the trade's own type, see _apply_h1_p0_confluence -- shown
+    anyway for clarity) in the tooltip."""
     if not confl:
-        return "none", ""
-    cell = ", ".join(f'{c["price"]:.2f} {c["type"]} {c["kind"]}' for c in confl)
+        return "0", ""
     title = "; ".join(
         f'{c["type"]} {c["price"]:.2f} {c["kind"]}, P0 {R._to_pt_str(c["formation_time"])}, '
         f'{c["dist"]:.2f}pt from fill'
         + (" (already retested by fill)" if c["dead_by_fill"] else "")
         for c in confl)
-    return cell, title
+    return str(len(confl)), title
 
 
 def _render_row(idx, res, chart_stacks, fps):
     """Builds (chart_entry_for_json, row_html) for one result row. A FILLED
-    row carrying dynamic-filter tags (res['dyn_tags'], e.g. 'p1_reacted' --
-    see _apply_p1_reaction_filter's own docstring for the full convention)
+    row carrying dynamic-filter tags (res['dyn_tags'], e.g. 'globex_eth_open' --
+    see _apply_globex_open_filter's own docstring for the full convention)
     gets a data-dyn-tags attribute plus data-r/data-pnl-pts/data-outcome
     and a small badge, so the report's own JS can hide/show it and
     recompute win rate / avg R / total R / total PnL live from a filter
@@ -2563,6 +2434,8 @@ def _render_row(idx, res, chart_stacks, fps):
         prep1er_cell = f"{er_default:.2f}" if er_default is not None else "-"
         p1_ratio_by_window = res.get("p1_range_ratio_by_window") or []
         p1_ratio_by_window_attr = _attr_json(p1_ratio_by_window)
+        p1_ratio_default = res.get("p1_range_ratio")
+        p1ratio_cell = f"{p1_ratio_default:.2f}x" if p1_ratio_default is not None else "-"
         members_str = ", ".join(f"{p:.2f}" for p in res["cluster_members"])
         if res.get("cluster_size", 1) > 1:
             entry_title = (f' title="{res["cluster_size"]} mutually-confluent M5 levels '
@@ -2586,6 +2459,14 @@ def _render_row(idx, res, chart_stacks, fps):
             row_key = f"{level_type}_{res['alt_price']:.2f}_{retest_str}".replace(" ", "_")
             touch_time_alt = res.get("touch_time_alt")
             entry_touch_str = R._to_pt_str(touch_time_alt) if touch_time_alt is not None else "-"
+            # No target modes here (never filled, so nothing to swap on a
+            # target-rule toggle) -- just whichever row-level tags applied
+            # before the fill-window search ran (see _row_tag_badges: e.g.
+            # swerve_blocked/crest_refined can land on an unfilled row,
+            # globex_eth_open/low_liquidity never do).
+            base_tags = list(res.get("dyn_tags") or [])
+            tags_cell = (f'<span class="row-badges">'
+                        f'{_row_tag_badges(res, base_tags, level_type, entry_touch_str)}</span>')
             alt_cell = (f'{res["alt_price"]:.2f}'
                        f'<span class="src-tag {res["alt_source"]}">{res["alt_source"]}</span>')
             if res.get("stop_price") is not None:
@@ -2610,12 +2491,15 @@ def _render_row(idx, res, chart_stacks, fps):
     data-daygap="{daygap_attr}" data-h1gap="{h1gap_attr}" data-mingap="{mingap_attr}"
     data-er-by-k="{er_by_k_attr}" data-p1-ratio-by-window="{p1_ratio_by_window_attr}"
     onclick="toggleChart({idx})">
-  <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
+  <td class="left">{res['i']}</td>
+  <td class="tags-cell">{tags_cell}</td>
+  <td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
   <td class="daygap-cell">{gap_cell}</td>
   <td class="h1gap-cell">{h1gap_cell}</td>
   <td class="mingap-cell">{mingap_cell}</td>
   <td class="prep1er-cell">{prep1er_cell}</td>
+  <td class="p1ratio-cell">{p1ratio_cell}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
   <td class="h1-confl-cell">-</td>
@@ -2705,66 +2589,9 @@ def _render_row(idx, res, chart_stacks, fps):
         dyn_tags = base_tags + res["modes"][active_mode]["dyn_tags"]
         dyn_tags_attr = " ".join(dyn_tags)
         base_tags_attr = " ".join(base_tags)
-        dyn_badges = ""
-        if "p1_reacted" in dyn_tags:
-            cutoff_str = R._to_pt_str(res["p1_reaction_cutoff"])
-            dyn_badges += (f'<span class="dyn-tag-badge" title="Dynamic filter ‘p1_reacted’: '
-                          f'a different P0 sharing this trade’s own P1 already reacted to its '
-                          f'opposite M5 level at {cutoff_str}. Toggle the Dynamic filters checkbox '
-                          f'in the panel above to exclude this trade.">P1 REACTED</span>')
-        if "globex_eth_open" in dyn_tags:
-            dyn_badges += (f'<span class="dyn-tag-badge" title="Dynamic filter '
-                          f'‘globex_eth_open’: this fill landed at {entry_touch_str}, inside the '
-                          f'daily Globex/ETH reopen window (15:00-15:05 PT) -- excluded by default. '
-                          f'Toggle the Dynamic filters checkbox in the panel above to include '
-                          f'it.">GLOBEX OPEN</span>')
-        if "low_liquidity" in dyn_tags:
-            dyn_badges += (f'<span class="dyn-tag-badge liq-tag-badge" title="Dynamic filter '
-                          f'‘low_liquidity’: the tape was measurably illiquid at this fill '
-                          f'({LQ.describe(res.get("liquidity"))}) -- a news/thin-book window. '
-                          f'The strategy skips these; they are left out of the headline stats by '
-                          f'default.">NEWS / THIN</span>')
-        if "swerved" in dyn_tags:
-            sw = res["swerve"]
-            sw_str = ", ".join(f"{px:.2f} @ {R._to_pt_str(t)}" for t, px in sw["swings"][:3])
-            dyn_badges += (f'<span class="dyn-tag-badge swerve-tag-badge" title="Dynamic filter '
-                          f'‘swerved’: a confirmed M5 swing sat on the planned entry '
-                          f'{sw["planned_price"]:.2f} ({sw_str}), so the order was moved to the '
-                          f'next live M5 {level_type} level at {sw["price"]:.2f}.">'
-                          f'SWERVED {sw["planned_price"]:.2f}&rarr;{sw["price"]:.2f}</span>')
-        if "swerve_blocked" in dyn_tags:
-            sw = res["swerve"]
-            sw_str = ", ".join(f"{px:.2f} @ {R._to_pt_str(t)}" for t, px in sw["swings"][:3])
-            dyn_badges += (f'<span class="dyn-tag-badge swerve-tag-badge" title="Dynamic filter '
-                          f'‘swerve_blocked’: a confirmed M5 swing sat on the planned entry '
-                          f'{sw["planned_price"]:.2f} ({sw_str}) and no other live M5 {level_type} '
-                          f'level was available to move to, so this trade is NOT taken. It is '
-                          f'shown at its original entry so it can still be reviewed, and left out '
-                          f'of the headline stats by default.">SWERVE BLOCKED</span>')
-        if "crest_refined" in dyn_tags:
-            cr = res["crest_refine"]
-            dyn_badges += (f'<span class="dyn-tag-badge swerve-tag-badge" title="Dynamic filter '
-                          f'‘crest_refined’ (--crest-refine): the approach into '
-                          f'{cr["planned_price"]:.2f} from its own most recent confirmed swing '
-                          f'extreme {cr["crest_price"]:.2f} scored z={cr["z"]:.1f} against its own '
-                          f'trailing baseline -- an outlier-fast move -- so the entry was pushed '
-                          f'{cr["refine_pts"]:.2f}pt further to {cr["price"]:.2f}.">CREST REFINED '
-                          f'{cr["planned_price"]:.2f}&rarr;{cr["price"]:.2f}</span>')
-        # Emitted UNCONDITIONALLY (not just when the tag is present at the
-        # default window) so applyWeakP1Window() can show/hide and re-title
-        # it live as the browser's window control changes which rows
-        # actually qualify -- see that function's docstring in the JS below.
-        weak_p1_display = "" if "weak_p1_breakout" in dyn_tags else " style=\"display:none\""
-        dyn_badges += (f'<span class="dyn-tag-badge weak-p1-badge"{weak_p1_display} title="Dynamic '
-                      f'filter ‘weak_p1_breakout’: this level’s own P1 (breakout) bar range was only '
-                      f'{res["p1_range_ratio"]:.2f}x its trailing {M5_RANGE_RATIO_WINDOW_DEFAULT}-bar M5 '
-                      f'average range (below the {WIDE_M5_BREAKOUT_RATIO_THRESHOLD:g}x cutoff '
-                      f'the H1 report uses for its own ‘wide breakout’ sample) -- a thin, '
-                      f'unconvincing thrust through the level. The window (default '
-                      f'{M5_RANGE_RATIO_WINDOW_DEFAULT}, live in the browser via the Weak P1 window '
-                      f'control) and the tag itself are both recomputed live -- this text updates '
-                      f'when you change it. Left out of the headline stats by default -- untick the '
-                      f'Dynamic filters checkbox above to include these.">WEAK P1</span>')
+        row_badges = _row_tag_badges(res, dyn_tags, level_type, entry_touch_str)
+        tags_cell = (f'<span class="row-badges">{row_badges}</span>'
+                    f'<span class="mode-tag-badges">{act["modeTagBadges"]}</span>')
         modes_attr = _attr_json(payloads)
         h1_confl_cell, h1_confl_title = _h1_confl_cell(res.get("h1_p0_confl"))
 
@@ -2789,12 +2616,15 @@ def _render_row(idx, res, chart_stacks, fps):
     data-mgmt-outcome="{act['mgmtOutcome']}" data-mgmt-fired="{act['mgmtFired']}"
     data-mode="{active_mode}" data-modes="{modes_attr}"
     onclick="toggleChart({idx})">
-  <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
+  <td class="left">{res['i']}</td>
+  <td class="tags-cell">{tags_cell}</td>
+  <td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
   <td class="daygap-cell">{gap_cell}</td>
   <td class="h1gap-cell">{h1gap_cell}</td>
   <td class="mingap-cell">{mingap_cell}</td>
   <td class="prep1er-cell">{prep1er_cell}</td>
+  <td class="p1ratio-cell">{p1ratio_cell}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
   <td class="h1-confl-cell" title="{h1_confl_title}">{h1_confl_cell}</td>
@@ -2803,7 +2633,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td title="{stop_title}">{res['stop_price']:.2f}<span class="src-tag m5">{stop_source}</span></td>
   <td class="tgt-cell" title="{act['tgtTitle']}">{act['tgt']}</td>
   <td class="rr-cell">{act['rr']}</td>
-  <td class="outcome-cell {act['outcomeCls']}"><span class="outcome-label">{act['outcomeLabel']}</span><span class="row-badges">{dyn_badges}</span><span class="mode-badges">{act['modeBadges']}</span></td>
+  <td class="outcome-cell {act['outcomeCls']}"><span class="outcome-label">{act['outcomeLabel']}</span><span class="mgmt-badge">{act['mgmtBadge']}</span></td>
   <td class="left exit-cell">{act['exit']}</td><td class="exitpx-cell">{act['exitPx']}</td>
   <td class="pnl-cell {act['pnlCls']}">{act['pnl']}</td>
   <td class="mae-cell bad">{act['mae']}</td><td class="mfe-cell good">{act['mfe']}</td><td class="gb-cell">{act['gb']}</td>
@@ -2979,7 +2809,7 @@ mechanism (f-num-op/f-num-val, data-target) already used for Confl./SS Confl. in
 render_stop_target_report.py's shared review panel (see numFilterOk/applyReviewFilters there).
 Unlike those, this one is also a DYNAMIC filter: changing it recomputes win rate / avg R / total
 R / total PnL above live, the same as the Dynamic filters row below, in addition to hiding rows.
-Defaults to &ge; 1 (only R &ge; 1 shown); pick any to show every row.">R</span>
+Defaults to &ge; 0.5 (only R &ge; 0.5 shown); pick any to show every row.">R</span>
     <select class="f-num-op" data-target="rr">
       <option value="any">any</option>
       <option value="gte" selected>&ge;</option>
@@ -2988,7 +2818,7 @@ Defaults to &ge; 1 (only R &ge; 1 shown); pick any to show every row.">R</span>
       <option value="lte">&le;</option>
       <option value="lt">&lt;</option>
     </select>
-    <input type="number" class="f-num-val" data-target="rr" value="1" min="0" max="5" step="0.1">
+    <input type="number" class="f-num-val" data-target="rr" value="0.5" min="0" max="5" step="0.1">
   </div>
   <div class="filter-row">
     <span class="filter-label" title="How many Globex/ETH reopen-to-reopen trading days (15:00 PT
@@ -3016,17 +2846,17 @@ when both fall inside the same H1 bar or in two back-to-back bars (nothing close
 them), 1 when exactly one H1 bar's close sits between them, etc. Reads tr.dataset.h1gap, the
 SAME generic op/value numeric-filter mechanism (f-num-op/f-num-val, data-target) as R and the
 P1&rarr;P2 gap above, and is likewise a DYNAMIC filter: changing it recomputes win rate /
-avg R / total R / total PnL above live, not just which rows are shown. Defaults to any (no
-filtering).">P1&rarr;P2 gap (H1)</span>
+avg R / total R / total PnL above live, not just which rows are shown. Defaults to &ge; 3
+-- pick any to show every row.">P1&rarr;P2 gap (H1)</span>
     <select class="f-num-op" data-target="h1gap">
-      <option value="any" selected>any</option>
-      <option value="gte">&ge;</option>
+      <option value="any">any</option>
+      <option value="gte" selected>&ge;</option>
       <option value="gt">&gt;</option>
       <option value="eq">=</option>
       <option value="lte">&le;</option>
       <option value="lt">&lt;</option>
     </select>
-    <input type="number" class="f-num-val" data-target="h1gap" value="1" min="0" step="1">
+    <input type="number" class="f-num-val" data-target="h1gap" value="3" min="0" step="1">
   </div>
   <div class="filter-row">
     <span class="filter-label" title="Minutes elapsed between this level's own P1 (breakout)
@@ -3057,17 +2887,17 @@ cutoff below are live in the browser -- changing either recomputes tr.dataset.er
 own precomputed k=2..__PRE_P1_MAX_K__ array (no ratio math client-side, no regen) and reads back
 through the SAME generic op/value numeric-filter mechanism (f-num-op/f-num-val, data-target) as
 R and the three gap filters above. Likewise a DYNAMIC filter: changing k or the cutoff recomputes
-win rate / avg R / total R / total PnL live, not just which rows are shown. Defaults to any (no
-filtering) with k=__PRE_P1_K__ and cutoff __PRE_P1_ER_MAX__ pre-filled -- pick, e.g., &lt;
-__PRE_P1_ER_MAX__ to keep only trades with real consolidation just before P1.">Pre-P1 structure</span>
+win rate / avg R / total R / total PnL live, not just which rows are shown. Defaults to &le;
+__PRE_P1_ER_MAX__ with k=__PRE_P1_K__ pre-filled (real consolidation just before P1) -- pick any
+to show every row.">Pre-P1 structure</span>
     <span class="filter-sublabel">k=</span>
     <input type="number" id="f-prep1-k" value="__PRE_P1_K__" min="2" max="__PRE_P1_MAX_K__" step="1">
     <select class="f-num-op" data-target="er">
-      <option value="any" selected>any</option>
+      <option value="any">any</option>
       <option value="gte">&ge;</option>
       <option value="gt">&gt;</option>
       <option value="eq">=</option>
-      <option value="lte">&le;</option>
+      <option value="lte" selected>&le;</option>
       <option value="lt">&lt;</option>
     </select>
     <input type="number" class="f-num-val" data-target="er" value="__PRE_P1_ER_MAX__" min="0" max="1" step="0.05">
@@ -3083,64 +2913,72 @@ outcome recomputeDynStats() already uses for the win-rate/avg-R summary above, s
 agrees with those numbers.">Outcome</span>
     <label class="chip"><input type="checkbox" class="f-cb f-outcome" value="win" checked> Win</label>
     <label class="chip"><input type="checkbox" class="f-cb f-outcome" value="loss" checked> Loss</label>
-    <label class="chip"><input type="checkbox" class="f-cb f-outcome" value="no_trade" checked> No trade</label>
+    <label class="chip"><input type="checkbox" class="f-cb f-outcome" value="no_trade"> No trade</label>
   </div>
   <div class="filter-row">
     <span class="filter-label" title="Live, in-browser trade-exclusion toggles -- no Python regen
 needed. Checking Exclude hides those rows AND recomputes win rate / avg R / total R / total PnL
-above from only the remaining (not excluded) trades. Checking Only instead hides every OTHER
-row (any Only checked takes priority over every Exclude box, and multiple Only boxes union
-together). To add another dynamic filter: tag qualifying results with an entry in
-res['dyn_tags'] (Python side) and add one more Exclude/Only checkbox pair here with class
-f-dyn-exclude/f-dyn-isolate and data-tag matching that tag -- see _apply_p1_reaction_filter's
-docstring in render_m5_confl2_report.py for the full convention.">Dynamic filters</span>
-    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="p1_reacted">
-      Exclude P1-already-reacted</label>
-    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="p1_reacted">
-      Only</label>
-    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="globex_eth_open" checked>
-      Exclude Globex/ETH open fills (15:00-15:05 PT)</label>
-    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="globex_eth_open">
-      Only</label>
-    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="r_below_min" checked>
-      Exclude R below __MIN_R__</label>
-    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="r_below_min">
-      Only</label>
-    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="low_liquidity" checked>
-      Exclude news / thin-book entries</label>
-    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="low_liquidity">
-      Only</label>
-    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="swerve_blocked" checked>
-      Exclude swerve-blocked (not taken)</label>
-    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="swerve_blocked">
-      Only</label>
-    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="swerved">
-      Exclude swerved entries</label>
-    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="swerved">
-      Only</label>
-    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="crest_refined">
-      Exclude crest-refined entries (--crest-refine)</label>
-    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="crest_refined">
-      Only</label>
-    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="eod_flat">
-      Exclude end-of-day flats</label>
-    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="eod_flat">
-      Only</label>
-    <label class="chip" title="How many trailing M5 bars the weak-P1-breakout ratio (this level's
-own P1 candle range / its trailing average range) averages against -- LIVE in the browser: each
-row ships its whole w=1..__WEAKP1_MAX_WINDOW__ ratio array (data-p1-ratio-by-window), and
-applyWeakP1Window() re-indexes it for whichever window this control holds, re-tagging
-'weak_p1_breakout' and recomputing win rate / avg R / total R / total PnL above, no regen needed
--- same 'ship the array, pick client-side' convention as the Pre-P1 structure filter's k.">
-      window=<input type="number" id="f-weakp1-window" value="__WEAKP1_WINDOW__" min="1" max="__WEAKP1_MAX_WINDOW__" step="1" data-cutoff="__WIDE_RATIO__"></label>
-    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="weak_p1_breakout" checked>
-      Exclude weak P1 breakout (&lt;__WIDE_RATIO__x avg range)</label>
-    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="weak_p1_breakout">
-      Only</label>
-    <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="h1_p0_confluence">
-      Exclude H1 P0 confluence (&plusmn;__H1_CONFL_RADIUS__pt)</label>
-    <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="h1_p0_confluence">
-      Only</label>
+above from only the remaining (not excluded) trades. Picking the Only radio under it instead
+hides every OTHER row (any Only radio picked takes priority over every Exclude box; all the Only
+radios share one group, so picking one clears any other -- click the same radio again to turn it
+back off). To add another dynamic filter: tag qualifying results with an entry in
+res['dyn_tags'] (Python side) and add one more chip-stack (Exclude checkbox + Only radio) here
+with class f-dyn-exclude/f-dyn-isolate and data-tag matching that tag -- see
+_apply_globex_open_filter's docstring in render_m5_confl2_report.py for the full
+convention.">Dynamic filters</span>
+    <div class="chip-stack">
+      <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="globex_eth_open">
+        Exclude Globex/ETH open fills (15:00-15:05 PT)</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged globex_eth_open, hiding every
+other row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="globex_eth_open"> only</label>
+    </div>
+    <div class="chip-stack">
+      <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="low_liquidity">
+        Exclude news / thin-book entries</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged low_liquidity, hiding every
+other row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="low_liquidity"> only</label>
+    </div>
+    <div class="chip-stack">
+      <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="swerve_blocked">
+        Exclude swerve-blocked (not taken)</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged swerve_blocked, hiding every
+other row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="swerve_blocked"> only</label>
+    </div>
+    <div class="chip-stack">
+      <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="eod_flat">
+        Exclude end-of-day flats</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged eod_flat, hiding every other
+row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="eod_flat"> only</label>
+    </div>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label" title="This level's OWN P1 (breakout) candle range, divided by its
+trailing w-bar M5 average range (the average EXCLUDES the bar itself) -- the same range-ratio
+calc render_labels_report.py uses to flag a 'wide breakout' H1 P1, just run on M5 bars. A thin
+ratio here is a thin thrust that barely out-ranged the recent tape. BOTH the window w and the
+cutoff below are live in the browser -- changing either recomputes tr.dataset.p1ratio from the
+row's own precomputed w=1..__WEAKP1_MAX_WINDOW__ array (data-p1-ratio-by-window; no ratio math
+client-side, no regen) and its own 'P1 range ratio' column, and reads back through the SAME
+generic op/value numeric-filter mechanism (f-num-op/f-num-val, data-target) as R and the Pre-P1
+structure filter above. Likewise a DYNAMIC filter: changing the window or the cutoff recomputes
+win rate / avg R / total R / total PnL live, not just which rows are shown. Defaults to &ge;
+__WIDE_RATIO__x with window=__WEAKP1_WINDOW__ pre-filled -- pick, e.g., &lt; __WIDE_RATIO__x to
+keep only the thin, unconvincing breakouts instead.">P1 range ratio</span>
+    <span class="filter-sublabel">window=</span>
+    <input type="number" id="f-weakp1-window" value="__WEAKP1_WINDOW__" min="1" max="__WEAKP1_MAX_WINDOW__" step="1">
+    <select class="f-num-op" data-target="p1ratio">
+      <option value="any">any</option>
+      <option value="gte" selected>&ge;</option>
+      <option value="gt">&gt;</option>
+      <option value="eq">=</option>
+      <option value="lte">&le;</option>
+      <option value="lt">&lt;</option>
+    </select>
+    <input type="number" class="f-num-val" data-target="p1ratio" value="__WIDE_RATIO__" min="0.1" max="3" step="0.1">
   </div>
   <div class="filter-row">
     <span class="filter-label" title="Which TARGET RULE each trade exits on -- live, in the
@@ -3178,7 +3016,15 @@ the box is checked.">Trade management</span>
         "consol_edge: that area's near edge instead -- low for a long, high for a short. "
         "m5_opposite: the newest live opposite M5 level sharing its P1 with another P0, formed "
         "in the same P1..P2 window.")
-    head = (f"<th class=\"left\">Trade Id</th><th class=\"left\">Type</th>"
+    head = (f"<th class=\"left\">Trade Id</th>"
+            f"<th class=\"left\" title=\"Every dynamic-filter tag this row carries, in one "
+            f"place: globex_eth_open, low_liquidity, swerved/swerve_blocked, crest_refined "
+            f"(row-level, constant across target rules) plus r_below_min/eod_flat (the "
+            f"ACTIVE target rule's own -- these swap along with Target/R/Outcome when you "
+            f"toggle a Target rules checkbox above). Hover a badge for its own detail; the "
+            f"matching Dynamic filters checkbox/radio above still drives Exclude/Only on "
+            f"it.\">Tags</th>"
+            f"<th class=\"left\">Type</th>"
             f"<th class=\"left\">M5 retest</th>"
             f"<th title=\"Whole trading days between this level's own P1 (breakout) and its "
             f"P2 (retest), under the Globex/ETH reopen boundary (15:00 PT / 18:00 ET): 0 when "
@@ -3198,6 +3044,13 @@ the box is checked.">Trade management</span>
             f"a level's own formation. k (default {PRE_P1_ER_K_DEFAULT}) and the filter cutoff "
             f"below are both live in the Pre-P1 structure filter above -- no regen "
             f"needed.\">Pre-P1 ER</th>"
+            f"<th title=\"This level's own P1 (breakout) candle range, divided by its "
+            f"trailing w-bar M5 average range (the average EXCLUDES the bar itself) -- the "
+            f"same range-ratio calc render_labels_report.py uses to flag a 'wide breakout' "
+            f"H1 P1, just run on M5 bars. A thin ratio is a thin thrust that barely "
+            f"out-ranged the recent tape. The window w (default "
+            f"{M5_RANGE_RATIO_WINDOW_DEFAULT}) and the filter cutoff below are both live in "
+            f"the P1 range ratio filter above -- no regen needed.\">P1 range ratio</th>"
             f"<th class=\"left\" title=\"Distinct M5 prices merged into this trade, "
             f"extreme-first: highest for LLPB, lowest for LHPB. "
             f"Single-level trades show their own M5 price.\">Merged M5 levels</th>"
@@ -3213,8 +3066,9 @@ the box is checked.">Trade management</span>
             f"between the H1 P0's OWN start (its breakout bar, or its formation bar if it "
             f"never closed through) and its own death -- an immediate next-bar snap-back is "
             f"a wick round-trip, not real confluence. Any fate otherwise. This "
-            f"strategy is M5-only (no H1 input); purely a review aid. "
-            f"'none' if no H1 P0 qualified.\">H1 P0 confl (&plusmn;{H1_CONFL_RADIUS_PTS:g}pt)</th>"
+            f"strategy is M5-only (no H1 input); purely a review aid. Shows the COUNT of "
+            f"qualifying H1 P0s (0 if none); hover for each one's own price/kind/formation "
+            f"time.\">H1 P0 confl (&plusmn;{H1_CONFL_RADIUS_PTS:g}pt)</th>"
             f"<th>Entry</th>"
             f"<th class=\"left\">Entry (touch) time</th>"
             f"<th title=\"If the entry level's own P0 was a spike candle (hammer for LHPB / "
@@ -3246,9 +3100,7 @@ the box is checked.">Trade management</span>
 {SR.tab_bar_html([("trades", "Trades"), ("pctile", "Excursion percentiles")])}
 <div class="tab-panel" id="tab-trades">
 {summary_html}
-{filter_panel.replace("__MIN_R__", f"{args.min_r:g}")
-   .replace("__WIDE_RATIO__", f"{WIDE_M5_BREAKOUT_RATIO_THRESHOLD:g}")
-   .replace("__H1_CONFL_RADIUS__", f"{H1_CONFL_RADIUS_PTS:g}")
+{filter_panel.replace("__WIDE_RATIO__", f"{WIDE_M5_BREAKOUT_RATIO_THRESHOLD:g}")
    .replace("__PRE_P1_K__", f"{PRE_P1_ER_K_DEFAULT:g}")
    .replace("__PRE_P1_MAX_K__", f"{PRE_P1_ER_MAX_K:g}")
    .replace("__PRE_P1_ER_MAX__", f"{PRE_P1_ER_MAX_DEFAULT:g}")
@@ -3296,7 +3148,8 @@ tr.lvl-row.type-lhpb td.type-cell, tr.lvl-row.type-llpb td.type-cell {
 .cluster-tag { border-bottom:1px dotted var(--text-dim); cursor:help; }
 td.merged-h1-levels { max-width:220px; white-space:normal; }
 td.h1-confl-cell { max-width:220px; white-space:normal; cursor:help; }
-/* Dynamic filters (see _apply_p1_reaction_filter's docstring): a row tagged
+td.tags-cell { max-width:200px; white-space:normal; }
+/* Dynamic filters (see _apply_globex_open_filter's docstring): a row tagged
    res['dyn_tags'] gets data-dyn-tags plus this badge; the matching
    f-dyn-exclude checkbox hides it via .dyn-hidden (kept separate from the
    review-workflow filters' own .hidden class so the two systems never
@@ -3308,7 +3161,13 @@ tr.lvl-row.dyn-hidden, tr.chart-row.dyn-hidden { display:none !important; }
 tr.lvl-row.outcome-hidden, tr.chart-row.outcome-hidden { display:none !important; }
 .dyn-tag-badge { display:inline-block; margin-left:6px; padding:1px 6px; font-size:0.72em;
                 border-radius:3px; background:#4a3010; color:#fbbf24; cursor:help; }
-.chip-iso { margin-left:-4px; opacity:0.8; font-size:0.9em; }
+/* Exclude checkbox + Only radio, stacked as one unit per dynamic-filter tag
+   (see _apply_globex_open_filter's docstring) instead of sitting side by
+   side as two separate chips. */
+.chip-stack { display:flex; flex-direction:column; align-items:flex-start; gap:3px; }
+.chip-iso { opacity:0.7; font-size:0.78em; padding:1px 9px 1px 7px; }
+.chip-iso:hover { opacity:1; }
+.chip-iso input[type="radio"] { margin-right:5px; }
 /* This strategy has no H1 pane -- the M5 pane is the only thing in its own
    chart-row-2col row (see build_chart_stack_for_row), so it should fill
    the row instead of sitting in the grid's first 1fr column with an empty
@@ -3332,27 +3191,30 @@ textarea.trade-note { width:360px; height:150px; resize:both; }
 JS = SR.JS + """
 <script>
 // ---------------------------------------------------------------------
-// Dynamic filters -- see _apply_p1_reaction_filter's own docstring in
+// Dynamic filters -- see _apply_globex_open_filter's own docstring in
 // render_m5_confl2_report.py for the full authoring convention (this is
 // the intentionally-generic, tag-agnostic half of it). Each
-// f-dyn-exclude/f-dyn-isolate checkbox's data-tag names a tag a
-// Python-side filter may have added to a row's data-dyn-tags
-// (space-separated -- a row can carry more than one). Checking an
-// Exclude box hides every row carrying that tag; checking an Isolate
-// ("Only") box instead hides every row NOT carrying that tag (any
-// Isolate box checked takes priority over every Exclude box, and
-// multiple checked Isolate boxes union together) -- both act via the
-// SAME .dyn-hidden class, kept deliberately separate from the
-// review-workflow filters' .hidden class above (applyReviewFilters, in
-// the shared JS) so the two systems never fight over one class; a row is
-// invisible if EITHER is set -- and recomputes the win rate / avg R /
-// total R / total PnL summary boxes from only the remaining (not
-// hidden) trades. To add another dynamic filter: tag qualifying results
-// with one more entry in res['dyn_tags'] (Python side) and add one more
-// <input class="f-dyn-exclude" data-tag="..."> / <input
-// class="f-dyn-isolate" data-tag="..."> checkbox pair to the filter
-// panel -- recomputeDynStats() below needs no changes for a new tag, it
-// reads whatever tags are present.
+// f-dyn-exclude checkbox's data-tag names a tag a Python-side filter may
+// have added to a row's data-dyn-tags (space-separated -- a row can carry
+// more than one). Checking an Exclude box hides every row carrying that
+// tag; picking the f-dyn-isolate RADIO stacked under it instead hides
+// every row NOT carrying that tag (any Isolate radio picked takes
+// priority over every Exclude box). All f-dyn-isolate radios share one
+// name="f-dyn-isolate-radio" group, so the browser itself enforces at
+// most one isolated tag at a time -- see the click handler below, which
+// unchecks the radio again when it's clicked while already selected
+// (native radios can't self-clear). Both act via the SAME .dyn-hidden
+// class, kept deliberately separate from the review-workflow filters'
+// .hidden class above (applyReviewFilters, in the shared JS) so the two
+// systems never fight over one class; a row is invisible if EITHER is
+// set -- and recomputes the win rate / avg R / total R / total PnL
+// summary boxes from only the remaining (not hidden) trades. To add
+// another dynamic filter: tag qualifying results with one more entry in
+// res['dyn_tags'] (Python side) and add one more <div class="chip-stack">
+// holding an <input class="f-dyn-exclude" data-tag="..."> checkbox and an
+// <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate"
+// data-tag="..."> to the filter panel -- recomputeDynStats() below needs
+// no changes for a new tag, it reads whatever tags are present.
 // ---------------------------------------------------------------------
 function activeDynExcludeTags() {
   return Array.from(document.querySelectorAll('.f-dyn-exclude:checked')).map(cb => cb.dataset.tag);
@@ -3408,8 +3270,10 @@ function applyTargetModes() {
       setCell(tr, '.rr-cell', '-', 'rr-cell');
       setCell(tr, '.outcome-cell',
               '<span class="outcome-label">NO TARGET (rule off)</span>'
-              + '<span class="row-badges"></span><span class="mode-badges"></span>',
+              + '<span class="mgmt-badge"></span>',
               'outcome-cell');
+      const noTgtMtb = tr.querySelector('.tags-cell .mode-tag-badges');
+      if (noTgtMtb) noTgtMtb.innerHTML = '';
       setCell(tr, '.exit-cell', '-', 'left exit-cell');
       setCell(tr, '.exitpx-cell', '-', 'exitpx-cell');
       setCell(tr, '.pnl-cell', '-', 'pnl-cell');
@@ -3435,9 +3299,11 @@ function applyTargetModes() {
       outcomeCell.className = 'outcome-cell ' + (p.outcomeCls || '');
       const lbl = outcomeCell.querySelector('.outcome-label');
       if (lbl) lbl.innerHTML = p.outcomeLabel;
-      const mb = outcomeCell.querySelector('.mode-badges');
-      if (mb) mb.innerHTML = p.modeBadges;
+      const mgb = outcomeCell.querySelector('.mgmt-badge');
+      if (mgb) mgb.innerHTML = p.mgmtBadge;
     }
+    const mtb = tr.querySelector('.tags-cell .mode-tag-badges');
+    if (mtb) mtb.innerHTML = p.modeTagBadges;
     setCell(tr, '.exit-cell', p.exit, 'left exit-cell');
     setCell(tr, '.exitpx-cell', p.exitPx, 'exitpx-cell');
     setCell(tr, '.pnl-cell', p.pnl, 'pnl-cell ' + (p.pnlCls || ''));
@@ -3476,24 +3342,18 @@ function applyPreP1Er() {
   });
 }
 // ---------------------------------------------------------------------
-// Weak P1 breakout window -- see _m5_p1_range_ratio_by_window's docstring
-// in render_m5_confl2_report.py. Each row ships its WHOLE w=1..max ratio
+// P1 range ratio window -- see _m5_p1_range_ratio_by_window's docstring in
+// render_m5_confl2_report.py. Each row ships its WHOLE w=1..max ratio
 // array (tr.dataset.p1RatioByWindow) rather than one fixed reading, same
-// "ship the array, index client-side" trick as applyPreP1Er above. Unlike
-// that filter (a plain op/value numeric target), this one drives a TAG
-// ('weak_p1_breakout') that the existing Dynamic filters exclude/isolate
-// checkboxes already read from tr.dataset.dynTags -- so it must run AFTER
-// applyTargetModes() (which resets dynTags to baseTags + the active
-// mode's own tags) to add or remove the tag on top of that, and also
-// keeps the row's WEAK P1 badge (and its tooltip's ratio/window text) in
-// sync with whichever window is currently picked.
+// "ship the array, index client-side" trick as applyPreP1Er above -- and,
+// like that filter, writes the result into tr.dataset.p1ratio for the
+// generic op/value numeric filter (f-num-op/f-num-val, data-target
+// "p1ratio") to read, plus the row's own "P1 range ratio" column.
 // ---------------------------------------------------------------------
-function applyWeakP1Window() {
+function applyP1RatioWindow() {
   const wEl = document.getElementById('f-weakp1-window');
   let w = wEl ? parseInt(wEl.value, 10) : NaN;
   if (!Number.isFinite(w) || w < 1) w = 1;
-  const cutoffAttr = wEl ? parseFloat(wEl.dataset.cutoff) : NaN;
-  const threshold = Number.isFinite(cutoffAttr) ? cutoffAttr : 2;
   document.querySelectorAll('#lvl-table tbody tr.lvl-row').forEach(tr => {
     let ratio = null;
     if (tr.dataset.p1RatioByWindow) {
@@ -3501,29 +3361,14 @@ function applyWeakP1Window() {
       const v = arr[w - 1];
       if (v !== null && v !== undefined) ratio = v;
     }
-    const isWeak = ratio !== null && ratio < threshold;
-    const tags = (tr.dataset.dynTags || '').split(' ').filter(Boolean);
-    const hadIdx = tags.indexOf('weak_p1_breakout');
-    if (isWeak && hadIdx === -1) tags.push('weak_p1_breakout');
-    else if (!isWeak && hadIdx !== -1) tags.splice(hadIdx, 1);
-    tr.dataset.dynTags = tags.join(' ');
-    const badge = tr.querySelector('.weak-p1-badge');
-    if (badge) {
-      badge.style.display = isWeak ? '' : 'none';
-      if (isWeak && ratio !== null) {
-        badge.title = 'Dynamic filter ‘weak_p1_breakout’: this level’s own P1 '
-          + '(breakout) bar range was only ' + ratio.toFixed(2) + 'x its trailing ' + w
-          + '-bar M5 average range (below the ' + threshold + 'x cutoff) -- a thin, '
-          + 'unconvincing thrust through the level. Left out of the headline stats by '
-          + 'default -- untick the Dynamic filters checkbox above to include these.';
-      }
-    }
+    tr.dataset.p1ratio = ratio === null ? '' : String(ratio);
+    setCell(tr, '.p1ratio-cell', ratio === null ? '-' : ratio.toFixed(2) + 'x', 'p1ratio-cell');
   });
 }
 function recomputeDynStats() {
   applyTargetModes();
   applyPreP1Er();
-  applyWeakP1Window();
+  applyP1RatioWindow();
   const excludeTags = activeDynExcludeTags();
   const isolateTags = activeDynIsolateTags();
   const outcomeOn = activeOutcomeBuckets();
@@ -3558,7 +3403,12 @@ function recomputeDynStats() {
     // dynamic filter too, same reasoning as rrHidden above -- tr.dataset.er
     // was just rewritten by applyPreP1Er() for whichever k is now ticked.
     const erHidden = !numFilterOk(tr, 'er');
-    const hidden = rrHidden || daygapHidden || h1gapHidden || mingapHidden || erHidden || (isolateTags.length > 0
+    // The P1 range ratio filter (f-num-op/f-num-val, data-target "p1ratio")
+    // is a dynamic filter too, same reasoning as erHidden above --
+    // tr.dataset.p1ratio was just rewritten by applyP1RatioWindow() for
+    // whichever window is now ticked.
+    const p1ratioHidden = !numFilterOk(tr, 'p1ratio');
+    const hidden = rrHidden || daygapHidden || h1gapHidden || mingapHidden || erHidden || p1ratioHidden || (isolateTags.length > 0
       ? !tags.some(t => isolateTags.includes(t))
       : (excludeTags.length > 0 && tags.some(t => excludeTags.includes(t))));
     tr.classList.toggle('dyn-hidden', hidden);
@@ -3617,7 +3467,26 @@ function recomputeDynStats() {
   // ticked -- re-run it so that pass doesn't go stale either.
   applyReviewFilters();
 }
-document.querySelectorAll('.f-dyn-exclude, .f-dyn-isolate, .f-target-mode, .f-outcome').forEach(cb => cb.addEventListener('change', recomputeDynStats));
+document.querySelectorAll('.f-dyn-exclude, .f-target-mode, .f-outcome').forEach(cb => cb.addEventListener('change', recomputeDynStats));
+// The f-dyn-isolate radios share one name, so the browser already enforces
+// "at most one checked" -- but a native radio can't uncheck itself by being
+// clicked again, so track which one was checked before this click and,
+// if it's the SAME one, clear it back to "no isolation" ourselves. This
+// runs on 'click' rather than 'change' because unchecking programmatically
+// (radio.checked = false) does not fire 'change', so a plain 'change'
+// listener could never observe the turned-off state.
+let lastIsolateRadio = null;
+document.querySelectorAll('.f-dyn-isolate').forEach(rb => {
+  rb.addEventListener('click', () => {
+    if (lastIsolateRadio === rb) {
+      rb.checked = false;
+      lastIsolateRadio = null;
+    } else {
+      lastIsolateRadio = rb;
+    }
+    recomputeDynStats();
+  });
+});
 // The R >= filter (data-target "rr") is folded into recomputeDynStats' own
 // stats loop above, so it needs to trigger a recompute -- not just
 // applyReviewFilters (added below by the shared .f-num-op/.f-num-val
@@ -3643,8 +3512,13 @@ document.querySelectorAll('.f-num-op[data-target="er"], .f-num-val[data-target="
   .forEach(el => el.addEventListener('input', recomputeDynStats));
 const prep1KEl = document.getElementById('f-prep1-k');
 if (prep1KEl) prep1KEl.addEventListener('input', recomputeDynStats);
-// The weak-P1-breakout window control (f-weakp1-window) changes which tag
-// applyWeakP1Window() adds/removes, same recompute trigger as f-prep1-k.
+// The P1 range ratio filter (data-target "p1ratio") also folds into
+// recomputeDynStats' own stats loop above, not just applyReviewFilters, and
+// its window control (f-weakp1-window) changes which value tr.dataset.p1ratio
+// even IS (applyP1RatioWindow), so both need the same recompute trigger as
+// rr/er.
+document.querySelectorAll('.f-num-op[data-target="p1ratio"], .f-num-val[data-target="p1ratio"]')
+  .forEach(el => el.addEventListener('input', recomputeDynStats));
 const weakp1WEl = document.getElementById('f-weakp1-window');
 if (weakp1WEl) weakp1WEl.addEventListener('input', recomputeDynStats);
 const mgmtToggleCb = document.getElementById('mgmt-thrust-trail');
