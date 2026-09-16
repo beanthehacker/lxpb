@@ -121,18 +121,24 @@ the target are ALL M5 LXPB structure:
          hard rule, not a filter -- it is in the baseline and the managed
          numbers both.
 
-       * WEAK P1 BREAKOUT (`_m5_p1_range_ratio`). The subject level's OWN
-         P1 (breakout) candle range, divided by its trailing
-         `M5_AVG_RANGE_WINDOW`-bar M5 average range -- the same range-ratio
-         calc and `WIDE_BREAKOUT_RATIO_THRESHOLD` (2x) cutoff
-         render_labels_report.py uses to flag a 'wide breakout' H1 P1 for
-         the strong-breakout sample, just run on M5 bars. Below 2x is
-         tagged `weak_p1_breakout` -- a thin thrust that barely out-ranged
-         the recent tape, as distinct from a genuine impulsive break.
-         Excluded by default, like the two filters above: on the 2026
-         data dropping these lifts the default view to +0.55R avg / +67.3R
-         total over 62 trades (it did NOT hold on 2025 out-of-sample, so
-         untick it to see the unfiltered numbers).
+       * WEAK P1 BREAKOUT (`_m5_p1_range_ratio_by_window`). The subject
+         level's OWN P1 (breakout) candle range, divided by its trailing
+         w-bar M5 average range -- the same range-ratio calc and
+         `WIDE_BREAKOUT_RATIO_THRESHOLD` (2x) cutoff render_labels_report.py
+         uses to flag a 'wide breakout' H1 P1 for the strong-breakout
+         sample, just run on M5 bars. Below 2x is tagged `weak_p1_breakout`
+         -- a thin thrust that barely out-ranged the recent tape, as
+         distinct from a genuine impulsive break. The window w defaults to
+         `M5_RANGE_RATIO_WINDOW_DEFAULT` (20) but is LIVE in the browser
+         (the Weak P1 window control, 1..`M5_RANGE_RATIO_MAX_WINDOW`/50):
+         every row ships its whole w=1..50 ratio array, so changing the
+         window re-tags rows and recomputes the headline stats with no
+         regen, the same "ship the array, pick the reading client-side"
+         convention as the Pre-P1 structure filter's k. Excluded by
+         default, like the two filters above: on the 2026 data dropping
+         these lifts the default view to +0.55R avg / +67.3R total over 62
+         trades (it did NOT hold on 2025 out-of-sample, so untick it to see
+         the unfiltered numbers).
 
        * CREST REFINE (`_crest_refine_entry`, opt-in via `--crest-refine`,
          OFF by default). Runs AFTER the swerve rule, on whatever entry is
@@ -904,8 +910,9 @@ def _crest_refine_table(k, baseline, is_long_side):
     against its rolling mean/std over `baseline` (a pandas time-offset
     string, e.g. '150D'), the window ending strictly before the bar itself
     (closed='left') so a bar's own value never inflates its own baseline --
-    same shape as _m5_range_ratio_table's shift(1) convention, just via the
-    rolling window's own `closed` arg since this one is time-offset, not
+    same "never inflate your own baseline" shape as
+    _m5_p1_range_ratio_by_window's own trailing-average exclusion, just via
+    the rolling window's own `closed` arg since this one is time-offset, not
     bar-count. NaN wherever no pivot has been confirmed yet or the baseline
     window isn't yet full. Lazily built and cached per (k, baseline, side)."""
     key = (k, baseline, is_long_side)
@@ -1019,39 +1026,43 @@ def _in_globex_open_window(ts_utc):
 M5_AVG_RANGE_WINDOW = R.AVG_RANGE_WINDOW                        # same trailing-bar count as the H1 hint
 WIDE_M5_BREAKOUT_RATIO_THRESHOLD = R.WIDE_BREAKOUT_RATIO_THRESHOLD  # same 2x cutoff, run on M5 bars
 
+M5_RANGE_RATIO_MAX_WINDOW = 50           # largest trailing-bar window the live control may select
+M5_RANGE_RATIO_WINDOW_DEFAULT = M5_AVG_RANGE_WINDOW  # window the report starts with (20)
+
 PRE_P1_ER_MAX_K = 60                                  # largest lookback the live k control may select
 PRE_P1_ER_K_DEFAULT = 10                              # k the report starts with
 PRE_P1_ER_MAX_DEFAULT = R.L.ER_CONSOLIDATION_MAX      # 0.5 -- lxpb.py's own "consolidating enough" cutoff
 
-_M5_RANGE_RATIO = None
 
-
-def _m5_range_ratio_table():
-    """{M5 bar time -> that bar's own (high-low) range / its trailing
-    M5_AVG_RANGE_WINDOW-bar average range}, over the whole continuous M5
-    series (LC.m5_bars_continuous) -- the M5-timeframe run of the same calc
+def _m5_p1_range_ratio_by_window(breakout_time, max_window=M5_RANGE_RATIO_MAX_WINDOW):
+    """This level's own P1 breakout-bar (high-low) range divided by the
+    trailing w-bar M5 average range (the average EXCLUDES the bar itself, so
+    a level's own P1 thrust can never inflate its own baseline), for every
+    window w = 1..max_window -- the M5-timeframe run of the same calc
     render_labels_report.compute_range_ratio_col does for the H1 'wide
-    breakout' hint (WIDE_BREAKOUT_RATIO_THRESHOLD). The average excludes the
-    bar itself (shift(1)), so a level's own P1 thrust can never inflate its
-    own baseline. Lazily built once per process."""
-    global _M5_RANGE_RATIO
-    if _M5_RANGE_RATIO is None:
-        bars = LC.m5_bars_continuous()
-        rng = bars["high"] - bars["low"]
-        avg = rng.rolling(M5_AVG_RANGE_WINDOW).mean().shift(1)
-        _M5_RANGE_RATIO = (rng / avg).to_dict()
-    return _M5_RANGE_RATIO
+    breakout' hint (WIDE_BREAKOUT_RATIO_THRESHOLD), just with the window
+    itself picked per-call instead of fixed.
 
-
-def _m5_p1_range_ratio(breakout_time):
-    """This level's own P1 breakout-bar range ratio (see
-    _m5_range_ratio_table), or None if the bar isn't in the cached M5 series
-    or doesn't yet have M5_AVG_RANGE_WINDOW trailing bars to average against.
-    Used to tag a THIN P1 thrust -- one that barely out-ranged the recent
-    M5 tape -- for the weak_p1_breakout dynamic filter (process_cluster)."""
+    Shipped as the WHOLE array (not one fixed reading), same reasoning as
+    _pre_p1_er_by_k, so the report's live 'weak P1 breakout' window control
+    can pick any w in the browser -- see applyWeakP1Window() in JS -- without
+    restating the ratio formula there; only array indexing happens
+    client-side. Indexed [0] -> w=1, [1] -> w=2, ..., None where the
+    continuous M5 series doesn't reach back that far."""
     breakout_time = pd.to_datetime(breakout_time, utc=True)
-    ratio = _m5_range_ratio_table().get(breakout_time)
-    return float(ratio) if ratio is not None and not pd.isna(ratio) else None
+    pos = _m5_bar_position_table().get(breakout_time)
+    if pos is None:
+        return [None] * max_window
+    rng = (LC.m5_bars_continuous()["high"] - LC.m5_bars_continuous()["low"]).to_numpy(float)
+    bar_range = rng[pos]
+    out = []
+    for w in range(1, max_window + 1):
+        if w > pos:
+            out.append(None)
+            continue
+        avg = rng[pos - w:pos].mean()
+        out.append(float(bar_range / avg) if avg > 0 else None)
+    return out
 
 
 _M5_BAR_POS = None
@@ -1059,8 +1070,8 @@ _M5_BAR_POS = None
 
 def _m5_bar_position_table():
     """{M5 bar time -> its integer position in LC.m5_bars_continuous()}.
-    Backs _pre_p1_er_by_k's slice into the series; lazily built once per
-    process, same pattern as _m5_range_ratio_table above."""
+    Backs _pre_p1_er_by_k's and _m5_p1_range_ratio_by_window's slices into
+    the series; lazily built once per process."""
     global _M5_BAR_POS
     if _M5_BAR_POS is None:
         _M5_BAR_POS = {t: i for i, t in enumerate(LC.m5_bars_continuous().index)}
@@ -1142,7 +1153,11 @@ def process_cluster(cluster, args):
     # hint. Tags, doesn't drop -- a thin P1 thrust is a candidate for a
     # tighter gate, not proof one is needed, so it's left in the baseline
     # stats behind an off-by-default checkbox.
-    p1_range_ratio = _m5_p1_range_ratio(row_d["breakout_time"])
+    p1_range_ratio_by_window = _m5_p1_range_ratio_by_window(row_d["breakout_time"])
+    result["p1_range_ratio_by_window"] = p1_range_ratio_by_window
+    default_idx = M5_RANGE_RATIO_WINDOW_DEFAULT - 1
+    p1_range_ratio = (p1_range_ratio_by_window[default_idx]
+                       if 0 <= default_idx < len(p1_range_ratio_by_window) else None)
     result["p1_range_ratio"] = p1_range_ratio
     if p1_range_ratio is not None and p1_range_ratio < WIDE_M5_BREAKOUT_RATIO_THRESHOLD:
         result["dyn_tags"].append("weak_p1_breakout")
@@ -2520,6 +2535,8 @@ def _render_row(idx, res, chart_stacks, fps):
         er_default = (er_by_k[PRE_P1_ER_K_DEFAULT - 2]
                      if len(er_by_k) >= PRE_P1_ER_K_DEFAULT - 1 else None)
         prep1er_cell = f"{er_default:.2f}" if er_default is not None else "-"
+        p1_ratio_by_window = res.get("p1_range_ratio_by_window") or []
+        p1_ratio_by_window_attr = _attr_json(p1_ratio_by_window)
         members_str = ", ".join(f"{p:.2f}" for p in res["cluster_members"])
         if res.get("cluster_size", 1) > 1:
             entry_title = (f' title="{res["cluster_size"]} mutually-confluent M5 levels '
@@ -2565,7 +2582,7 @@ def _render_row(idx, res, chart_stacks, fps):
             row_html = f"""
 <tr class="lvl-row unfilled-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
     data-daygap="{daygap_attr}" data-h1gap="{h1gap_attr}" data-mingap="{mingap_attr}"
-    data-er-by-k="{er_by_k_attr}"
+    data-er-by-k="{er_by_k_attr}" data-p1-ratio-by-window="{p1_ratio_by_window_attr}"
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td><td class="left type-cell">{level_type}</td>
   <td class="left">{retest_str}</td>
@@ -2707,14 +2724,21 @@ def _render_row(idx, res, chart_stacks, fps):
                           f'trailing baseline -- an outlier-fast move -- so the entry was pushed '
                           f'{cr["refine_pts"]:.2f}pt further to {cr["price"]:.2f}.">CREST REFINED '
                           f'{cr["planned_price"]:.2f}&rarr;{cr["price"]:.2f}</span>')
-        if "weak_p1_breakout" in dyn_tags:
-            dyn_badges += (f'<span class="dyn-tag-badge" title="Dynamic filter '
-                          f'‘weak_p1_breakout’: this level’s own P1 (breakout) bar range was only '
-                          f'{res["p1_range_ratio"]:.2f}x its trailing {M5_AVG_RANGE_WINDOW}-bar M5 '
-                          f'average range (below the {WIDE_M5_BREAKOUT_RATIO_THRESHOLD:g}x cutoff '
-                          f'the H1 report uses for its own ‘wide breakout’ sample) -- a thin, '
-                          f'unconvincing thrust through the level. Left out of the headline stats by default -- untick the '
-                          f'Dynamic filters checkbox above to include these.">WEAK P1</span>')
+        # Emitted UNCONDITIONALLY (not just when the tag is present at the
+        # default window) so applyWeakP1Window() can show/hide and re-title
+        # it live as the browser's window control changes which rows
+        # actually qualify -- see that function's docstring in the JS below.
+        weak_p1_display = "" if "weak_p1_breakout" in dyn_tags else " style=\"display:none\""
+        dyn_badges += (f'<span class="dyn-tag-badge weak-p1-badge"{weak_p1_display} title="Dynamic '
+                      f'filter ‘weak_p1_breakout’: this level’s own P1 (breakout) bar range was only '
+                      f'{res["p1_range_ratio"]:.2f}x its trailing {M5_RANGE_RATIO_WINDOW_DEFAULT}-bar M5 '
+                      f'average range (below the {WIDE_M5_BREAKOUT_RATIO_THRESHOLD:g}x cutoff '
+                      f'the H1 report uses for its own ‘wide breakout’ sample) -- a thin, '
+                      f'unconvincing thrust through the level. The window (default '
+                      f'{M5_RANGE_RATIO_WINDOW_DEFAULT}, live in the browser via the Weak P1 window '
+                      f'control) and the tag itself are both recomputed live -- this text updates '
+                      f'when you change it. Left out of the headline stats by default -- untick the '
+                      f'Dynamic filters checkbox above to include these.">WEAK P1</span>')
         modes_attr = _attr_json(payloads)
         h1_confl_cell, h1_confl_title = _h1_confl_cell(res.get("h1_p0_confl"))
 
@@ -2733,6 +2757,7 @@ def _render_row(idx, res, chart_stacks, fps):
 <tr class="lvl-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
     data-dyn-tags="{dyn_tags_attr}" data-base-tags="{base_tags_attr}" data-daygap="{daygap_attr}"
     data-h1gap="{h1gap_attr}" data-mingap="{mingap_attr}" data-er-by-k="{er_by_k_attr}"
+    data-p1-ratio-by-window="{p1_ratio_by_window_attr}"
     data-r="{act['r']}" data-rr="{act['rrVal']}" data-pnl-pts="{act['pnlPts']}" data-outcome="{act['outcome']}"
     data-mgmt-r="{act['mgmtR']}" data-mgmt-pnl-pts="{act['mgmtPnl']}"
     data-mgmt-outcome="{act['mgmtOutcome']}" data-mgmt-fired="{act['mgmtFired']}"
@@ -3075,6 +3100,13 @@ docstring in render_m5_confl2_report.py for the full convention.">Dynamic filter
       Exclude end-of-day flats</label>
     <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="eod_flat">
       Only</label>
+    <label class="chip" title="How many trailing M5 bars the weak-P1-breakout ratio (this level's
+own P1 candle range / its trailing average range) averages against -- LIVE in the browser: each
+row ships its whole w=1..__WEAKP1_MAX_WINDOW__ ratio array (data-p1-ratio-by-window), and
+applyWeakP1Window() re-indexes it for whichever window this control holds, re-tagging
+'weak_p1_breakout' and recomputing win rate / avg R / total R / total PnL above, no regen needed
+-- same 'ship the array, pick client-side' convention as the Pre-P1 structure filter's k.">
+      window=<input type="number" id="f-weakp1-window" value="__WEAKP1_WINDOW__" min="1" max="__WEAKP1_MAX_WINDOW__" step="1" data-cutoff="__WIDE_RATIO__"></label>
     <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="weak_p1_breakout" checked>
       Exclude weak P1 breakout (&lt;__WIDE_RATIO__x avg range)</label>
     <label class="chip chip-iso"><input type="checkbox" class="f-dyn-isolate" data-tag="weak_p1_breakout">
@@ -3194,6 +3226,8 @@ the box is checked.">Trade management</span>
    .replace("__PRE_P1_K__", f"{PRE_P1_ER_K_DEFAULT:g}")
    .replace("__PRE_P1_MAX_K__", f"{PRE_P1_ER_MAX_K:g}")
    .replace("__PRE_P1_ER_MAX__", f"{PRE_P1_ER_MAX_DEFAULT:g}")
+   .replace("__WEAKP1_WINDOW__", f"{M5_RANGE_RATIO_WINDOW_DEFAULT:g}")
+   .replace("__WEAKP1_MAX_WINDOW__", f"{M5_RANGE_RATIO_MAX_WINDOW:g}")
    .replace("__CONSOL_CHECKED__",
             "checked" if "consolidation" in args.default_target_modes else "")
    .replace("__OPP_CHECKED__",
@@ -3415,9 +3449,55 @@ function applyPreP1Er() {
     setCell(tr, '.prep1er-cell', er === null ? '-' : er.toFixed(2), 'prep1er-cell');
   });
 }
+// ---------------------------------------------------------------------
+// Weak P1 breakout window -- see _m5_p1_range_ratio_by_window's docstring
+// in render_m5_confl2_report.py. Each row ships its WHOLE w=1..max ratio
+// array (tr.dataset.p1RatioByWindow) rather than one fixed reading, same
+// "ship the array, index client-side" trick as applyPreP1Er above. Unlike
+// that filter (a plain op/value numeric target), this one drives a TAG
+// ('weak_p1_breakout') that the existing Dynamic filters exclude/isolate
+// checkboxes already read from tr.dataset.dynTags -- so it must run AFTER
+// applyTargetModes() (which resets dynTags to baseTags + the active
+// mode's own tags) to add or remove the tag on top of that, and also
+// keeps the row's WEAK P1 badge (and its tooltip's ratio/window text) in
+// sync with whichever window is currently picked.
+// ---------------------------------------------------------------------
+function applyWeakP1Window() {
+  const wEl = document.getElementById('f-weakp1-window');
+  let w = wEl ? parseInt(wEl.value, 10) : NaN;
+  if (!Number.isFinite(w) || w < 1) w = 1;
+  const cutoffAttr = wEl ? parseFloat(wEl.dataset.cutoff) : NaN;
+  const threshold = Number.isFinite(cutoffAttr) ? cutoffAttr : 2;
+  document.querySelectorAll('#lvl-table tbody tr.lvl-row').forEach(tr => {
+    let ratio = null;
+    if (tr.dataset.p1RatioByWindow) {
+      const arr = JSON.parse(tr.dataset.p1RatioByWindow);
+      const v = arr[w - 1];
+      if (v !== null && v !== undefined) ratio = v;
+    }
+    const isWeak = ratio !== null && ratio < threshold;
+    const tags = (tr.dataset.dynTags || '').split(' ').filter(Boolean);
+    const hadIdx = tags.indexOf('weak_p1_breakout');
+    if (isWeak && hadIdx === -1) tags.push('weak_p1_breakout');
+    else if (!isWeak && hadIdx !== -1) tags.splice(hadIdx, 1);
+    tr.dataset.dynTags = tags.join(' ');
+    const badge = tr.querySelector('.weak-p1-badge');
+    if (badge) {
+      badge.style.display = isWeak ? '' : 'none';
+      if (isWeak && ratio !== null) {
+        badge.title = 'Dynamic filter ‘weak_p1_breakout’: this level’s own P1 '
+          + '(breakout) bar range was only ' + ratio.toFixed(2) + 'x its trailing ' + w
+          + '-bar M5 average range (below the ' + threshold + 'x cutoff) -- a thin, '
+          + 'unconvincing thrust through the level. Left out of the headline stats by '
+          + 'default -- untick the Dynamic filters checkbox above to include these.';
+      }
+    }
+  });
+}
 function recomputeDynStats() {
   applyTargetModes();
   applyPreP1Er();
+  applyWeakP1Window();
   const excludeTags = activeDynExcludeTags();
   const isolateTags = activeDynIsolateTags();
   const outcomeOn = activeOutcomeBuckets();
@@ -3537,6 +3617,10 @@ document.querySelectorAll('.f-num-op[data-target="er"], .f-num-val[data-target="
   .forEach(el => el.addEventListener('input', recomputeDynStats));
 const prep1KEl = document.getElementById('f-prep1-k');
 if (prep1KEl) prep1KEl.addEventListener('input', recomputeDynStats);
+// The weak-P1-breakout window control (f-weakp1-window) changes which tag
+// applyWeakP1Window() adds/removes, same recompute trigger as f-prep1-k.
+const weakp1WEl = document.getElementById('f-weakp1-window');
+if (weakp1WEl) weakp1WEl.addEventListener('input', recomputeDynStats);
 const mgmtToggleCb = document.getElementById('mgmt-thrust-trail');
 if (mgmtToggleCb) mgmtToggleCb.addEventListener('change', recomputeDynStats);
 recomputeDynStats();
