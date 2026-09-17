@@ -79,8 +79,11 @@ MAX_BAR_GAP = pd.Timedelta(hours=1)   # a longer hole ends the run (see module d
 
 SWING_K_DEFAULT = 2                   # bars required on EACH side of a pivot
 
+ZIGZAG_THRESHOLD_DEFAULT = 3.0        # pt reversal that confirms a new zigzag leg
+
 _AREA_CACHE = {}
 _PIVOT_CACHE = {}
+_ZIGZAG_CACHE = {}
 
 
 # --------------------------------------------------------------------------
@@ -327,6 +330,105 @@ def swings_near(price, tol, lo_ts, hi_ts, is_low, k=SWING_K_DEFAULT, bars=None):
     return [(pd.Timestamp(times[i]).tz_localize("UTC"), float(prices[i])) for i in idx]
 
 
+# --------------------------------------------------------------------------
+# Zigzag legs (new "opposite M5 target": most recent leg's crest/trough)
+# --------------------------------------------------------------------------
+
+def zigzag_pivots(bars=None, threshold_pts=ZIGZAG_THRESHOLD_DEFAULT):
+    """Every CONFIRMED zigzag pivot over the continuous M5 series, as a
+    DataFrame of [time, price, kind, confirmed_time] sorted by time.
+    `kind` is 'high' (a crest) or 'low' (a trough).
+
+    Classic threshold zigzag on bar highs/lows, not closes: walk forward
+    extending the running extreme in the current direction (a crest's price
+    only ever rises while one is being sought, a trough's only ever falls),
+    and confirm it -- flip direction, anchor the new running extreme at the
+    bar that did it -- the first time the OPPOSITE side reverses by at least
+    `threshold_pts` from that running extreme. This is deliberately not
+    `swing_pivots`' k-bar fractal test: a fractal only asks whether a bar
+    stands alone among its `k` neighbours, so two bars a small, noisy chop
+    apart can both register as separate confirmed pivots even though price
+    never actually left the first one's neighbourhood. A zigzag leg is
+    real only once price has demonstrably moved on -- which is also what
+    resolves the "lower second crest" case on its own: if the chop between
+    two highs never reverses `threshold_pts` off the first one, the first
+    one is still the running extreme and the second, lower high is simply
+    never confirmed as its own leg.
+
+    `confirmed_time` is the bar that completed the reversal -- the instant
+    this pivot first became knowable, not the pivot's own bar. A caller
+    asking "as of cutoff" must require confirmed_time < cutoff too, or it is
+    using a pivot nothing yet proved was real (see `most_recent_pivot`).
+    The trailing, still-extending candidate at the end of the series is
+    never confirmed and so never appears here.
+
+    Memoised per threshold for the default series."""
+    if bars is None:
+        key = float(threshold_pts)
+        if key in _ZIGZAG_CACHE:
+            return _ZIGZAG_CACHE[key]
+        bars = LC.m5_bars_continuous()
+        out = _scan_zigzag(bars, threshold_pts)
+        _ZIGZAG_CACHE[key] = out
+        return out
+    return _scan_zigzag(bars, threshold_pts)
+
+
+def _scan_zigzag(bars, threshold_pts):
+    if bars is None or bars.empty:
+        return pd.DataFrame(columns=["time", "price", "kind", "confirmed_time"])
+    if not np.isfinite(threshold_pts) or threshold_pts <= 0:
+        raise ValueError("Zigzag threshold must be finite and positive")
+    highs = bars["high"].to_numpy(float)
+    lows = bars["low"].to_numpy(float)
+    n = len(bars)
+
+    rows = []
+    looking_for = "high"
+    extreme_price, extreme_time = highs[0], bars.index[0]
+    for i in range(1, n):
+        if looking_for == "high":
+            if highs[i] > extreme_price:
+                extreme_price, extreme_time = highs[i], bars.index[i]
+            elif extreme_price - lows[i] >= threshold_pts:
+                rows.append((extreme_time, extreme_price, "high", bars.index[i]))
+                looking_for = "low"
+                extreme_price, extreme_time = lows[i], bars.index[i]
+        else:
+            if lows[i] < extreme_price:
+                extreme_price, extreme_time = lows[i], bars.index[i]
+            elif highs[i] - extreme_price >= threshold_pts:
+                rows.append((extreme_time, extreme_price, "low", bars.index[i]))
+                looking_for = "high"
+                extreme_price, extreme_time = highs[i], bars.index[i]
+    return pd.DataFrame(rows, columns=["time", "price", "kind", "confirmed_time"])
+
+
+def most_recent_pivot(pivots, kind, cutoff, after=None):
+    """(time, price) of the most recent `kind` ('high' for a crest, 'low'
+    for a trough) zigzag pivot that was both FORMED and CONFIRMED strictly
+    before `cutoff`, and (if `after` given) formed strictly after `after` --
+    the same P1..P2 window convention `consolidation_target` uses: only a
+    leg the market built while this level was waiting to be retested
+    qualifies. (None, None) if none qualifies.
+
+    Requiring confirmed_time < cutoff too (not just the pivot's own bar) is
+    what keeps this causal: a still-unconfirmed candidate crest is one the
+    market has not yet proven was actually left behind, most obviously when
+    the very drop into the retest is what would have confirmed it."""
+    if pivots is None or pivots.empty:
+        return None, None
+    cutoff = _as_utc(cutoff)
+    elig = pivots[(pivots["kind"] == kind) & (pivots["time"] < cutoff) &
+                  (pivots["confirmed_time"] < cutoff)]
+    if after is not None:
+        elig = elig[elig["time"] > _as_utc(after)]
+    if elig.empty:
+        return None, None
+    row = elig.loc[elig["time"].idxmax()]
+    return pd.Timestamp(row["time"]), float(row["price"])
+
+
 if __name__ == "__main__":
     bars = LC.m5_bars_continuous()
     areas = consolidation_areas(bars)
@@ -341,3 +443,10 @@ if __name__ == "__main__":
         print(areas.tail(5).to_string(index=False))
     hi_t, hi_p, lo_t, lo_p = swing_pivots(bars)
     print(f"{len(hi_t)} swing highs / {len(lo_t)} swing lows (k={SWING_K_DEFAULT})")
+    zz = zigzag_pivots(bars)
+    n_hi = int((zz["kind"] == "high").sum())
+    n_lo = int((zz["kind"] == "low").sum())
+    print(f"{len(zz)} confirmed zigzag pivots ({n_hi} crests / {n_lo} troughs, "
+          f"threshold={ZIGZAG_THRESHOLD_DEFAULT:g}pt)")
+    if not zz.empty:
+        print(zz.tail(5).to_string(index=False))
