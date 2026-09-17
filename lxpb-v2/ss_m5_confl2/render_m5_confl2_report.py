@@ -128,6 +128,26 @@ the target are ALL M5 LXPB structure:
          headline shocks alike, and re-enables trading by itself once the
          spread comes back in. Tag `low_liquidity`, excluded by default.
 
+       * VOLUME SPIKE (volume_spike.py, on by default). Reads the real 1s
+         tape for a same-side stop-run around the fill: BidVolume for an
+         LHPB (long) fill, AskVolume for an LLPB (short) one. Unlike a flat
+         absolute cutoff (which means something very different overnight
+         than during RTH), every second in a +/-30s core window around the
+         fill is compared against that SAME fill's own +/-10min baseline
+         (mean same-side volume/sec, core window excluded) -- a second
+         QUALIFIES when it is both >= 8x that baseline and > 50 contracts
+         outright, and the row is tagged `volume-spike` when at least one
+         does. A stop run is rarely one clean print, so every qualifying
+         second's offset from the fill is kept (not just the busiest one),
+         shown range-compressed in the badge (`+12s-+15s,+19s`; see
+         volume_spike.format_offsets). Purely informational -- unlike the
+         other tags here it does not exclude the row from the headline
+         stats by default; it is a Dynamic filter chip like the others so
+         it can still be excluded/isolated for review, and the CLOSEST
+         qualifying second's offset (`data-vspikeoffs`, absolute value) is
+         a live numeric filter too, to compare a tight +/-10s read against
+         a wider +/-30s one without a regen.
+
        * END OF DAY (trade_management.py rule 3). No position is carried
          overnight: an open trade is flattened at market before 12:45 PT
          (outcome `eod_flat`), and a fill that would have landed at or after
@@ -221,6 +241,7 @@ import lxpb_levels_cache as LC                    # noqa: E402
 import trade_management as TM                     # noqa: E402
 import m5_structure as MS                         # noqa: E402
 import liquidity as LQ                            # noqa: E402
+import volume_spike as VS                         # noqa: E402
 
 SS_CONFL_MIN_DEFAULT = 1
 M5_CONFLUENCE_N_POINTS_DEFAULT = 10.0  # same-side M5 confluence radius: selection + entry refinement
@@ -258,6 +279,10 @@ CREST_REFINE_ALPHA_DEFAULT = 0.15                     # fraction of the crest-to
 CREST_REFINE_CAP_PTS_DEFAULT = 10.0                   # furthest the entry may be pushed
 LIQ_WINDOW_MINUTES_DEFAULT = LQ.WINDOW_MINUTES_DEFAULT
 LIQ_WIDE_SPREAD_SHARE_DEFAULT = LQ.WIDE_SPREAD_SHARE_MAX_DEFAULT
+VOL_SPIKE_CORE_SECONDS_DEFAULT = VS.CORE_WINDOW_SECONDS_DEFAULT
+VOL_SPIKE_BASELINE_SECONDS_DEFAULT = VS.BASELINE_WINDOW_SECONDS_DEFAULT
+VOL_SPIKE_RATIO_DEFAULT = VS.RATIO_THRESHOLD_DEFAULT
+VOL_SPIKE_MIN_PEAK_DEFAULT = VS.MIN_PEAK_CONTRACTS_DEFAULT
 PEG_STEP_DEFAULT = SF.PEG_STEP_DEFAULT
 PEG_CAP_DEFAULT = SF.PEG_CAP_DEFAULT
 P1_BAR_WIDTH = pd.Timedelta(minutes=5)  # this strategy's own P1 is an M5 bar, not H1
@@ -1303,6 +1328,19 @@ def process_cluster(cluster, args):
         result["liquidity"] = liq
         if blocked:
             result["dyn_tags"].append("low_liquidity")
+
+    # Volume spike (volume_spike.py): same-side stop-run on the real 1s
+    # tape around the fill -- purely informational, tags rather than
+    # excludes (see the module docstring's VOLUME SPIKE bullet).
+    if args.volume_spike_check:
+        spiked, vspike = VS.detect(touch_time_alt, level_type,
+                                    core_window_seconds=args.volume_spike_core_seconds,
+                                    baseline_window_seconds=args.volume_spike_baseline_seconds,
+                                    ratio_threshold=args.volume_spike_ratio,
+                                    min_peak=args.volume_spike_min_peak)
+        result["volume_spike"] = vspike
+        if spiked:
+            result["dyn_tags"].append("volume-spike")
 
     # The STOP is target-rule-agnostic, so it is resolved once, before any
     # target: a trade with no qualifying stop is not a trade under either
@@ -2403,7 +2441,8 @@ def _attr_json(obj):
 
 def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
     """Badge HTML for the ROW-level dynamic-filter tags (globex_eth_open,
-    low_liquidity, swerved, swerve_blocked, crest_refined) -- the ones that
+    low_liquidity, swerved, swerve_blocked, crest_refined, volume-spike) --
+    the ones that
     don't depend on which target rule is active, so they render once and
     never get rewritten by applyTargetModes() (unlike _mode_tag_badges'
     r_below_min/eod_flat). Lives in the Tags column (see _render_row).
@@ -2453,6 +2492,17 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
                 f'trailing baseline -- an outlier-fast move -- so the entry was pushed '
                 f'{cr["refine_pts"]:.2f}pt further to {cr["price"]:.2f}.">CREST REFINED '
                 f'{cr["planned_price"]:.2f}&rarr;{cr["price"]:.2f}</span>')
+    if "volume-spike" in dyn_tags:
+        side_word = "bid" if level_type == "LHPB" else "ask"
+        vs = res.get("volume_spike") or {}
+        offs_label = vs.get("offsets_label") or "0s"
+        out += (f'<span class="dyn-tag-badge vol-spike-tag-badge" title="Dynamic filter '
+                f'‘volume-spike’: unusual same-side ({side_word}) volume on the real '
+                f'1s tape around this fill ({VS.describe(vs)}) -- worth reviewing for a stop '
+                f'run. Purely informational; not excluded from the headline stats by default. '
+                f'The CLOSEST qualifying second’s offset is also its own live numeric '
+                f'filter (Volume spike offset, data-vspikeoffs) so a tight +/-10s read can be '
+                f'compared against a wider one.">VOL SPIKE {offs_label}</span>')
     return out
 
 
@@ -2504,6 +2554,10 @@ def _render_row(idx, res, chart_stacks, fps):
                       f'{mingap_val:.0f}m</span>'
                       if mingap_val is not None else '-')
         mingap_attr = f"{mingap_val:.2f}" if mingap_val is not None else ""
+        vspike = res.get("volume_spike")
+        vspikeoffs_attr = (str(min(abs(o) for o in vspike["offsets"]))
+                           if "volume-spike" in (res.get("dyn_tags") or []) and vspike
+                           else "")
         er_by_k = res.get("pre_p1_er_by_k") or []
         er_by_k_attr = _attr_json(er_by_k)
         er_default = (er_by_k[PRE_P1_ER_K_DEFAULT - 2]
@@ -2566,6 +2620,7 @@ def _render_row(idx, res, chart_stacks, fps):
             row_html = f"""
 <tr class="lvl-row unfilled-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
     data-daygap="{daygap_attr}" data-h1gap="{h1gap_attr}" data-mingap="{mingap_attr}"
+    data-vspikeoffs="{vspikeoffs_attr}"
     data-er-by-k="{er_by_k_attr}" data-p1-ratio-by-window="{p1_ratio_by_window_attr}"
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td>
@@ -2686,7 +2741,8 @@ def _render_row(idx, res, chart_stacks, fps):
         row_html = f"""
 <tr class="lvl-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
     data-dyn-tags="{dyn_tags_attr}" data-base-tags="{base_tags_attr}" data-daygap="{daygap_attr}"
-    data-h1gap="{h1gap_attr}" data-mingap="{mingap_attr}" data-er-by-k="{er_by_k_attr}"
+    data-h1gap="{h1gap_attr}" data-mingap="{mingap_attr}" data-vspikeoffs="{vspikeoffs_attr}"
+    data-er-by-k="{er_by_k_attr}"
     data-p1-ratio-by-window="{p1_ratio_by_window_attr}"
     data-r="{act['r']}" data-rr="{act['rrVal']}" data-pnl-pts="{act['pnlPts']}" data-outcome="{act['outcome']}"
     data-mgmt-r="{act['mgmtR']}" data-mgmt-pnl-pts="{act['mgmtPnl']}"
@@ -3035,6 +3091,33 @@ other row -- overrides every Exclude box. Click again to turn off.">
 row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="eod_flat"> only</label>
     </div>
+    <div class="chip-stack">
+      <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="volume-spike">
+        Exclude volume-spike fills</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged volume-spike, hiding every
+other row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="volume-spike"> only</label>
+    </div>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label" title="How many seconds before(-)/after(+) the fill the CLOSEST
+qualifying volume-spike second landed (0 = the exact fill second; a row can have several
+qualifying seconds -- see the badge -- this is only the nearest one to the fill) -- only rows
+tagged volume-spike carry a value here, so this only narrows THAT set, same as every other row
+here being ANDed together. Reads tr.dataset.vspikeoffs (the ABSOLUTE offset), the SAME generic
+op/value numeric-filter mechanism (f-num-op/f-num-val, data-target) as R and the gap filters
+above, and is likewise a DYNAMIC filter: changing it recomputes win rate / avg R / total R /
+total PnL above live. Defaults to any (no filtering) -- pick, e.g., &le;10 to see only spikes
+within 10s of the fill vs &le;30 for the full core window.">Volume spike offset (|s| from fill)</span>
+    <select class="f-num-op" data-target="vspikeoffs">
+      <option value="any" selected>any</option>
+      <option value="lte">&le;</option>
+      <option value="lt">&lt;</option>
+      <option value="eq">=</option>
+      <option value="gte">&ge;</option>
+      <option value="gt">&gt;</option>
+    </select>
+    <input type="number" class="f-num-val" data-target="vspikeoffs" value="10" min="0" step="1">
   </div>
   <div class="filter-row">
     <span class="filter-label" title="This level's OWN P1 (breakout) candle range, divided by its
@@ -3103,7 +3186,8 @@ the box is checked.">Trade management</span>
         "that window.")
     head = (f"<th class=\"left\">Trade Id</th>"
             f"<th class=\"left\" title=\"Every dynamic-filter tag this row carries, in one "
-            f"place: globex_eth_open, low_liquidity, swerved/swerve_blocked, crest_refined "
+            f"place: globex_eth_open, low_liquidity, swerved/swerve_blocked, crest_refined, "
+            f"volume-spike "
             f"(row-level, constant across target rules) plus r_below_min/eod_flat (the "
             f"ACTIVE target rule's own -- these swap along with Target/R/Outcome when you "
             f"toggle a Target rules checkbox above). Hover a badge for its own detail; the "
@@ -3268,6 +3352,7 @@ tr.lvl-row.outcome-hidden, tr.chart-row.outcome-hidden { display:none !important
 tr.lvl-row.no-target-row td { color:var(--text-faint); font-style:italic; }
 .liq-tag-badge { background:#3f1d2e; color:#fda4af; }
 .swerve-tag-badge { background:#1e3a2f; color:#86efac; }
+.vol-spike-tag-badge { background:#3f2d0e; color:#fdba74; }
 /* Notes box: this report is reviewed with long, written-out notes per trade,
    so it ships far larger than the shared 160x34 default in
    render_stop_target_report.CSS (left alone, for every other report) and
@@ -3495,7 +3580,12 @@ function recomputeDynStats() {
     // tr.dataset.p1ratio was just rewritten by applyP1RatioWindow() for
     // whichever window is now ticked.
     const p1ratioHidden = !numFilterOk(tr, 'p1ratio');
-    const hidden = rrHidden || daygapHidden || h1gapHidden || mingapHidden || erHidden || p1ratioHidden || (isolateTags.length > 0
+    // The volume-spike offset filter (data-target "vspikeoffs") is a dynamic
+    // filter too, same reasoning as p1ratioHidden -- tr.dataset.vspikeoffs is
+    // a static number (the tagged row's own peak-second offset, absolute
+    // value) set once at render time, never rewritten by a live control.
+    const vspikeoffsHidden = !numFilterOk(tr, 'vspikeoffs');
+    const hidden = rrHidden || daygapHidden || h1gapHidden || mingapHidden || erHidden || p1ratioHidden || vspikeoffsHidden || (isolateTags.length > 0
       ? !tags.some(t => isolateTags.includes(t))
       : (excludeTags.length > 0 && tags.some(t => excludeTags.includes(t))));
     tr.classList.toggle('dyn-hidden', hidden);
@@ -3606,6 +3696,11 @@ if (prep1KEl) prep1KEl.addEventListener('input', recomputeDynStats);
 // rr/er.
 document.querySelectorAll('.f-num-op[data-target="p1ratio"], .f-num-val[data-target="p1ratio"]')
   .forEach(el => el.addEventListener('input', recomputeDynStats));
+// The volume-spike offset filter (data-target "vspikeoffs") also folds into
+// recomputeDynStats' own stats loop above, not just applyReviewFilters, same
+// as p1ratio/rr.
+document.querySelectorAll('.f-num-op[data-target="vspikeoffs"], .f-num-val[data-target="vspikeoffs"]')
+  .forEach(el => el.addEventListener('input', recomputeDynStats));
 const weakp1WEl = document.getElementById('f-weakp1-window');
 if (weakp1WEl) weakp1WEl.addEventListener('input', recomputeDynStats);
 const mgmtToggleCb = document.getElementById('mgmt-thrust-trail');
@@ -3711,6 +3806,29 @@ if __name__ == "__main__":
                         default=LIQ_WIDE_SPREAD_SHARE_DEFAULT,
                         help=f"Share of quotes wider than one tick at or above which the tape "
                              f"counts as illiquid (default {LIQ_WIDE_SPREAD_SHARE_DEFAULT:g}).")
+    parser.add_argument("--volume-spike-check", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Tag trades whose fill sat near an unusual same-side (bid for "
+                             "LHPB, ask for LLPB) 1s volume spike -- see volume_spike.py. "
+                             "Purely informational (tags, does not exclude). ON by default.")
+    parser.add_argument("--volume-spike-core-seconds", type=float,
+                        default=VOL_SPIKE_CORE_SECONDS_DEFAULT,
+                        help=f"+/- seconds around the fill searched for the peak same-side "
+                             f"volume (default {VOL_SPIKE_CORE_SECONDS_DEFAULT:g}s).")
+    parser.add_argument("--volume-spike-baseline-seconds", type=float,
+                        default=VOL_SPIKE_BASELINE_SECONDS_DEFAULT,
+                        help=f"+/- seconds around the fill (core window excluded) this trade's "
+                             f"own 'normal' same-side volume/sec is measured over (default "
+                             f"{VOL_SPIKE_BASELINE_SECONDS_DEFAULT:g}s).")
+    parser.add_argument("--volume-spike-ratio", type=float, default=VOL_SPIKE_RATIO_DEFAULT,
+                        help=f"Peak same-side volume must be at least this many times the "
+                             f"baseline mean to count as a spike (default "
+                             f"{VOL_SPIKE_RATIO_DEFAULT:g}x).")
+    parser.add_argument("--volume-spike-min-peak", type=float,
+                        default=VOL_SPIKE_MIN_PEAK_DEFAULT,
+                        help=f"A qualifying second's same-side volume must also be strictly "
+                             f"more than this many contracts outright (default "
+                             f"{VOL_SPIKE_MIN_PEAK_DEFAULT:g}).")
     parser.add_argument("--eod-flat", action=argparse.BooleanOptionalAction, default=True,
                         help="End-of-day flat (trade_management.py rule 3): close any open "
                              "position before 12:45 PT and take no entry from then until the "
