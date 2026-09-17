@@ -8,12 +8,13 @@ import path from "node:path";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-const connectionString =
-  process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.DATABASE_URL_UNPOOLED;
+// Vercel's Neon storage integration prefixes injected vars with the
+// resource name ("NEON_DB"). Keep in step with lib/db.ts.
+const connectionString = process.env.NEON_DB_DATABASE_URL;
 
 if (!connectionString) {
   console.error(
-    "Set DATABASE_URL (or POSTGRES_URL) first -- e.g. `vercel env pull .env.local` then " +
+    "Set NEON_DB_DATABASE_URL first -- e.g. `vercel env pull .env.local` then " +
       "`export $(grep -v '^#' .env.local | xargs)` (bash) or load it into this shell."
   );
   process.exit(1);

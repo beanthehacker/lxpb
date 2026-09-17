@@ -19,8 +19,8 @@ deploy path anymore -- set the Vercel project's **Root Directory** to
 `lxpb-v2` (Settings -> General -> Root Directory), then:
 
 1. **Database** -- in the Vercel dashboard, Storage tab, add a Postgres
-   database (Neon integration). This sets `DATABASE_URL` (and friends) as
-   project env vars automatically. Then, locally: `vercel env pull
+   database (Neon integration). This sets `NEON_DB_DATABASE_URL` as a
+   project env var automatically. Then, locally: `vercel env pull
    .env.local` followed by `npm run init-db` (creates the `row_state`
    table from `db/schema.sql` -- one-off, idempotent). Until this is set,
    `/api/rows` returns 503 and the rest of the site still works.
