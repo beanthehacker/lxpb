@@ -57,7 +57,7 @@ the target are ALL M5 LXPB structure:
      (`_pick_targets`). Both ask the same question -- what did the market
      build while this level was waiting to be retested -- and both take only
      structure lying wholly after the level's breakout candle and wholly
-     before the candle it fills in, 1..20 points away on the favourable side:
+     before the candle it fills in, up to 25 points away on the favourable side:
 
        * OPPOSITE M5 LEVEL, ZIGZAG ANCHOR (`_opposite_m5_zz_target`, src tag
          m5_opposite_zz): find the most recent CONFIRMED zigzag TROUGH (short,
@@ -73,7 +73,7 @@ the target are ALL M5 LXPB structure:
          most recent CONFIRMED zigzag TROUGH for a long (LHPB), CREST for a
          short (LLPB), formed between P1 and P2 (just before the retest); the
          pivot's own price is the target. No pivot there = no target. Only
-         that single pivot is tried; if it is outside the 1..20pt favourable
+         that single pivot is tried; if it is outside the up-to-25pt favourable
          band the rule finds nothing.
 
      BOTH rules run for every trade, whatever --target-mode says, and each is
@@ -234,8 +234,8 @@ import volume_spike as VS                         # noqa: E402
 
 SS_CONFL_MIN_DEFAULT = 1
 M5_CONFLUENCE_N_POINTS_DEFAULT = 10.0  # same-side M5 confluence radius: selection + entry refinement
-MIN_DYNAMIC_TARGET_PTS = SF.MIN_DYNAMIC_TARGET_PTS
-MAX_DYNAMIC_TARGET_PTS = SF.MAX_DYNAMIC_TARGET_PTS
+MIN_DYNAMIC_TARGET_PTS = 0.25   # one tick: no real floor, just strictly favourable (SF is 1)
+MAX_DYNAMIC_TARGET_PTS = 25.0   # own band (SF is 20); every target rule here shares it
 DYNAMIC_STOP_RADIUS_PTS = SF.DYNAMIC_STOP_RADIUS_PTS
 MAX_ALT_FILL_HOURS_DEFAULT = SF.MAX_ALT_FILL_HOURS_DEFAULT
 MIN_R_DEFAULT = 1.0
@@ -541,7 +541,7 @@ def _dynamic_stop_m5_thrust(m5_ledger, level_type, alt_price, is_long, touch_tim
 # Both rules read the trade's own P1..fill window (see _window_bounds): the
 # swing-extreme rule takes the last confirmed zigzag pivot's own price, the
 # opposite-M5-zigzag-anchor rule takes the farthest untested opposite-type M5
-# P0 formed after that pivot. The same 1..20pt favourable band bounds both.
+# P0 formed after that pivot. The same up-to-25pt favourable band bounds both.
 # --------------------------------------------------------------------------
 
 TARGET_MODES = ("opposite-m5-zz", "swing-extreme")   # every rule _pick_targets computes
@@ -637,7 +637,7 @@ def _live_m5_target_candidates(m5_ledger, level_type, touch_time, min_breakout_l
     ledger) is resolved exactly as SF._live_m5_before_entry does.
 
     `price`/`max_pts`: every caller immediately throws out anything more
-    than a fixed number of points from the fill (1..20pt for a target,
+    than a fixed number of points from the fill (up-to-25pt for a target,
     +/-DYNAMIC_STOP_RADIUS_PTS for a stop) -- pass them here so a
     gated-dropped candidate that could never qualify on distance alone is
     dropped BEFORE its own untouched-since-breakout check runs, not after.
