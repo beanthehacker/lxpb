@@ -53,11 +53,11 @@ the target are ALL M5 LXPB structure:
      low for a long) -- render_ss_confl_finetune_report.dynamic_stop,
      unchanged.
 
-  5. TARGET = THREE RULES, ALL READING THE LEVEL'S OWN P1..P2 WINDOW
+  5. TARGET = THREE RULES, ALL READING THE LEVEL'S OWN P1..FILL WINDOW
      (`_pick_targets`). All three ask the same question -- what did the
      market build while this level was waiting to be retested -- and all
      take only structure lying wholly after the level's breakout candle and
-     wholly before its retest bar, 1..20 points away on the favourable side:
+     wholly before the candle it fills in, 1..20 points away on the favourable side:
 
        * CONSOLIDATION AREA (m5_structure.py, src tags consol_p0 /
          consol_edge): the nearest congestion area in that window -- where
@@ -70,19 +70,17 @@ the target are ALL M5 LXPB structure:
        * OPPOSITE M5 LEVEL (`_opposite_m5_target`, src tag m5_opposite):
          the most recently formed live opposite-type M5 level whose own P1
          broke >=2 same-type P0s -- the original rule
-         (render_ss_confl_finetune_report.dynamic_target), plus the P1..P2
+         (render_ss_confl_finetune_report.dynamic_target), plus the P1..fill
          window.
        * OPPOSITE M5 LEVEL, ZIGZAG ANCHOR (`_opposite_m5_zz_target`, src tag
-         m5_opposite_zz): find the most recent CONFIRMED zigzag crest (long)
-         or trough (short) in the window -- m5_structure.zigzag_pivots, a
-         >=`--zz-threshold-pts` (default 3pt) reversal off bar highs/lows
-         that has also taken >=`--zz-min-bars` (default 3) bars to develop,
-         confirmed only once both hold, which is what settles which of two
-         crests separated by inconclusive chop counts as "the" recent one.
-         The target is then the EARLIEST-formed
-         opposite-type M5 P0 that is still untested and formed strictly
-         after that pivot -- the first thing the market built right after
-         price turned away, not merely the newest one, and with no shared-P1
+         m5_opposite_zz): find the most recent CONFIRMED zigzag TROUGH (short,
+         LLPB) or CREST (long, LHPB) in the window -- m5_structure.zigzag_pivots,
+         a standard >=`--zz-threshold-pts` (default 3pt) reversal off bar
+         highs/lows, confirmed on a later bar at least `--zz-min-bars`
+         (default 3) after the extreme. That pivot is where the latest leg
+         into the retest began. The target is then the FARTHEST untested
+         opposite-type M5 P0 formed strictly after that pivot: the LOWEST
+         price for a short, the HIGHEST for a long -- with no shared-P1
          confluence requirement (any single P0 qualifies).
 
      ALL THREE rules run for every trade, whatever --target-mode says, and
@@ -561,12 +559,11 @@ def _dynamic_stop_m5_thrust(m5_ledger, level_type, alt_price, is_long, touch_tim
 # The consolidation rule instead exits where the market last spent real
 # time: the nearest congestion area in the trade's own favourable
 # direction (see m5_structure.consolidation_areas for the definition),
-# restricted to areas built BETWEEN THIS LEVEL'S OWN P1 AND P2 -- wholly
-# after the breakout candle and wholly before the retest bar. That is the
-# stall price actually made after breaking away from the level, and the
-# retest is the market turning back towards it; congestion from before P1
-# belongs to a move this level had no part in, and congestion after P2 is
-# not yet there to aim at. If
+# restricted to areas built BETWEEN THIS LEVEL'S OWN P1 AND THE FILL -- wholly
+# after the breakout candle and wholly before the fill's own M5 candle. That
+# is the stall price actually made after breaking away from the level;
+# congestion from before P1 belongs to a move this level had no part in, and
+# congestion after the fill is not yet there to aim at. If
 # that area still holds an UNTESTED opposite-type M5 P0 -- one whose own
 # price sits inside the area's band and that has never been retested --
 # that P0's own price is the target (src tag consol_p0). Otherwise the target
@@ -579,15 +576,16 @@ TARGET_MODES = ("consolidation", "opposite-m5", "opposite-m5-zz")   # every rule
 DEFAULT_TARGET_MODES_BOTH = ("consolidation", "opposite-m5")        # what "--target-mode both" starts ticked
 
 
-def _window_bounds(touch_time, p1_time, p2_time):
-    """(after, cutoff) -- the level's own P1..P2 window, as the exclusive
-    instants a target's own structure has to sit between. The window ENDS at
-    P2, not at the fill: entry can be hours of fill-window searching after
-    the retest, and structure built in those hours is not what the level
-    broke away from. `touch_time` still bounds it for the raw-retest caller,
-    where the touch IS the P2."""
-    end = touch_time if p2_time is None else min(pd.Timestamp(p2_time), pd.Timestamp(touch_time))
-    return (None if p1_time is None else pd.Timestamp(p1_time)), MS.entry_cutoff(end)
+def _window_bounds(touch_time, p1_time, p2_time=None):
+    """(after, cutoff) -- the exclusive instants a target's own structure has
+    to sit between: after the level's P1 (breakout) and before the last
+    completed M5 candle ahead of the FILL. The window runs to the fill, not
+    to P2: a pegged/chasing entry can fill hours after the retest, and what
+    the market built in those hours is just as much "what happened while
+    this level was waiting" as anything before P2 -- it is all visible at
+    the moment the order fills. `p2_time` is accepted so callers stay
+    unchanged but no longer bounds anything."""
+    return (None if p1_time is None else pd.Timestamp(p1_time)), MS.entry_cutoff(touch_time)
 
 
 def _target_candidate_still_live(bars, level_type, price, breakout_time, as_of):
@@ -604,11 +602,13 @@ def _target_candidate_still_live(bars, level_type, price, breakout_time, as_of):
     need that: a price the market broke through and never came back to is
     still somewhere price could go, whether or not that original break
     looked convincing. So for a gated-dropped candidate only, this replays
-    lxpb.py's own retest rule (touched or gapped past, strictly more than
-    R.L.MIN_BARS_BEFORE_RETEST bars after the breakout bar -- the same
-    "immediately-next bar can never itself be the retest" rule real P0s
-    get) directly against the bars, since the ledger never recorded
-    whether that actually happened for a candidate that failed the gate.
+    lxpb.py's own consumption rule directly against the bars: ANY bar after
+    the breakout bar that touches or gaps past the price kills it, the
+    immediately-next bar included. (lxpb.py phase 3 silently consumes a
+    touch inside the MIN_BARS_BEFORE_RETEST gap -- ledger fate
+    'consumed_early' -- so that gap only decides whether a touch is a
+    retest TRADE, never whether the level is still standing.) The ledger
+    never recorded this for a candidate that failed the gate.
 
     The bar that first kills a candidate depends only on the candidate and the
     bars, never on `as_of`, so it is found once (_gated_kill_ns) and every
@@ -619,10 +619,6 @@ def _target_candidate_still_live(bars, level_type, price, breakout_time, as_of):
         kill = _gated_kill_ns(bars, level_type, price, breakout_time)
         return kill is None or kill > pd.Timestamp(as_of).value
     window = bars[(bars.index > breakout_time) & (bars.index <= as_of)]
-    skip = R.L.MIN_BARS_BEFORE_RETEST
-    if len(window) <= skip:
-        return True
-    window = window.iloc[skip:]
     touched = (window["low"] <= price) & (window["high"] >= price)
     if level_type == "LHPB":
         gap_over = window["high"] < price
@@ -637,8 +633,8 @@ _GATED_KILL_NS = {}
 
 def _gated_kill_ns(bars, level_type, price, breakout_time):
     """UTC-ns time of the first bar that touches or gaps past a gated-dropped
-    candidate under _target_candidate_still_live's rule -- skipping the first
-    R.L.MIN_BARS_BEFORE_RETEST bars after its breakout bar -- or None if no
+    candidate under _target_candidate_still_live's rule -- any bar after its
+    breakout bar -- or None if no
     bar in `bars` ever does. The candidate is live as of T exactly when this
     is None or later than T. Memoised per candidate; `bars` must be sorted."""
     global _GATED_KILL_BARS
@@ -649,7 +645,7 @@ def _gated_kill_ns(bars, level_type, price, breakout_time):
     key = (level_type, price, pd.Timestamp(breakout_time).value)
     if key not in _GATED_KILL_NS:
         _, times, lows, highs = _GATED_KILL_BARS
-        start = int(np.searchsorted(times, key[2], side="right")) + R.L.MIN_BARS_BEFORE_RETEST
+        start = int(np.searchsorted(times, key[2], side="right"))
         lo, hi = lows[start:], highs[start:]
         touched = (lo <= price) & (hi >= price)
         gap_over = (hi < price) if level_type == "LHPB" else (lo > price)
@@ -732,7 +728,7 @@ def _opposite_m5_target(m5_ledger, level_type, price, is_long, touch_time,
     a target only needs an untouched-since price, not a confirmed swing.
 
     Re-implemented here rather than called, for one reason: this report adds
-    the SAME P1..P2 window the consolidation rule uses. The opposite level's
+    the SAME P1..fill window the consolidation rule uses. The opposite level's
     own P0 must have formed strictly after this level's P1 and strictly
     before its P2, so both target rules answer the same question -- what did
     the market build while this level was waiting to be retested -- and
@@ -766,23 +762,23 @@ def _opposite_m5_zz_target(m5_ledger, level_type, price, is_long, touch_time,
     """(target_price, target_info) under the OPPOSITE-M5-ZZ rule, or
     (None, None).
 
-    Step 1: the most recent CONFIRMED zigzag crest (is_long) or trough
-    (short) inside this level's own P1..P2 window -- m5_structure's
-    threshold zigzag (`zigzag_pivots`/`most_recent_pivot`), not the k-bar
-    fractal `swing_pivots`: only a pivot the market has demonstrably
-    reversed `zigzag_threshold` points away from, over at least
-    `zigzag_min_bars` bars, counts -- which is what resolves a lower second
-    crest separated from the first by inconclusive chop -- see
-    `zigzag_pivots`'s own docstring.
+    Step 1: the most recent CONFIRMED zigzag pivot where the latest leg into
+    the retest began: a TROUGH for a short (LLPB), a CREST for a long
+    (LHPB) -- m5_structure's standard threshold zigzag
+    (`zigzag_pivots`/`most_recent_pivot`), formed and confirmed after P1 and
+    before the fill's own candle. That pivot is where the latest leg into the
+    retest started.
 
-    Step 2: the EARLIEST-formed opposite-type M5 P0 that is both still
-    untested ('live', `_live_m5_target_candidates`) as of the entry cutoff
-    AND formed strictly after that pivot -- the first thing the market laid
-    down right after price turned away from the pivot, not the newest such
-    level (that is `_opposite_m5_target`'s own question). No shared-P1
-    ('confl2') confluence requirement: min_breakout_levels=1, any single P0
-    qualifies. Still bounded MIN..MAX_DYNAMIC_TARGET_PTS on the favourable
-    side, the same sanity floor/ceiling every rule here uses."""
+    Step 2: of the opposite-type M5 P0s that are still untested ('live',
+    `_live_m5_target_candidates`, no shared-P1 requirement) as of the entry
+    cutoff and formed strictly after that pivot -- i.e. inside the latest
+    leg into the retest -- take the one FARTHEST from the entry: the LOWEST
+    price for a short, the HIGHEST for a long. Still bounded
+    MIN..MAX_DYNAMIC_TARGET_PTS on the favourable side, the same sanity
+    floor/ceiling every rule here uses; ties go to the earliest-formed.
+
+    Pairing: an opposite-TYPE ledger level (LHPB for an LLPB trade); no
+    hammer/shooting-star test is involved."""
     after, cutoff = _window_bounds(touch_time, p1_time, p2_time)
     pivots = MS.zigzag_pivots(threshold_pts=zigzag_threshold, min_bars=zigzag_min_bars)
     pivot_time, pivot_price = MS.most_recent_pivot(
@@ -803,8 +799,9 @@ def _opposite_m5_zz_target(m5_ledger, level_type, price, is_long, touch_time,
     cand = cand[(distance >= MIN_DYNAMIC_TARGET_PTS) & (distance <= MAX_DYNAMIC_TARGET_PTS)]
     if cand.empty:
         return None, None
-    formed = pd.to_datetime(cand["formation_time"], utc=True)
-    best = cand.loc[formed.idxmin()]
+    cand = cand.assign(_formed=pd.to_datetime(cand["formation_time"], utc=True))
+    cand = cand.sort_values(["price", "_formed"], ascending=[not is_long, True])
+    best = cand.iloc[0].drop("_formed")
     return float(best["price"]), {"src": "m5_opposite_zz", "level": best.to_dict(), "area": None,
                                   "pivot_time": pivot_time, "pivot_price": pivot_price}
 
@@ -2223,10 +2220,10 @@ def _target_title(info):
                 f"{R._to_pt_str(level['formation_time'])}; shared P1: "
                 f"{R._to_pt_str(level['breakout_time'])}")
     if info.get("src") == "m5_opposite_zz":
-        return (f"Earliest live M5 {level['type']} P0 after the zigzag pivot: "
+        return (f"Farthest live M5 {level['type']} P0 after the zigzag pivot: "
                 f"{R._to_pt_str(level['formation_time'])}; pivot "
                 f"{info['pivot_price']:.2f} at {R._to_pt_str(info['pivot_time'])}")
-    where = (f"Consolidation area (P1&hellip;P2) {R._to_pt_str(area['start_time'])} &rarr; "
+    where = (f"Consolidation area (P1&hellip;fill) {R._to_pt_str(area['start_time'])} &rarr; "
              f"{R._to_pt_str(area['end_time'])} ({area['n_bars']} M5 bars, "
              f"{area['low']:.2f}-{area['high']:.2f}, ER {area['er']:.2f})")
     if info.get("src") == "consol_p0":
@@ -2820,7 +2817,7 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
         "Entry is a plain static limit order (no chasing).")
     target_lead_sentence = (
         f"TARGET = three rules, all reading only what the market built BETWEEN THIS LEVEL'S OWN "
-        f"P1 AND P2 (wholly after its breakout candle, wholly before its retest bar) and all "
+        f"P1 AND ITS FILL (wholly after its breakout candle, wholly before the candle it fills in) and all "
         f"bounded to {MIN_DYNAMIC_TARGET_PTS:g}&ndash;{MAX_DYNAMIC_TARGET_PTS:g} points from "
         f"the fill on the favourable side. (1) CONSOLIDATION AREA: the nearest congestion area "
         f"in that window (a run of &ge;{args.consol_min_bars} M5 bars inside a "
@@ -2830,10 +2827,10 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
         f"and its high for a short (src tag consol_edge). (2) OPPOSITE M5 LEVEL: the most "
         f"recently formed live opposite-type M5 level whose P1 candle broke at least two "
         f"distinct same-type P0s (src tag m5_opposite). (3) OPPOSITE M5 LEVEL, ZIGZAG ANCHOR: "
-        f"the most recent CONFIRMED zigzag crest/trough in that window (a "
-        f"&ge;{args.zz_threshold_pts:g}pt reversal off bar highs/lows taking "
-        f"&ge;{args.zz_min_bars} bars to develop), then the EARLIEST-formed live opposite-type "
-        f"M5 P0 formed after it, no shared-P1 confluence required "
+        f"the most recent CONFIRMED zigzag trough (short) / crest (long) in that window (a "
+        f"&ge;{args.zz_threshold_pts:g}pt reversal off bar highs/lows, confirmed "
+        f"&ge;{args.zz_min_bars} bars after the extreme), then the FARTHEST live opposite-type "
+        f"M5 P0 formed after it (lowest for a short, highest for a long), no shared-P1 confluence required "
         f"(src tag m5_opposite_zz). All three are precomputed for every trade and all three are "
         f"live checkboxes in the Target rules row of the panel above: untick one and every row "
         f"re-resolves against whichever others are still on, or becomes a dimmed NO TARGET row "
@@ -3161,11 +3158,11 @@ was the only one that found a target. With several ticked, each trade uses which
 the FARTHER target. Untick all and no trade has a target at all. The charts below always draw
 the bracket the page was GENERATED with -- regen to chart a different default.">Target rules</span>
     <label class="chip"><input type="checkbox" class="f-target-mode" data-mode="consolidation" __CONSOL_CHECKED__>
-      Consolidation area (P1&hellip;P2)</label>
+      Consolidation area (P1&hellip;fill)</label>
     <label class="chip"><input type="checkbox" class="f-target-mode" data-mode="opposite-m5" __OPP_CHECKED__>
-      Opposite M5 level (P1&hellip;P2)</label>
+      Opposite M5 level (P1&hellip;fill)</label>
     <label class="chip"><input type="checkbox" class="f-target-mode" data-mode="opposite-m5-zz" __OPPZZ_CHECKED__>
-      Opposite M5 level, zigzag anchor (P1&hellip;P2)</label>
+      Opposite M5 level, zigzag anchor (P1&hellip;fill)</label>
   </div>
   <div class="filter-row">
     <span class="filter-label" title="Live, in-browser toggle for the plug-n-play trade-management
@@ -3189,9 +3186,9 @@ the box is checked.">Trade management</span>
         "sitting inside a consolidation area built between this level's own P1 and P2. "
         "consol_edge: that area's near edge instead -- low for a long, high for a short. "
         "m5_opposite: the newest live opposite M5 level sharing its P1 with another P0, formed "
-        "in the same P1..P2 window. m5_opposite_zz: the earliest live opposite M5 P0 (no shared-"
-        "P1 confluence required) formed after the most recent confirmed zigzag crest/trough in "
-        "that window.")
+        "in the same P1..fill window. m5_opposite_zz: the farthest live opposite M5 P0 (lowest for a "
+        "short, highest for a long; no shared-P1 confluence required) formed after the most recent "
+        "confirmed zigzag trough (short) / crest (long) in that window.")
     head = (f"<th class=\"left\">Trade Id</th>"
             f"<th class=\"left\" title=\"Every dynamic-filter tag this row carries, in one "
             f"place: globex_eth_open, low_liquidity, swerved/swerve_blocked, crest_refined, "
@@ -3747,9 +3744,9 @@ if __name__ == "__main__":
                              "it if there is one, else the area's near edge (low for a long, "
                              "high for a short). opposite-m5: the newest live opposite-type M5 "
                              "level whose P1 broke >=2 same-type P0s and whose own P0 formed "
-                             "inside the same P1..P2 window. opposite-m5-zz: the earliest live "
+                             "inside the same P1..fill window. opposite-m5-zz: the farthest live "
                              "opposite-type M5 P0 (no shared-P1 confluence required) formed "
-                             "after the most recent confirmed zigzag crest/trough in that "
+                             "after the most recent confirmed zigzag trough (short) / crest (long) in that "
                              "window -- see --zz-threshold-pts / --zz-min-bars.")
     parser.add_argument("--zz-threshold-pts", type=float, default=ZZ_THRESHOLD_PTS_DEFAULT,
                         help=f"Point reversal off bar highs/lows that confirms a new zigzag leg "

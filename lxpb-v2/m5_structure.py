@@ -395,28 +395,32 @@ def _scan_zigzag(bars, threshold_pts, min_bars):
     rows = []
     looking_for = "high"
     extreme_price, extreme_idx = highs[0], 0
-    worst_since = lows[0]   # lowest low (seeking a high) / highest high (seeking a low) since the extreme
+    # Lowest low (seeking a high) / highest high (seeking a low) over the bars
+    # AFTER the extreme's own bar. The extreme bar's own opposite side is
+    # excluded: its high/low order inside the bar is unknown, so it is not
+    # evidence of a reversal (standard zigzag behaviour).
+    worst_since = np.inf
     for i in range(1, n):
         if looking_for == "high":
             if highs[i] > extreme_price:
-                extreme_price, extreme_idx, worst_since = highs[i], i, lows[i]
+                extreme_price, extreme_idx, worst_since = highs[i], i, np.inf
             else:
                 worst_since = min(worst_since, lows[i])
                 if (extreme_price - worst_since >= threshold_pts and
                         i - extreme_idx >= min_bars):
                     rows.append((bars.index[extreme_idx], extreme_price, "high", bars.index[i]))
                     looking_for = "low"
-                    extreme_price, extreme_idx, worst_since = lows[i], i, highs[i]
+                    extreme_price, extreme_idx, worst_since = lows[i], i, -np.inf
         else:
             if lows[i] < extreme_price:
-                extreme_price, extreme_idx, worst_since = lows[i], i, highs[i]
+                extreme_price, extreme_idx, worst_since = lows[i], i, -np.inf
             else:
                 worst_since = max(worst_since, highs[i])
                 if (worst_since - extreme_price >= threshold_pts and
                         i - extreme_idx >= min_bars):
                     rows.append((bars.index[extreme_idx], extreme_price, "low", bars.index[i]))
                     looking_for = "high"
-                    extreme_price, extreme_idx, worst_since = highs[i], i, lows[i]
+                    extreme_price, extreme_idx, worst_since = highs[i], i, np.inf
     return pd.DataFrame(rows, columns=["time", "price", "kind", "confirmed_time"])
 
 
