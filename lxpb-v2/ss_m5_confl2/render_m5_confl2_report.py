@@ -1621,22 +1621,60 @@ def _annotate_swerve(chart_m5, res, is_long):
 
 def _target_ray_start(info, entry_t):
     """Epoch start of a target's ray: its opposite-M5 level's formation, else
-    the entry candle."""
-    level = (info or {}).get("level")
+    the swing-extreme rule's own zigzag pivot candle, else the entry candle."""
+    info = info or {}
+    level = info.get("level")
     if level is not None and level.get("formation_time") is not None:
         return R._to_epoch_utc(level["formation_time"])
+    if info.get("pivot_time") is not None:
+        return R._to_epoch_utc(info["pivot_time"])
     return entry_t
+
+
+def _stop_ray_start_time(res):
+    """The candle the stop price is built on: the spike P0 candle for the
+    spike-P0 stop (its low/high), else the P1 breakout (thrust) candle of the
+    level whose extreme is the stop. None if unknown."""
+    lvl = res.get("stop_m5_level") or {}
+    key = "formation_time" if res.get("stop_source") == "m5_p0_spike" else "breakout_time"
+    t = lvl.get(key)
+    return None if t is None or pd.isna(t) else pd.Timestamp(t)
+
+
+def _entry_ray_start_time(res):
+    """The candle the entry price is built on: the entry level's own P0
+    (own / m5 confluence / swerved-to level) or, for a crest-refined entry,
+    the crest candle it was pushed from. None if unknown."""
+    t = res.get("alt_formation_time")
+    return None if t is None or pd.isna(t) else pd.Timestamp(t)
+
+
+def _target_ray_start_times(res):
+    """Every target rule's ray-start instant for this trade, so the M5 pane's
+    window keeps those candles instead of compressing them out."""
+    infos = [res.get("target_info")] + [m.get("target_info") for m in (res.get("modes") or {}).values()]
+    out = []
+    for info in infos:
+        info = info or {}
+        level = info.get("level")
+        t = level.get("formation_time") if level is not None else None
+        t = t if t is not None else info.get("pivot_time")
+        if t is not None:
+            out.append(pd.Timestamp(t))
+    out.extend(t for t in (_stop_ray_start_time(res), _entry_ray_start_time(res)) if t is not None)
+    return out
 
 
 def _rayify_trade_lines(chart_m5, res, row_for_chart):
     """Turn the M5 pane's full-width target / stop / entry / own-level price
-    lines into rays: each starts at the candle it belongs to and runs to the
+    lines into rays: each starts at the candle it is built on and runs to the
     right edge, with its price (and title) on the y-axis.
 
-    Starts: own level -> its P0 (formation) candle; entry and stop -> the
-    entry candle (the pane's ENTRY/PLANNED marker); target -> the candle the
-    target came from (its opposite-M5 level's formation, else the entry
-    candle). A start compressed out of the
+    Starts: own level -> its P0 (formation) candle; entry -> the entry level's
+    P0 (or the crest candle when refined); stop -> the spike P0 candle or the
+    P1 thrust candle it was taken from; target -> its opposite-M5 level's
+    formation, else its zigzag pivot candle; each falling back to the entry
+    candle (the pane's ENTRY/PLANNED marker) when unknown. A start compressed out of the
     pane snaps to the first bar at or after it; one before the pane's first
     bar starts at the first bar. Other price lines (swerve's planned
     entry) are left as they are."""
@@ -1647,7 +1685,10 @@ def _rayify_trade_lines(chart_m5, res, row_for_chart):
                     if m.get("text", "").startswith(("P2 ENTRY", "P2 PLANNED"))), times[0])
     target_t = _target_ray_start(res.get("target_info"), entry_t)
     own_t = R._to_epoch_utc(row_for_chart["formation_time"])
-    starts = (("target", target_t), ("stop", entry_t), ("entry", entry_t),
+    stop_ts, entry_ts = _stop_ray_start_time(res), _entry_ray_start_time(res)
+    stop_t = R._to_epoch_utc(stop_ts) if stop_ts is not None else entry_t
+    entry_line_t = R._to_epoch_utc(entry_ts) if entry_ts is not None else entry_t
+    starts = (("target", target_t), ("stop", stop_t), ("entry", entry_line_t),
               (f"M5 {res['level_type']}", own_t))
 
     kept = []
@@ -1761,6 +1802,7 @@ def build_chart_stack_for_row(res, m5_only=False):
     extra_context_times = [row_for_chart["breakout_time"], row_for_chart["retest_time"]]
     if sibling_group is not None:
         extra_context_times.extend(sibling_group["formation_time"])
+    extra_context_times.extend(_target_ray_start_times(res))
     chart_m5 = SR.build_m5_chart(
         row_for_chart, resolved, stop_pts, target_pts,
         level_price=res["own_price"], entry_level=res["entry_m5_level"],
