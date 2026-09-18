@@ -1769,6 +1769,50 @@ def _annotate_swerve(chart_m5, res, is_long):
         chart_m5["markers"].sort(key=lambda m: m["time"])
 
 
+def _rayify_trade_lines(chart_m5, res, row_for_chart):
+    """Turn the M5 pane's full-width target / stop / entry / own-level price
+    lines into rays: each starts at the candle it belongs to and runs to the
+    right edge, with its price (and title) on the y-axis.
+
+    Starts: own level -> its P0 (formation) candle; entry and stop -> the
+    entry candle (the pane's ENTRY/PLANNED marker); target -> the candle the
+    target came from (its opposite-M5 level's formation, else the start of its
+    consolidation area, else the entry candle). A start compressed out of the
+    pane snaps to the first bar at or after it; one before the pane's first
+    bar starts at the first bar. Other price lines (consolidation zone,
+    swerve's planned entry) are left as they are."""
+    if chart_m5 is None or not chart_m5["candles"]:
+        return
+    times = [c["time"] for c in chart_m5["candles"]]
+    entry_t = next((m["time"] for m in chart_m5["markers"]
+                    if m.get("text", "").startswith(("P2 ENTRY", "P2 PLANNED"))), times[0])
+    info = res.get("target_info") or {}
+    level, area = info.get("level"), info.get("area")
+    if level is not None and level.get("formation_time") is not None:
+        target_t = R._to_epoch_utc(level["formation_time"])
+    elif area:
+        target_t = R._to_epoch_utc(area["start_time"])
+    else:
+        target_t = entry_t
+    own_t = R._to_epoch_utc(row_for_chart["formation_time"])
+    starts = (("target", target_t), ("stop", entry_t), ("entry", entry_t),
+              (f"M5 {res['level_type']}", own_t))
+
+    kept = []
+    for pl in chart_m5.get("priceLines", []):
+        start = next((t for prefix, t in starts if pl["title"].startswith(prefix)), None)
+        if start is None:
+            kept.append(pl)
+            continue
+        pts = [{"time": t, "value": pl["price"]} for t in times if t >= start]
+        chart_m5.setdefault("rays", []).append({
+            "points": pts, "color": pl["color"], "lineWidth": pl["lineWidth"],
+            "lineStyle": pl["lineStyle"], "priceLabel": True, "title": pl["title"],
+            "label": pl["title"],
+        })
+    chart_m5["priceLines"] = kept
+
+
 M5_ONLY_NOTE = "<p class='note'>(tick panes and footprints skipped: --m5-charts-only)</p>"
 
 
@@ -1833,6 +1877,7 @@ def build_chart_stack_for_row(res, m5_only=False):
         _annotate_mgmt_events(chart_m5, res, res["is_long"])
         _annotate_target_zone(chart_m5, res)
         _annotate_swerve(chart_m5, res, res["is_long"])
+        _rayify_trade_lines(chart_m5, res, row_for_chart)
     if m5_only:
         return {"m5": chart_m5, "trio": None, "oneMin": None}, {"narrow": M5_ONLY_NOTE,
                                                                 "wide": M5_ONLY_NOTE}

@@ -1852,6 +1852,11 @@ function _baseOpts(tickFmt) {
               fontFamily:"'Courier New', monospace", fontSize:9 },
     grid: { vertLines:{visible:false}, horzLines:{visible:false} },
     crosshair: { mode: 0 },
+    // Wheel over a chart scrolls the page, not the chart; drag-pan, axis-drag
+    // rescale and pinch-zoom stay.
+    handleScroll: { mouseWheel:false, pressedMouseMove:true, horzTouchDrag:true, vertTouchDrag:false },
+    handleScale: { mouseWheel:false, axisPressedMouseMove:{time:true, price:true},
+                   axisDoubleClickReset:true, pinch:true },
     rightPriceScale: { borderColor:'#333', scaleMargins:{top:0.08, bottom:0.08} },
     timeScale: { borderColor:'#333', timeVisible:true, secondsVisible:true,
       tickMarkFormatter: (t) => tickFmt.format(new Date(t * 1000)) },
