@@ -53,31 +53,12 @@ the target are ALL M5 LXPB structure:
      low for a long) -- render_ss_confl_finetune_report.dynamic_stop,
      unchanged.
 
-  5. TARGET = FOUR RULES, ALL READING THE LEVEL'S OWN P1..FILL WINDOW
-     (`_pick_targets`). All four ask the same question -- what did the
-     market build while this level was waiting to be retested -- and all
-     take only structure lying wholly after the level's breakout candle and
-     wholly before the candle it fills in, 1..20 points away on the favourable side:
+  5. TARGET = TWO RULES, BOTH READING THE LEVEL'S OWN P1..FILL WINDOW
+     (`_pick_targets`). Both ask the same question -- what did the market
+     build while this level was waiting to be retested -- and both take only
+     structure lying wholly after the level's breakout candle and wholly
+     before the candle it fills in, 1..20 points away on the favourable side:
 
-       * CONSOLIDATION AREA (m5_structure.py, src tags consol_p0 /
-         consol_edge): the nearest congestion area in that window -- where
-         the market last spent real time on its way away from this level.
-         If the area still holds an UNTESTED opposite-type M5 P0 -- one
-         whose own price sits inside the area's band and that has never
-         been retested -- that P0's own price is the target; otherwise the
-         target is the area's NEAR edge, its LOW for a long and its HIGH
-         for a short.
-       * OPPOSITE M5 LEVEL (`_opposite_m5_target`, src tag m5_opposite):
-         the most recently formed live opposite-type M5 level whose own P1
-         broke >=2 same-type P0s -- the original rule
-         (render_ss_confl_finetune_report.dynamic_target), plus the P1..fill
-         window.
-       * SWING EXTREME (`_swing_extreme_target`, src tag swing_extreme): the
-         most recent CONFIRMED zigzag TROUGH for a long (LHPB), CREST for a
-         short (LLPB), formed between P1 and P2 (just before the retest); the
-         pivot's own price is the target. No pivot there = no target. Only
-         that single pivot is tried; if it is outside the 1..20pt favourable
-         band the rule finds nothing.
        * OPPOSITE M5 LEVEL, ZIGZAG ANCHOR (`_opposite_m5_zz_target`, src tag
          m5_opposite_zz): find the most recent CONFIRMED zigzag TROUGH (short,
          LLPB) or CREST (long, LHPB) in the window -- m5_structure.zigzag_pivots,
@@ -88,18 +69,20 @@ the target are ALL M5 LXPB structure:
          opposite-type M5 P0 formed strictly after that pivot: the LOWEST
          price for a short, the HIGHEST for a long -- with no shared-P1
          confluence requirement (any single P0 qualifies).
+       * SWING EXTREME (`_swing_extreme_target`, src tag swing_extreme): the
+         most recent CONFIRMED zigzag TROUGH for a long (LHPB), CREST for a
+         short (LLPB), formed between P1 and P2 (just before the retest); the
+         pivot's own price is the target. No pivot there = no target. Only
+         that single pivot is tried; if it is outside the 1..20pt favourable
+         band the rule finds nothing.
 
-     ALL FOUR rules run for every trade, whatever --target-mode says, and
-     each is a LIVE CHECKBOX in the report: unticking one re-resolves every
-     row against whichever others are still on (or demotes it to a dimmed
-     NO TARGET row if none are) with no regen, because each rule's whole
-     outcome is precomputed per row (see _mode_payload). With several on, a
-     trade takes whichever rule offers the FARTHER target. --target-mode
-     only sets which boxes start ticked; `--target-mode both` starts
-     consolidation + opposite-m5 ticked (unchanged default), leaving
-     opposite-m5-zz and swing-extreme available but off until ticked in the
-     browser or picked directly with `--target-mode opposite-m5-zz` /
-     `swing-extreme`.
+     BOTH rules run for every trade, whatever --target-mode says, and each is
+     a LIVE CHECKBOX in the report: unticking one re-resolves every row
+     against the other (or demotes it to a dimmed NO TARGET row if none are
+     on) with no regen, because each rule's whole outcome is precomputed per
+     row (see _mode_payload). With both on, a trade takes whichever rule
+     offers the FARTHER target. --target-mode only sets which boxes start
+     ticked; `--target-mode both` (the default) starts both ticked.
 
   6. NO FALLBACKS, BUT SUB-MIN-R TRADES ARE MEASURED, NOT DISCARDED. Unlike
      the H1 report (which falls back to a fixed stop/target when no
@@ -257,9 +240,6 @@ DYNAMIC_STOP_RADIUS_PTS = SF.DYNAMIC_STOP_RADIUS_PTS
 MAX_ALT_FILL_HOURS_DEFAULT = SF.MAX_ALT_FILL_HOURS_DEFAULT
 MIN_R_DEFAULT = 1.0
 TARGET_MODE_DEFAULT = "both"   # both target rules on by default (see _pick_targets)
-CONSOL_MIN_BARS_DEFAULT = MS.MIN_BARS_DEFAULT
-CONSOL_MAX_HEIGHT_DEFAULT = MS.MAX_HEIGHT_PTS_DEFAULT
-CONSOL_MAX_ER_DEFAULT = MS.MAX_ER_DEFAULT
 ZZ_THRESHOLD_PTS_DEFAULT = MS.ZIGZAG_THRESHOLD_DEFAULT   # reversal that confirms a zigzag leg
 ZZ_MIN_BARS_DEFAULT = MS.ZIGZAG_MIN_BARS_DEFAULT          # bars required after the extreme to confirm
 SWERVE_TOL_PTS_DEFAULT = 1.0          # a swing this close to the planned entry triggers the move
@@ -556,31 +536,16 @@ def _dynamic_stop_m5_thrust(m5_ledger, level_type, alt_price, is_long, touch_tim
 
 
 # --------------------------------------------------------------------------
-# Target selection -- PREVIOUS CONSOLIDATION AREAS (m5_structure.py)
+# Target selection -- ZIGZAG-BASED RULES (m5_structure.zigzag_pivots)
 #
-# The original rule (SF.dynamic_target, still available via
-# --target-mode opposite-m5) took the newest live opposite-type M5 level
-# whose P1 broke >= 2 same-type P0s, 1..20pt away. It is a single PRICE,
-# with no notion of whether anything is actually resting there now.
-#
-# The consolidation rule instead exits where the market last spent real
-# time: the nearest congestion area in the trade's own favourable
-# direction (see m5_structure.consolidation_areas for the definition),
-# restricted to areas built BETWEEN THIS LEVEL'S OWN P1 AND THE FILL -- wholly
-# after the breakout candle and wholly before the fill's own M5 candle. That
-# is the stall price actually made after breaking away from the level;
-# congestion from before P1 belongs to a move this level had no part in, and
-# congestion after the fill is not yet there to aim at. If
-# that area still holds an UNTESTED opposite-type M5 P0 -- one whose own
-# price sits inside the area's band and that has never been retested --
-# that P0's own price is the target (src tag consol_p0). Otherwise the target
-# is the area's NEAR EDGE: its LOW for a long and its HIGH for a short (src tag
-# consol_edge): the first price of the zone the trade reaches, not the far
-# side it may never get through. The same 1..20pt band bounds both.
+# Both rules read the trade's own P1..fill window (see _window_bounds): the
+# swing-extreme rule takes the last confirmed zigzag pivot's own price, the
+# opposite-M5-zigzag-anchor rule takes the farthest untested opposite-type M5
+# P0 formed after that pivot. The same 1..20pt favourable band bounds both.
 # --------------------------------------------------------------------------
 
-TARGET_MODES = ("consolidation", "opposite-m5", "opposite-m5-zz", "swing-extreme")   # every rule _pick_targets computes
-DEFAULT_TARGET_MODES_BOTH = ("consolidation", "opposite-m5")        # what "--target-mode both" starts ticked
+TARGET_MODES = ("opposite-m5-zz", "swing-extreme")   # every rule _pick_targets computes
+DEFAULT_TARGET_MODES_BOTH = TARGET_MODES              # what "--target-mode both" starts ticked
 
 
 def _window_bounds(touch_time, p1_time, p2_time=None):
@@ -720,48 +685,6 @@ def _live_m5_target_candidates(m5_ledger, level_type, touch_time, min_breakout_l
     return pd.concat([live, live_gated], ignore_index=True)
 
 
-def _opposite_m5_target(m5_ledger, level_type, price, is_long, touch_time,
-                        p1_time=None, p2_time=None):
-    """(target_price, target_info) under the OPPOSITE-M5 rule, or
-    (None, None).
-
-    The original rule (SF.dynamic_target, left unchanged there because the
-    H1 report still uses it): the most recently FORMED live opposite-type M5
-    level, 1..20pt away on the favourable side, whose own P1 candle broke at
-    least two distinct same-type P0s. "Live" is _live_m5_target_candidates's
-    own query -- broken out on a completed candle before the entry bar,
-    never retested since, WITHOUT also requiring the candidate to have
-    passed the entry candidate gate (see that function's own docstring) --
-    a target only needs an untouched-since price, not a confirmed swing.
-
-    Re-implemented here rather than called, for one reason: this report adds
-    the SAME P1..fill window the consolidation rule uses. The opposite level's
-    own P0 must have formed strictly after this level's P1 and strictly
-    before its P2, so both target rules answer the same question -- what did
-    the market build while this level was waiting to be retested -- and
-    differ only in what they look for there."""
-    opposite_type = "LLPB" if level_type == "LHPB" else "LHPB"
-    cand = _live_m5_target_candidates(m5_ledger, opposite_type, touch_time,
-                                      min_breakout_levels=2,
-                                      price=price, max_pts=MAX_DYNAMIC_TARGET_PTS)
-    if cand.empty:
-        return None, None
-    after, cutoff = _window_bounds(touch_time, p1_time, p2_time)
-    formed = pd.to_datetime(cand["formation_time"], utc=True)
-    in_window = formed < cutoff
-    if after is not None:
-        in_window &= formed > pd.Timestamp(after)
-    cand = cand[in_window]
-    if cand.empty:
-        return None, None
-    distance = (cand["price"] - price) if is_long else (price - cand["price"])
-    cand = cand[(distance >= MIN_DYNAMIC_TARGET_PTS) & (distance <= MAX_DYNAMIC_TARGET_PTS)]
-    if cand.empty:
-        return None, None
-    best = cand.loc[cand["formation_time"].idxmax()]
-    return float(best["price"]), {"src": "m5_opposite", "level": best.to_dict(), "area": None}
-
-
 def _opposite_m5_zz_target(m5_ledger, level_type, price, is_long, touch_time,
                            p1_time=None, p2_time=None,
                            zigzag_threshold=ZZ_THRESHOLD_PTS_DEFAULT,
@@ -809,7 +732,7 @@ def _opposite_m5_zz_target(m5_ledger, level_type, price, is_long, touch_time,
     cand = cand.assign(_formed=pd.to_datetime(cand["formation_time"], utc=True))
     cand = cand.sort_values(["price", "_formed"], ascending=[not is_long, True])
     best = cand.iloc[0].drop("_formed")
-    return float(best["price"]), {"src": "m5_opposite_zz", "level": best.to_dict(), "area": None,
+    return float(best["price"]), {"src": "m5_opposite_zz", "level": best.to_dict(),
                                   "pivot_time": pivot_time, "pivot_price": pivot_price}
 
 
@@ -844,7 +767,7 @@ def _swing_extreme_target(level_type, price, is_long, touch_time,
     distance = (pivot_price - price) if is_long else (price - pivot_price)
     if not (MIN_DYNAMIC_TARGET_PTS <= distance <= MAX_DYNAMIC_TARGET_PTS):
         return None, None
-    return float(pivot_price), {"src": "swing_extreme", "level": None, "area": None,
+    return float(pivot_price), {"src": "swing_extreme", "level": None,
                                 "pivot_time": pivot_time, "pivot_price": pivot_price,
                                 "pivot_kind": kind}
 
@@ -855,7 +778,7 @@ def _pick_targets(m5_ledger, level_type, price, is_long, touch_time, args,
     produces one for this trade -- keys from TARGET_MODES; a missing key
     means that rule found nothing.
 
-    ALL FOUR rules are always computed, whatever --target-mode says,
+    BOTH rules are always computed, whatever --target-mode says,
     because each one is a live in-browser toggle in the report: switching a
     rule off can demote a trade to a no-trade, and switching it back on has
     to restore that trade's whole bracket with no Python regen.
@@ -866,10 +789,6 @@ def _pick_targets(m5_ledger, level_type, price, is_long, touch_time, args,
     FARTHEST target wins -- the rule asking for more room. See
     _active_mode."""
     out = {}
-    px, info = _opposite_m5_target(m5_ledger, level_type, price, is_long,
-                                   touch_time, p1_time, p2_time)
-    if px is not None:
-        out["opposite-m5"] = (px, info)
     px, info = _opposite_m5_zz_target(m5_ledger, level_type, price, is_long,
                                       touch_time, p1_time, p2_time,
                                       zigzag_threshold=args.zz_threshold_pts,
@@ -882,10 +801,6 @@ def _pick_targets(m5_ledger, level_type, price, is_long, touch_time, args,
                                      zigzag_min_bars=args.zz_min_bars)
     if px is not None:
         out["swing-extreme"] = (px, info)
-    px, info = _consolidation_target(m5_ledger, level_type, price, is_long,
-                                     touch_time, args, p1_time, p2_time)
-    if px is not None:
-        out["consolidation"] = (px, info)
     return out
 
 
@@ -897,42 +812,6 @@ def _active_mode(targets, price, enabled=TARGET_MODES):
     if not live:
         return None
     return max(live, key=lambda m: abs(live[m][0] - price))
-
-
-def _consolidation_target(m5_ledger, level_type, price, is_long, touch_time, args,
-                          p1_time=None, p2_time=None):
-    """(target_price, target_info) under the CONSOLIDATION-AREA rule, or
-    (None, None). `p1_time`/`p2_time` are the subject level's own breakout
-    and retest -- the window an area has to fall inside (see the section
-    comment above). They are optional only so a caller without a level of its
-    own can omit the bound; every caller here passes them.
-
-    target_info carries 'src' plus whichever of 'area'/'level' that source
-    used, so the row and the chart can both show WHERE the target came
-    from."""
-    opposite_type = "LLPB" if level_type == "LHPB" else "LHPB"
-    # "Untested still" == broken out and never retested since, as of the last
-    # completed M5 candle before entry -- _live_m5_target_candidates's own
-    # query (min_breakout_levels=1: the shared-P1 requirement belongs to the
-    # opposite-M5 rule, not to this one, where the consolidation area itself
-    # is the evidence that the price matters). Also does not require the
-    # candidate to have passed the entry candidate gate -- see that
-    # function's own docstring.
-    live_opposite = _live_m5_target_candidates(m5_ledger, opposite_type, touch_time,
-                                               price=price, max_pts=MAX_DYNAMIC_TARGET_PTS)
-    areas = consolidation_areas_for(args)
-    after, cutoff = _window_bounds(touch_time, p1_time, p2_time)
-    return MS.consolidation_target(areas, live_opposite, price, is_long, cutoff,
-                                   MIN_DYNAMIC_TARGET_PTS, MAX_DYNAMIC_TARGET_PTS,
-                                   after=after)
-
-
-def consolidation_areas_for(args):
-    """m5_structure.consolidation_areas under this run's own CLI settings
-    (memoised there, so this is one walk per process)."""
-    return MS.consolidation_areas(min_bars=args.consol_min_bars,
-                                  max_height=args.consol_max_height,
-                                  max_er=args.consol_max_er)
 
 
 # --------------------------------------------------------------------------
@@ -1213,8 +1092,8 @@ def _pre_p1_er_by_k(breakout_time, max_k=PRE_P1_ER_MAX_K):
     """Kaufman efficiency ratio (R.L._efficiency_ratio -- net move / total
     path traveled; 0 = round-tripped chop, 1 = a straight run) of the M5
     closes immediately preceding this level's own P1 breakout bar, for
-    every lookback k = 2..max_k. Same measure m5_structure.py's own
-    consolidation-area rule and lxpb.py's own candidate gate use, aimed
+    every lookback k = 2..max_k. Same measure lxpb.py's own
+    candidate gate uses, aimed
     backward from a breakout instead of forward from a level's own
     formation. Returned as a list indexed [0] -> k=2, [1] -> k=3, ...,
     with None where the continuous M5 series doesn't reach back that far.
@@ -1711,33 +1590,7 @@ def _snapper(chart_m5):
     return snap
 
 
-CONSOL_ZONE_COLOR = "#a78bfa"   # the target's own consolidation area (violet)
 SWERVE_COLOR = "#86efac"        # the swing that moved the entry, and the planned entry it left
-
-
-def _annotate_target_zone(chart_m5, res):
-    """Draw the consolidation area the target came from as two dashed price
-    lines (its high and its low) -- see _pick_targets. The target price line
-    itself is already drawn by build_m5_chart; these show the ZONE it sits
-    in, which is what makes a consol_edge target readable as an edge rather
-    than an arbitrary price. No-op for --target-mode opposite-m5 or
-    opposite-m5-zz, neither of which has a zone.
-
-    Price lines, not markers on the area's own bars: the area now falls
-    inside the level's own P1..P2 span, but the pane is anchored on the
-    trade and compressed, so the area's bars may still be missing from it.
-    Each line's title carries the area's own start time and length, which
-    is the part a reviewer needs."""
-    info = res.get("target_info") or {}
-    area = info.get("area")
-    if chart_m5 is None or not area:
-        return
-    for key in ("high", "low"):
-        chart_m5.setdefault("priceLines", []).append({
-            "price": area[key], "color": CONSOL_ZONE_COLOR, "lineWidth": 1, "lineStyle": 2,
-            "title": (f"consolidation {key} ({area['n_bars']} M5 bars from "
-                      f"{R._to_pt_str(area['start_time'])})"),
-        })
 
 
 def _annotate_swerve(chart_m5, res, is_long):
@@ -1768,13 +1621,10 @@ def _annotate_swerve(chart_m5, res, is_long):
 
 def _target_ray_start(info, entry_t):
     """Epoch start of a target's ray: its opposite-M5 level's formation, else
-    the start of its consolidation area, else the entry candle."""
-    info = info or {}
-    level, area = info.get("level"), info.get("area")
+    the entry candle."""
+    level = (info or {}).get("level")
     if level is not None and level.get("formation_time") is not None:
         return R._to_epoch_utc(level["formation_time"])
-    if area:
-        return R._to_epoch_utc(area["start_time"])
     return entry_t
 
 
@@ -1785,11 +1635,11 @@ def _rayify_trade_lines(chart_m5, res, row_for_chart):
 
     Starts: own level -> its P0 (formation) candle; entry and stop -> the
     entry candle (the pane's ENTRY/PLANNED marker); target -> the candle the
-    target came from (its opposite-M5 level's formation, else the start of its
-    consolidation area, else the entry candle). A start compressed out of the
+    target came from (its opposite-M5 level's formation, else the entry
+    candle). A start compressed out of the
     pane snaps to the first bar at or after it; one before the pane's first
-    bar starts at the first bar. Other price lines (consolidation zone,
-    swerve's planned entry) are left as they are."""
+    bar starts at the first bar. Other price lines (swerve's planned
+    entry) are left as they are."""
     if chart_m5 is None or not chart_m5["candles"]:
         return
     times = [c["time"] for c in chart_m5["candles"]]
@@ -1817,11 +1667,10 @@ def _rayify_trade_lines(chart_m5, res, row_for_chart):
 
 def _add_mode_views(chart_m5, res, is_long):
     """Ship every target rule's own version of what the rule changes on the
-    M5 pane, as chart_m5['modeViews'][mode] = {ray, zoneLines, markers}: the
-    target ray, the consolidation-zone lines, and the exit / trade-management
-    markers. The browser (see chartForMode in JS) strips the default rule's
-    versions of those from the pane -- target ray titled 'target', zone lines
-    titled 'consolidation', markers WIN/LOSS/CANDLE/'Stop ->'/RR FLOOR EXIT --
+    M5 pane, as chart_m5['modeViews'][mode] = {ray, markers}: the
+    target ray and the exit / trade-management markers. The browser (see
+    chartForMode in JS) strips the default rule's versions of those from the
+    pane -- target ray titled 'target', markers WIN/LOSS/CANDLE/'Stop ->'/RR FLOOR EXIT --
     and puts the ticked rule's in, so the pane follows the target-rule
     checkboxes the same way the row's cells do. Entry, stop and the candles
     never change with the rule. Needs _rayify_trade_lines to have run (it
@@ -1843,14 +1692,7 @@ def _add_mode_views(chart_m5, res, is_long):
         view = {"ray": {**tmpl, "title": title, "label": title,
                         "points": [{"time": t, "value": m["target_price"]}
                                    for t in times if t >= start]},
-                "zoneLines": [], "markers": []}
-        area = info.get("area")
-        if area:
-            for key in ("high", "low"):
-                view["zoneLines"].append({
-                    "price": area[key], "color": CONSOL_ZONE_COLOR, "lineWidth": 1, "lineStyle": 2,
-                    "title": (f"consolidation {key} ({area['n_bars']} M5 bars from "
-                              f"{R._to_pt_str(area['start_time'])})")})
+                "markers": []}
         resolved = m["resolved"]
         outcome, exit_time = resolved.get("outcome"), resolved.get("exit_time")
         t = snap(exit_time) if exit_time is not None else None
@@ -1938,7 +1780,6 @@ def build_chart_stack_for_row(res, m5_only=False):
         _annotate_candidates(chart_m5, row_for_chart, res["is_long"], sibling_group,
                             res["cluster_member_formations"])
         _annotate_mgmt_events(chart_m5, res, res["is_long"])
-        _annotate_target_zone(chart_m5, res)
         _annotate_swerve(chart_m5, res, res["is_long"])
         _rayify_trade_lines(chart_m5, res, row_for_chart)
         _add_mode_views(chart_m5, res, res["is_long"])
@@ -2372,28 +2213,15 @@ def _target_title(info):
     """Tooltip for the Target cell, per target source (see _pick_targets)."""
     if not info:
         return "no target info"
-    area, level = info.get("area"), info.get("level")
-    if info.get("src") == "m5_opposite":
-        return (f"Newest eligible M5 {level['type']} P0: "
-                f"{R._to_pt_str(level['formation_time'])}; shared P1: "
-                f"{R._to_pt_str(level['breakout_time'])}")
+    level = info.get("level")
     if info.get("src") == "swing_extreme":
         kind = "crest" if info["pivot_kind"] == "high" else "trough"
         return (f"Most recent confirmed zigzag {kind} (P1&hellip;P2): "
                 f"{info['pivot_price']:.2f} at {R._to_pt_str(info['pivot_time'])} "
                 f"-- the pivot's own price is the target")
-    if info.get("src") == "m5_opposite_zz":
-        return (f"Farthest live M5 {level['type']} P0 after the zigzag pivot: "
-                f"{R._to_pt_str(level['formation_time'])}; pivot "
-                f"{info['pivot_price']:.2f} at {R._to_pt_str(info['pivot_time'])}")
-    where = (f"Consolidation area (P1&hellip;fill) {R._to_pt_str(area['start_time'])} &rarr; "
-             f"{R._to_pt_str(area['end_time'])} ({area['n_bars']} M5 bars, "
-             f"{area['low']:.2f}-{area['high']:.2f}, ER {area['er']:.2f})")
-    if info.get("src") == "consol_p0":
-        return (f"{where}; still holds an untested M5 {level['type']} P0 "
-                f"{float(level['price']):.2f} formed "
-                f"{R._to_pt_str(level['formation_time'])} -- that P0 is the target")
-    return f"{where}; no untested opposite P0 left inside it, so the target is its near edge"
+    return (f"Farthest live M5 {level['type']} P0 after the zigzag pivot: "
+            f"{R._to_pt_str(level['formation_time'])}; pivot "
+            f"{info['pivot_price']:.2f} at {R._to_pt_str(info['pivot_time'])}")
 
 
 def _compute_report_stats(filled):
@@ -2570,7 +2398,7 @@ def _mode_payload(res, mode):
     return {
         "dist": m["target_pts"],
         "tgt": (f'{m["target_price"]:.2f}<span class="src-tag m5">'
-                f'{info.get("src", "m5_opposite")}</span>'),
+                f'{info.get("src", "m5_opposite_zz")}</span>'),
         "tgtTitle": _target_title(info),
         "rr": f'{m["r_multiple"]:.2f}',
         "rrVal": f'{m["r_multiple"]:.6f}',
@@ -2979,27 +2807,20 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
         if args.pegged_entry else
         "Entry is a plain static limit order (no chasing).")
     target_lead_sentence = (
-        f"TARGET = four rules, all reading only what the market built BETWEEN THIS LEVEL'S OWN "
-        f"P1 AND ITS FILL (wholly after its breakout candle, wholly before the candle it fills in) and all "
+        f"TARGET = two rules, both reading only what the market built BETWEEN THIS LEVEL'S OWN "
+        f"P1 AND ITS FILL (wholly after its breakout candle, wholly before the candle it fills in) and both "
         f"bounded to {MIN_DYNAMIC_TARGET_PTS:g}&ndash;{MAX_DYNAMIC_TARGET_PTS:g} points from "
-        f"the fill on the favourable side. (1) CONSOLIDATION AREA: the nearest congestion area "
-        f"in that window (a run of &ge;{args.consol_min_bars} M5 bars inside a "
-        f"&le;{args.consol_max_height:g}pt band with efficiency ratio &lt; "
-        f"{args.consol_max_er:g}) -- the untested opposite-type M5 P0 still sitting inside it "
-        f"(src tag consol_p0) if there is one, else the area's near edge, its low for a long "
-        f"and its high for a short (src tag consol_edge). (2) OPPOSITE M5 LEVEL: the most "
-        f"recently formed live opposite-type M5 level whose P1 candle broke at least two "
-        f"distinct same-type P0s (src tag m5_opposite). (3) OPPOSITE M5 LEVEL, ZIGZAG ANCHOR: "
+        f"the fill on the favourable side. (1) OPPOSITE M5 LEVEL, ZIGZAG ANCHOR: "
         f"the most recent CONFIRMED zigzag trough (short) / crest (long) in that window (a "
         f"&ge;{args.zz_threshold_pts:g}pt reversal off bar highs/lows, confirmed "
         f"&ge;{args.zz_min_bars} bars after the extreme), then the FARTHEST live opposite-type "
         f"M5 P0 formed after it (lowest for a short, highest for a long), no shared-P1 confluence required "
-        f"(src tag m5_opposite_zz). (4) SWING EXTREME: the most recent confirmed zigzag "
+        f"(src tag m5_opposite_zz). (2) SWING EXTREME: the most recent confirmed zigzag "
         f"trough (long) / crest (short) formed between P1 and P2, with the pivot's own price as the target "
-        f"(src tag swing_extreme). All four are precomputed for every trade and all four are "
+        f"(src tag swing_extreme). Both are precomputed for every trade and both are "
         f"live checkboxes in the Target rules row of the panel above: untick one and every row "
-        f"re-resolves against whichever others are still on, or becomes a dimmed NO TARGET row "
-        f"if none are. With several ticked (the default here: "
+        f"re-resolves against the other, or becomes a dimmed NO TARGET row "
+        f"if neither is on. With both ticked (the default here: "
         f"{' + '.join(args.default_target_modes)}) a trade takes whichever rule offers the "
         f"FARTHER target.")
     reason_html = "".join(
@@ -3185,8 +3006,8 @@ shown. Defaults to any (no filtering).">P1&rarr;P2 gap (min)</span>
   <div class="filter-row">
     <span class="filter-label" title="Kaufman efficiency ratio (R._efficiency_ratio: net move /
 total path traveled over k M5 closes; 0 = round-tripped chop, 1 = a straight run) of the k M5
-closes immediately BEFORE this level's own P1 (breakout) bar -- same measure m5_structure.py's
-consolidation-area rule and lxpb.py's own candidate gate use (lxpb.ER_CONSOLIDATION_MAX = 0.5),
+closes immediately BEFORE this level's own P1 (breakout) bar -- same measure lxpb.py's own
+candidate gate uses (lxpb.ER_CONSOLIDATION_MAX = 0.5),
 aimed backward from the breakout instead of forward from a level's own formation. A trade that
 breaks out of a trending/grinding run rather than a contained, overlapping range has a HIGH ER
 here (no structure); a trade that breaks out of real consolidation has a LOW one. BOTH k and the
@@ -3322,10 +3143,6 @@ a trade can become a NO TARGET row (dimmed, dropped from the stats) if the rule 
 was the only one that found a target. With several ticked, each trade uses whichever rule offers
 the FARTHER target. Untick all and no trade has a target at all. The charts below always draw
 the bracket the page was GENERATED with -- regen to chart a different default.">Target rules</span>
-    <label class="chip"><input type="checkbox" class="f-target-mode" data-mode="consolidation" __CONSOL_CHECKED__>
-      Consolidation area (P1&hellip;fill)</label>
-    <label class="chip"><input type="checkbox" class="f-target-mode" data-mode="opposite-m5" __OPP_CHECKED__>
-      Opposite M5 level (P1&hellip;fill)</label>
     <label class="chip"><input type="checkbox" class="f-target-mode" data-mode="opposite-m5-zz" __OPPZZ_CHECKED__>
       Opposite M5 level, zigzag anchor (P1&hellip;fill)</label>
     <label class="chip"><input type="checkbox" class="f-target-mode" data-mode="swing-extreme" __SWING_CHECKED__>
@@ -3349,11 +3166,7 @@ the box is checked.">Trade management</span>
 
     target_col_title = (
         "Whichever target rule is ticked in the Target rules row above, and with several ticked "
-        "the one offering the FARTHER target. consol_p0: an untested opposite-type M5 P0 still "
-        "sitting inside a consolidation area built between this level's own P1 and P2. "
-        "consol_edge: that area's near edge instead -- low for a long, high for a short. "
-        "m5_opposite: the newest live opposite M5 level sharing its P1 with another P0, formed "
-        "in the same P1..fill window. m5_opposite_zz: the farthest live opposite M5 P0 (lowest for a "
+        "the one offering the FARTHER target. m5_opposite_zz: the farthest live opposite M5 P0 (lowest for a "
         "short, highest for a long; no shared-P1 confluence required) formed after the most recent "
         "confirmed zigzag trough (short) / crest (long) in that window. swing_extreme: the "
         "most recent confirmed zigzag trough (long) / crest (short) formed between P1 and P2, at its own price.")
@@ -3380,8 +3193,8 @@ the box is checked.">Trade management</span>
             f"a plain subtraction of their own M5 bar timestamps.\">P1&rarr;P2 (min)</th>"
             f"<th title=\"Kaufman efficiency ratio (net move / total path traveled; 0 = "
             f"round-tripped chop, 1 = a straight run) of the k M5 closes immediately BEFORE "
-            f"this level's own P1 (breakout) bar -- same measure m5_structure.py's "
-            f"consolidation-area rule and lxpb.py's own candidate gate use "
+            f"this level's own P1 (breakout) bar -- same measure lxpb.py's own "
+            f"candidate gate uses "
             f"(R._efficiency_ratio), aimed backward from the breakout instead of forward from "
             f"a level's own formation. k (default {PRE_P1_ER_K_DEFAULT}) and the filter cutoff "
             f"below are both live in the Pre-P1 structure filter above -- no regen "
@@ -3448,10 +3261,6 @@ the box is checked.">Trade management</span>
    .replace("__PRE_P1_ER_MAX__", f"{PRE_P1_ER_MAX_DEFAULT:g}")
    .replace("__WEAKP1_WINDOW__", f"{M5_RANGE_RATIO_WINDOW_DEFAULT:g}")
    .replace("__WEAKP1_MAX_WINDOW__", f"{M5_RANGE_RATIO_MAX_WINDOW:g}")
-   .replace("__CONSOL_CHECKED__",
-            "checked" if "consolidation" in args.default_target_modes else "")
-   .replace("__OPP_CHECKED__",
-            "checked" if "opposite-m5" in args.default_target_modes else "")
    .replace("__OPPZZ_CHECKED__",
             "checked" if "opposite-m5-zz" in args.default_target_modes else "")
    .replace("__SWING_CHECKED__",
@@ -3588,7 +3397,7 @@ function activeTargetModes() {
   return Array.from(document.querySelectorAll('.f-target-mode:checked')).map(cb => cb.dataset.mode);
 }
 // The M5 pane's own target-dependent parts (see _add_mode_views): swap the
-// default rule's target ray / consolidation-zone lines / exit + management
+// default rule's target ray / exit + management
 // markers for the ticked rule's, and redraw the pane if it is already open.
 function chartForMode(idx, mode) {
   const cd = CHARTS[idx];
@@ -3597,7 +3406,6 @@ function chartForMode(idx, mode) {
   if (!m5._base) {
     m5._base = {
       rays: m5.rays.filter(r => !(r.title || '').startsWith('target')),
-      priceLines: m5.priceLines.filter(p => !p.title.startsWith('consolidation')),
       markers: m5.markers.filter(m => !/^(WIN|LOSS|CANDLE|RR FLOOR EXIT|Stop →)/.test(m.text || '')),
     };
     m5._shown = m5.activeMode;
@@ -3606,7 +3414,6 @@ function chartForMode(idx, mode) {
   m5._shown = mode;
   const v = m5.modeViews[mode];
   m5.rays = m5._base.rays.concat(v ? [v.ray] : []);
-  m5.priceLines = m5._base.priceLines.concat(v ? v.zoneLines : []);
   m5.markers = m5._base.markers.concat(v ? v.markers : []).sort((a, b) => a.time - b.time);
   if (rendered[idx]) {
     const el = document.getElementById('cm5-' + idx);
@@ -3929,25 +3736,18 @@ if __name__ == "__main__":
                              f"still taken, charted and resolved; the report's dynamic filter "
                              f"excludes those rows from the headline stats by default.")
     parser.add_argument("--target-mode",
-                        choices=("both", "consolidation", "opposite-m5", "opposite-m5-zz",
-                                 "swing-extreme"),
+                        choices=("both", "opposite-m5-zz", "swing-extreme"),
                         default=TARGET_MODE_DEFAULT,
                         help="Which target rule(s) are ON BY DEFAULT in the rendered page. "
-                             "All four rules are ALWAYS computed and all four are live "
+                             "Both rules are ALWAYS computed and both are live "
                              "checkboxes in the report itself, so this only sets the starting "
-                             "state. both (default): consolidation + opposite-m5 start ticked "
-                             "(opposite-m5-zz and swing-extreme start off, still available in the browser); "
-                             "whichever ticked rule offers the FARTHER target wins per trade. "
-                             "consolidation: the nearest consolidation area built between this "
-                             "level's own P1 and P2 -- an untested opposite-type M5 P0 inside "
-                             "it if there is one, else the area's near edge (low for a long, "
-                             "high for a short). opposite-m5: the newest live opposite-type M5 "
-                             "level whose P1 broke >=2 same-type P0s and whose own P0 formed "
-                             "inside the same P1..fill window. opposite-m5-zz: the farthest live "
-                             "opposite-type M5 P0 (no shared-P1 confluence required) formed "
-                             "after the most recent confirmed zigzag trough (short) / crest (long) in that "
-                             "window -- see --zz-threshold-pts / --zz-min-bars. swing-extreme: "
-                             "the most recent confirmed zigzag trough (long) / crest (short) formed between P1 and P2, at its own price.")
+                             "state. both (default): both start ticked; whichever ticked rule "
+                             "offers the FARTHER target wins per trade. opposite-m5-zz: the "
+                             "farthest live opposite-type M5 P0 (no shared-P1 confluence "
+                             "required) formed after the most recent confirmed zigzag trough "
+                             "(short) / crest (long) in that window -- see --zz-threshold-pts "
+                             "/ --zz-min-bars. swing-extreme: the most recent confirmed zigzag "
+                             "trough (long) / crest (short) formed between P1 and P2, at its own price.")
     parser.add_argument("--zz-threshold-pts", type=float, default=ZZ_THRESHOLD_PTS_DEFAULT,
                         help=f"Point reversal off bar highs/lows that confirms a new zigzag leg "
                              f"for the opposite-m5-zz target rule (default "
@@ -3956,16 +3756,6 @@ if __name__ == "__main__":
                         help=f"Bars required after a zigzag leg's own extreme bar before it can "
                              f"confirm, for the opposite-m5-zz target rule (default "
                              f"{ZZ_MIN_BARS_DEFAULT}).")
-    parser.add_argument("--consol-min-bars", type=int, default=CONSOL_MIN_BARS_DEFAULT,
-                        help=f"Minimum M5 bars in a consolidation area (default "
-                             f"{CONSOL_MIN_BARS_DEFAULT} = 30 minutes).")
-    parser.add_argument("--consol-max-height", type=float, default=CONSOL_MAX_HEIGHT_DEFAULT,
-                        help=f"Tallest price band a consolidation area may span, in points "
-                             f"(default {CONSOL_MAX_HEIGHT_DEFAULT:g}).")
-    parser.add_argument("--consol-max-er", type=float, default=CONSOL_MAX_ER_DEFAULT,
-                        help=f"Efficiency-ratio ceiling for a consolidation area -- above this "
-                             f"the run is a trend, not congestion (default "
-                             f"{CONSOL_MAX_ER_DEFAULT:g}, lxpb.py's own ER_CONSOLIDATION_MAX).")
     parser.add_argument("--swerve", action=argparse.BooleanOptionalAction, default=True,
                         help="Move the entry past a confirmed swing sitting on it (see the "
                              "SWERVED section). ON by default.")
