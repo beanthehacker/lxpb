@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Upcoming M5 Levels</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%AF%3C/text%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #0d1117; --panel: #161b22; --panel2: #1c2230; --line: #2a3140; --text: #e6edf3;
+  --muted: #8b96a5; --accent: #58a6ff; --long: #3fb950; --short: #f85149;
+  --entry: #fbbf24; --stop: #f472b6; --warn: #d29922;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f6f8fa; --panel: #ffffff; --panel2: #f0f3f6; --line: #d0d7de; --text: #1f2328;
+    --muted: #59636e; --accent: #0969da; --long: #1a7f37; --short: #cf222e;
+    --entry: #b7791f; --stop: #c2255c; --warn: #9a6700;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.wrap { max-width: 1500px; margin: 0 auto; padding: 16px; }
+header { display: flex; flex-wrap: wrap; gap: 12px 28px; align-items: baseline; margin-bottom: 12px; }
+h1 { font-size: 20px; margin: 0; }
+.stat { color: var(--muted); }
+.stat b { color: var(--text); font-variant-numeric: tabular-nums; }
+.price { font-size: 20px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+button, input, select { font: inherit; color: inherit; }
+button { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px;
+  padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button:focus-visible, input:focus-visible, .seg label:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.banner { background: color-mix(in srgb, var(--warn) 18%, var(--panel)); border: 1px solid var(--warn);
+  border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; }
+.controls { display: flex; flex-wrap: wrap; gap: 14px 28px; align-items: center; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; }
+.controls .grp { display: flex; align-items: center; gap: 8px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg label { padding: 4px 12px; cursor: pointer; background: var(--panel2); border-right: 1px solid var(--line); }
+.seg label:last-child { border-right: 0; }
+.seg input:checked + label { background: var(--accent); color: #fff; }
+input[type=number] { width: 68px; background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px 6px; }
+input[type=range] { width: 200px; accent-color: var(--accent); }
+.count { margin-left: auto; color: var(--muted); }
+table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; overflow: hidden; }
+th, td { padding: 6px 10px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+th { background: var(--panel2); color: var(--muted); font-weight: 600; font-size: 12px;
+  text-transform: uppercase; letter-spacing: .03em; position: sticky; top: 0; z-index: 2; }
+th:nth-child(-n+2), td:nth-child(-n+2) { text-align: left; }
+tbody { counter-reset: lv; }
+tr.lv { counter-increment: lv; }
+td.n::before { content: counter(lv); }
+tr.lv td { border-top: 2px solid var(--line); }
+tr.lv:first-of-type td { border-top: 0; }
+tr.dim td { color: var(--muted); }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+.badge.long { background: color-mix(in srgb, var(--long) 22%, transparent); color: var(--long); }
+.badge.short { background: color-mix(in srgb, var(--short) 22%, transparent); color: var(--short); }
+.entry { color: var(--entry); font-weight: 600; }
+.stopv { color: var(--stop); font-weight: 600; }
+.tag { font-size: 11px; padding: 0 6px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); }
+.tag.spike { color: var(--warn); border-color: var(--warn); }
+tr.ch td { padding: 0 10px 10px; text-align: left; }
+.charts { display: grid; grid-template-columns: minmax(280px, 2fr) minmax(360px, 3fr); gap: 10px; }
+.cbox { position: relative; height: 270px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
+  background: var(--panel); }
+.clabel { position: absolute; left: 8px; top: 4px; z-index: 3; font-size: 11px; color: var(--muted);
+  pointer-events: none; }
+.empty { padding: 40px; text-align: center; color: var(--muted); }
+footer { color: var(--muted); font-size: 12px; margin: 14px 2px; }
+@media (max-width: 900px) { .charts { grid-template-columns: 1fr; } .wrap { padding: 12px 16px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Upcoming M5 levels &middot; ES</h1>
+    <span class="stat">Latest <span class="price" id="price">&ndash;</span>
+      <span id="price-time"></span></span>
+    <span class="stat">Last completed M5 bar <b id="last-bar">&ndash;</b></span>
+    <span class="stat">Next update <b id="next-run">&ndash;</b></span>
+    <button id="refresh" type="button">Refresh now</button>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+
+  <div class="controls" role="group" aria-label="Filters">
+    <div class="grp">
+      <span class="stat">Side</span>
+      <div class="seg" id="seg-side">
+        <input type="radio" name="side" id="s-all" value="all" checked><label for="s-all">All</label>
+        <input type="radio" name="side" id="s-lhpb" value="LHPB"><label for="s-lhpb">LHPB &middot; long</label>
+        <input type="radio" name="side" id="s-llpb" value="LLPB"><label for="s-llpb">LLPB &middot; short</label>
+      </div>
+    </div>
+    <div class="grp">
+      <label for="n-range" class="stat">Within &plusmn;</label>
+      <input type="range" id="n-range" min="1" max="200" step="1" value="50">
+      <input type="number" id="n-num" min="1" max="200" step="1" value="50" aria-label="Points from latest price">
+      <span class="stat">pts</span>
+    </div>
+    <label class="grp"><input type="checkbox" id="f-confl" checked>
+      <span>Same-side confluence &ge; 1</span></label>
+    <label class="grp"><input type="checkbox" id="f-blocked">
+      <span>Show swerve-blocked</span></label>
+    <span class="count" id="count"></span>
+  </div>
+
+  <div id="out"></div>
+  <footer id="foot"></footer>
+</div>
+
+<script src="/static/lightweight-charts.js"></script>
+<script>
+(function () {
+  "use strict";
+  var PT = "America/Los_Angeles";
+  var $ = function (s) { return document.querySelector(s); };
+  var state = null, status = null, charts = [], observer = null;
+
+  // ---- time (always Pacific) ---------------------------------------------
+  var fmtCache = {};
+  function fmt(t, opts) {
+    var key = JSON.stringify(opts);
+    var f = fmtCache[key] || (fmtCache[key] = new Intl.DateTimeFormat("en-US",
+      Object.assign({ timeZone: PT }, opts)));
+    return f.format(new Date(t * 1000));
+  }
+  function ptFull(t) { return fmt(t, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) + " PT"; }
+  function ptClock(t) { return fmt(t, { hour: "2-digit", minute: "2-digit", hour12: false }) + " PT"; }
+  function px(x) { return x == null ? "–" : x.toFixed(2); }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+
+  // ---- data --------------------------------------------------------------
+  function getJSON(url) {
+    return fetch(url, { cache: "no-store" }).then(function (r) {
+      if (!r.ok) throw new Error(url + " " + r.status);
+      return r.json();
+    });
+  }
+  function loadState() {
+    return getJSON("/api/state").then(function (s) { state = s; render(); });
+  }
+  function poll() {
+    getJSON("/api/status").then(function (s) {
+      status = s;
+      if (s.built_at && (!state || s.built_at !== state._mtime)) {
+        return getJSON("/api/state").then(function (st) { st._mtime = s.built_at; state = st; render(); });
+      }
+    }).catch(function () {}).then(updateHeader);
+  }
+  function updateHeader() {
+    var b = $("#banner"), msgs = [];
+    if (status && status.error) msgs.push("Last refresh failed &mdash; showing the previous data. " + esc(status.error));
+    if (status && status.building) msgs.push("Refreshing from TradingView&hellip;");
+    if (state && status && status.now - state.built_at > 75 * 60) msgs.push("Data is more than an hour old.");
+    b.hidden = !msgs.length; b.innerHTML = msgs.join("<br>");
+    var nr = $("#next-run");
+    if (status && status.next_run) {
+      var s = Math.max(0, status.next_run - Math.floor(Date.now() / 1000));
+      nr.textContent = ptClock(status.next_run) + " (in " + Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s)";
+    }
+  }
+
+  // ---- filters -----------------------------------------------------------
+  function filters() {
+    return {
+      side: document.querySelector("input[name=side]:checked").value,
+      n: Number($("#n-num").value) || 50,
+      confl: $("#f-confl").checked,
+      blocked: $("#f-blocked").checked
+    };
+  }
+  function passes(r, f) {
+    if (f.side !== "all" && r.type !== f.side) return false;
+    if (Math.abs(r.dist) > f.n) return false;
+    if (f.confl && !r.qualified) return false;
+    if (!f.blocked && r.tags.indexOf("swerve_blocked") >= 0) return false;
+    return true;
+  }
+  function applyFilters() {
+    if (!state) return;
+    var f = filters(), shown = 0;
+    state.rows.forEach(function (r) {
+      var ok = passes(r, f);
+      document.querySelectorAll('[data-row="' + r.id + '"]').forEach(function (tr) { tr.hidden = !ok; });
+      if (ok) shown++;
+    });
+    $("#count").textContent = shown + " of " + state.rows.length + " levels shown";
+    $("#empty").hidden = shown > 0;
+    watchVisible();
+  }
+  function setN(v) {
+    v = Math.min(200, Math.max(1, Math.round(Number(v) || 1)));
+    $("#n-num").value = v; $("#n-range").value = v;
+    try { localStorage.setItem("m5dash.n", String(v)); } catch (e) {}
+    applyFilters();
+  }
+
+  // ---- table -------------------------------------------------------------
+  function rowHTML(r) {
+    var long = r.type === "LHPB";
+    var tags = [];
+    if (r.entry_spike) tags.push('<span class="tag spike" title="The level that supplies the entry formed on a spike candle; the stop sits beyond that candle">spike P0</span>');
+    if (r.tags.indexOf("swerved") >= 0) tags.push('<span class="tag" title="Entry moved off ' + px(r.planned_entry) + ' past a swing that already turned price there">swerved</span>');
+    if (r.tags.indexOf("swerve_blocked") >= 0) tags.push('<span class="tag" title="A swing sits on the planned entry and no other live level to move to">swerve-blocked</span>');
+    if (!r.qualified) tags.push('<span class="tag" title="No other same-side level within 10pt">no confluence</span>');
+    var away = r.dist;
+    var dim = r.tags.indexOf("swerve_blocked") >= 0 || !r.qualified ? " dim" : "";
+    return '<tr class="lv' + dim + '" data-row="' + r.id + '">' +
+      '<td class="n"></td>' +
+      '<td><span class="badge ' + (long ? "long" : "short") + '">' + r.type + '</span> ' + (long ? "long" : "short") + '</td>' +
+      '<td class="entry">' + px(r.entry) + '</td>' +
+      '<td class="stopv">' + px(r.stop) + '</td>' +
+      '<td>' + px(r.risk) + '</td>' +
+      '<td>' + (away > 0 ? "+" : "") + px(away) + '</td>' +
+      '<td>' + r.members.map(px).join(", ") + '</td>' +
+      '<td>' + r.pool + '</td>' +
+      '<td>' + (r.stop_source === "m5_p0_spike" ? "P0 spike" : "P1 thrust") + '</td>' +
+      '<td>' + (r.p1_ratio == null ? "–" : r.p1_ratio.toFixed(2) + "x") + '</td>' +
+      '<td>' + ptFull(r.entry_formed) + '</td>' +
+      '<td style="text-align:left">' + tags.join(" ") + '</td></tr>' +
+      '<tr class="ch" data-row="' + r.id + '"><td colspan="12"><div class="charts">' +
+      '<div class="cbox" data-kind="h1" data-id="' + r.id + '"><span class="clabel">H1</span></div>' +
+      '<div class="cbox" data-kind="m5" data-id="' + r.id + '"><span class="clabel">M5</span></div>' +
+      '</div></td></tr>';
+  }
+  function render() {
+    disposeCharts();
+    var s = state;
+    $("#price").textContent = px(s.last_price);
+    $("#price-time").textContent = "@ " + ptClock(s.last_price_time);
+    $("#last-bar").textContent = ptFull(s.last_m5_bar);
+    var head = '<table><thead><tr><th>#</th><th>Side</th><th>Entry</th><th>Stop</th><th>Risk</th>' +
+      '<th title="Entry minus latest price">Away</th><th title="Levels in the cluster">Levels</th>' +
+      '<th title="Levels in the entry pool (cluster plus same-side levels within 10pt)">Pool</th>' +
+      '<th>Stop from</th><th title="P1 candle range vs its trailing 20-bar average">P1 ratio</th>' +
+      '<th>Formed (PT)</th><th style="text-align:left">Tags</th></tr></thead><tbody>';
+    $("#out").innerHTML = head + s.rows.map(rowHTML).join("") + '</tbody></table>' +
+      '<div class="empty" id="empty" hidden>No upcoming levels match these filters.</div>';
+    $("#foot").textContent = s.n_awaiting + " open levels within reach of the latest price; " +
+      (s.n_no_stop ? s.n_no_stop + " dropped for lacking a valid stop. " : "") +
+      "Entry, stop and cluster follow the ss_m5_confl2 report's rules with the retest assumed on the next bar; no target is shown because the retest is still ahead. Bars are TradingView continuous ES1!.";
+    applyFilters();
+  }
+
+  // ---- charts ------------------------------------------------------------
+  function lower(arr, x) { var lo = 0, hi = arr.length; while (lo < hi) { var m = (lo + hi) >> 1; if (arr[m] < x) lo = m + 1; else hi = m; } return lo; }
+  function disposeCharts() {
+    if (observer) observer.disconnect();
+    charts.forEach(function (c) { try { c.remove(); } catch (e) {} });
+    charts = [];
+  }
+  function watchVisible() {
+    if (!window.IntersectionObserver) { document.querySelectorAll(".cbox").forEach(drawChart); return; }
+    if (observer) observer.disconnect();
+    observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { if (e.isIntersecting) { drawChart(e.target); observer.unobserve(e.target); } });
+    }, { rootMargin: "300px" });
+    document.querySelectorAll(".cbox:not([data-done])").forEach(function (el) {
+      if (!el.closest("tr").hidden) observer.observe(el);
+    });
+  }
+  function palette() {
+    var cs = getComputedStyle(document.documentElement);
+    var g = function (n) { return cs.getPropertyValue(n).trim(); };
+    return { text: g("--muted"), line: g("--line"), bg: g("--panel"), entry: g("--entry"), stop: g("--stop"),
+      up: g("--long"), down: g("--short") };
+  }
+  function drawChart(el) {
+    if (el.dataset.done || !window.LightweightCharts) return;
+    el.dataset.done = "1";
+    var r = state.rows[Number(el.dataset.id)], kind = el.dataset.kind;
+    var bars = state[kind], t = bars.t, n = t.length, p = palette();
+    var period = kind === "m5" ? 300 : 3600;
+    var src = Math.min(r.entry_formed, r.stop_from);
+    var i0 = Math.max(0, lower(t, src) - 15);
+    i0 = Math.max(i0, n - (kind === "m5" ? 700 : 500));
+    i0 = Math.min(i0, n - 120);
+    var data = [];
+    for (var i = i0; i < n; i++) data.push({ time: t[i], open: bars.o[i], high: bars.h[i], low: bars.l[i], close: bars.c[i] });
+
+    var chart = LightweightCharts.createChart(el, {
+      autoSize: true,
+      layout: { background: { color: p.bg }, textColor: p.text, fontSize: 11 },
+      grid: { vertLines: { color: p.line, visible: false }, horzLines: { color: p.line } },
+      rightPriceScale: { borderColor: p.line },
+      timeScale: { borderColor: p.line, timeVisible: true, secondsVisible: false,
+        tickMarkFormatter: function (time) { return fmt(time, kind === "m5" ? { hour: "2-digit", minute: "2-digit", hour12: false } : { month: "short", day: "numeric" }); } },
+      localization: { timeFormatter: function (time) { return ptFull(time); } },
+      crosshair: { mode: 0 }
+    });
+    charts.push(chart);
+    var candles = chart.addCandlestickSeries({ upColor: p.up, downColor: p.down, borderVisible: false,
+      wickUpColor: p.up, wickDownColor: p.down, priceLineVisible: false, lastValueVisible: false });
+    candles.setData(data);
+    var first = data[0].time, last = data[data.length - 1].time;
+
+    function ray(price, from, color, title, dashed) {
+      var s = chart.addLineSeries({ color: color, lineWidth: 2, lineStyle: dashed ? 2 : 0,
+        priceLineVisible: false, lastValueVisible: true, title: title, crosshairMarkerVisible: false });
+      var from2 = Math.min(Math.max(from - (from % period), first), last - period);
+      s.setData([{ time: from2, value: price }, { time: last, value: price }]);
+    }
+    ray(r.entry, r.entry_formed, p.entry, "Entry", false);
+    ray(r.stop, r.stop_from, p.stop, "Stop", true);
+    candles.createPriceLine({ price: state.last_price, color: p.text, lineWidth: 1, lineStyle: 3,
+      axisLabelVisible: true, title: "Last" });
+    if (kind === "m5") {
+      r.members.forEach(function (m) {
+        if (Math.abs(m - r.entry) > 1e-9) candles.createPriceLine({ price: m, color: p.entry, lineWidth: 1, lineStyle: 1,
+          axisLabelVisible: false, title: "" });
+      });
+      var long = r.type === "LHPB", marks = [];
+      if (r.entry_formed >= first) marks.push({ time: r.entry_formed, position: long ? "aboveBar" : "belowBar", color: p.entry, shape: "circle", text: "P0" });
+      if (r.entry_p1 && r.entry_p1 >= first && r.entry_p1 !== r.entry_formed) marks.push({ time: r.entry_p1, position: long ? "aboveBar" : "belowBar", color: p.entry, shape: long ? "arrowUp" : "arrowDown", text: "P1" });
+      marks.sort(function (a, b) { return a.time - b.time; });
+      candles.setMarkers(marks);
+    }
+    chart.timeScale().fitContent();
+    var lab = el.querySelector(".clabel");
+    lab.textContent = (kind === "m5" ? "M5" : "H1") + " · entry " + px(r.entry) + " · stop " + px(r.stop);
+  }
+
+  // ---- wiring ------------------------------------------------------------
+  document.querySelectorAll("input[name=side], #f-confl, #f-blocked").forEach(function (el) {
+    el.addEventListener("change", applyFilters);
+  });
+  $("#n-range").addEventListener("input", function (e) { setN(e.target.value); });
+  $("#n-num").addEventListener("change", function (e) { setN(e.target.value); });
+  $("#refresh").addEventListener("click", function () {
+    fetch("/api/refresh", { method: "POST" }).then(function () { setTimeout(poll, 1500); });
+  });
+  try { var saved = localStorage.getItem("m5dash.n"); if (saved) { $("#n-num").value = saved; $("#n-range").value = saved; } } catch (e) {}
+  if (!window.LightweightCharts) $("#banner").hidden = false, $("#banner").textContent = "Chart library failed to load.";
+  loadState().catch(function () { $("#out").innerHTML = '<div class="empty">First build in progress &mdash; this can take a minute or two&hellip;</div>'; }).then(poll);
+  setInterval(poll, 20000);
+  setInterval(updateHeader, 1000);
+})();
+</script>
+</body>
+</html>
