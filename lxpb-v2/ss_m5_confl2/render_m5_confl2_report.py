@@ -1652,26 +1652,13 @@ def _annotate_candidates(chart_m5, row_for_chart, is_long, group, cluster_member
     chart_m5["markers"].sort(key=lambda m: m["time"])
 
 
-def _annotate_mgmt_events(chart_m5, res, is_long):
-    """Mark fired trade-management events (rule 1 stop trail, rule 2
-    RR-floor exit -- see trade_management.py) on the M5 pane, snapped to
-    the nearest bar at-or-before their own time (same convention
-    _annotate_p0_p1_p2 uses). No-op if chart_m5 is None or nothing fired
-    for this trade."""
-    mgmt = res.get("mgmt") or {}
-    if chart_m5 is None or not chart_m5["candles"] or not mgmt.get("fired"):
-        return
-    times = [c["time"] for c in chart_m5["candles"]]
-
-    def snap(ts):
-        ts = pd.Timestamp(ts)
-        if ts.tzinfo is not None:
-            ts = ts.tz_convert("UTC").tz_localize(None)
-        target = R._to_epoch_utc(ts)
-        i = bisect.bisect_right(times, target) - 1
-        return times[i] if i >= 0 else None
-
-    new_markers = []
+def _mgmt_markers(snap, mgmt, is_long):
+    """Markers for one trade's fired trade-management events (rule 1 stop
+    trail, rule 2 RR-floor exit -- see trade_management.py), each snapped by
+    `snap` to the nearest bar at-or-before its own time. [] if nothing fired."""
+    if not mgmt or not mgmt.get("fired"):
+        return []
+    out = []
     for trigger_time, new_stop_price in mgmt.get("trail_events") or []:
         # trigger_time is the thrust candle's own CLOSE (= the next bar's
         # open, see trade_management.thrust_trail_events) -- step back one
@@ -1679,7 +1666,7 @@ def _annotate_mgmt_events(chart_m5, res, is_long):
         # responsible for the event, not the candle after it.
         t = snap(trigger_time - P1_BAR_WIDTH)
         if t is not None:
-            new_markers.append({
+            out.append({
                 "time": t, "position": "belowBar" if is_long else "aboveBar",
                 "color": "#22d3ee", "shape": "arrowUp" if is_long else "arrowDown",
                 "text": f"Stop → {new_stop_price:.2f}",
@@ -1687,10 +1674,20 @@ def _annotate_mgmt_events(chart_m5, res, is_long):
     if mgmt.get("rr_floor_fired") and mgmt.get("exit_time") is not None:
         t = snap(mgmt["exit_time"])
         if t is not None:
-            new_markers.append({
+            out.append({
                 "time": t, "position": "aboveBar" if is_long else "belowBar",
                 "color": "#fb923c", "shape": "circle", "text": "RR FLOOR EXIT",
             })
+    return out
+
+
+def _annotate_mgmt_events(chart_m5, res, is_long):
+    """Mark fired trade-management events on the M5 pane (see _mgmt_markers).
+    No-op if chart_m5 is None or nothing fired for this trade."""
+    snap = _snapper(chart_m5)
+    if snap is None:
+        return
+    new_markers = _mgmt_markers(snap, res.get("mgmt"), is_long)
     if new_markers:
         chart_m5["markers"].extend(new_markers)
         chart_m5["markers"].sort(key=lambda m: m["time"])
@@ -1769,6 +1766,18 @@ def _annotate_swerve(chart_m5, res, is_long):
         chart_m5["markers"].sort(key=lambda m: m["time"])
 
 
+def _target_ray_start(info, entry_t):
+    """Epoch start of a target's ray: its opposite-M5 level's formation, else
+    the start of its consolidation area, else the entry candle."""
+    info = info or {}
+    level, area = info.get("level"), info.get("area")
+    if level is not None and level.get("formation_time") is not None:
+        return R._to_epoch_utc(level["formation_time"])
+    if area:
+        return R._to_epoch_utc(area["start_time"])
+    return entry_t
+
+
 def _rayify_trade_lines(chart_m5, res, row_for_chart):
     """Turn the M5 pane's full-width target / stop / entry / own-level price
     lines into rays: each starts at the candle it belongs to and runs to the
@@ -1786,14 +1795,7 @@ def _rayify_trade_lines(chart_m5, res, row_for_chart):
     times = [c["time"] for c in chart_m5["candles"]]
     entry_t = next((m["time"] for m in chart_m5["markers"]
                     if m.get("text", "").startswith(("P2 ENTRY", "P2 PLANNED"))), times[0])
-    info = res.get("target_info") or {}
-    level, area = info.get("level"), info.get("area")
-    if level is not None and level.get("formation_time") is not None:
-        target_t = R._to_epoch_utc(level["formation_time"])
-    elif area:
-        target_t = R._to_epoch_utc(area["start_time"])
-    else:
-        target_t = entry_t
+    target_t = _target_ray_start(res.get("target_info"), entry_t)
     own_t = R._to_epoch_utc(row_for_chart["formation_time"])
     starts = (("target", target_t), ("stop", entry_t), ("entry", entry_t),
               (f"M5 {res['level_type']}", own_t))
@@ -1811,6 +1813,67 @@ def _rayify_trade_lines(chart_m5, res, row_for_chart):
             "label": pl["title"],
         })
     chart_m5["priceLines"] = kept
+
+
+def _add_mode_views(chart_m5, res, is_long):
+    """Ship every target rule's own version of what the rule changes on the
+    M5 pane, as chart_m5['modeViews'][mode] = {ray, zoneLines, markers}: the
+    target ray, the consolidation-zone lines, and the exit / trade-management
+    markers. The browser (see chartForMode in JS) strips the default rule's
+    versions of those from the pane -- target ray titled 'target', zone lines
+    titled 'consolidation', markers WIN/LOSS/CANDLE/'Stop ->'/RR FLOOR EXIT --
+    and puts the ticked rule's in, so the pane follows the target-rule
+    checkboxes the same way the row's cells do. Entry, stop and the candles
+    never change with the rule. Needs _rayify_trade_lines to have run (it
+    supplies the target ray's colour and style)."""
+    snap = _snapper(chart_m5)
+    if snap is None or not res.get("modes"):
+        return
+    tmpl = next((r for r in chart_m5.get("rays", []) if r["title"].startswith("target")), None)
+    if tmpl is None:
+        return
+    times = [c["time"] for c in chart_m5["candles"]]
+    entry_t = next((m["time"] for m in chart_m5["markers"]
+                    if m.get("text", "").startswith(("P2 ENTRY", "P2 PLANNED"))), times[0])
+    views = {}
+    for mode, m in res["modes"].items():
+        info = m["target_info"] or {}
+        start = _target_ray_start(info, entry_t)
+        title = f"target {m['target_price']:.2f} (+{SR._fmt_pts(m['target_pts'])}pt)"
+        view = {"ray": {**tmpl, "title": title, "label": title,
+                        "points": [{"time": t, "value": m["target_price"]}
+                                   for t in times if t >= start]},
+                "zoneLines": [], "markers": []}
+        area = info.get("area")
+        if area:
+            for key in ("high", "low"):
+                view["zoneLines"].append({
+                    "price": area[key], "color": CONSOL_ZONE_COLOR, "lineWidth": 1, "lineStyle": 2,
+                    "title": (f"consolidation {key} ({area['n_bars']} M5 bars from "
+                              f"{R._to_pt_str(area['start_time'])})")})
+        resolved = m["resolved"]
+        outcome, exit_time = resolved.get("outcome"), resolved.get("exit_time")
+        t = snap(exit_time) if exit_time is not None else None
+        if t is not None and outcome in ("target", "stop", "candle"):
+            win = outcome == "target"
+            above = is_long if win else not is_long
+            if outcome == "target":
+                text, color = f"WIN +{m['r_multiple']:.2f}R", SR.EXIT_WIN_COLOR
+            elif outcome == "stop":
+                text, color = "LOSS -1.00R", SR.EXIT_LOSS_COLOR
+            else:
+                r_val = resolved.get("r")
+                text = f"CANDLE {r_val:+.2f}R" if r_val is not None else "CANDLE"
+                color = SR.EXIT_CANDLE_COLOR
+            view["markers"].append({
+                "time": t, "position": "aboveBar" if above else "belowBar", "color": color,
+                "shape": ("arrowUp" if is_long else "arrowDown") if win
+                         else ("arrowDown" if is_long else "arrowUp"),
+                "text": text})
+        view["markers"].extend(_mgmt_markers(snap, m["mgmt"], is_long))
+        views[mode] = view
+    chart_m5["modeViews"] = views
+    chart_m5["activeMode"] = res["active_mode"]
 
 
 M5_ONLY_NOTE = "<p class='note'>(tick panes and footprints skipped: --m5-charts-only)</p>"
@@ -1878,6 +1941,7 @@ def build_chart_stack_for_row(res, m5_only=False):
         _annotate_target_zone(chart_m5, res)
         _annotate_swerve(chart_m5, res, res["is_long"])
         _rayify_trade_lines(chart_m5, res, row_for_chart)
+        _add_mode_views(chart_m5, res, res["is_long"])
     if m5_only:
         return {"m5": chart_m5, "trio": None, "oneMin": None}, {"narrow": M5_ONLY_NOTE,
                                                                 "wide": M5_ONLY_NOTE}
@@ -3523,6 +3587,32 @@ function activeDynIsolateTags() {
 function activeTargetModes() {
   return Array.from(document.querySelectorAll('.f-target-mode:checked')).map(cb => cb.dataset.mode);
 }
+// The M5 pane's own target-dependent parts (see _add_mode_views): swap the
+// default rule's target ray / consolidation-zone lines / exit + management
+// markers for the ticked rule's, and redraw the pane if it is already open.
+function chartForMode(idx, mode) {
+  const cd = CHARTS[idx];
+  const m5 = cd && cd.m5;
+  if (!m5 || !m5.modeViews) return;
+  if (!m5._base) {
+    m5._base = {
+      rays: m5.rays.filter(r => !(r.title || '').startsWith('target')),
+      priceLines: m5.priceLines.filter(p => !p.title.startsWith('consolidation')),
+      markers: m5.markers.filter(m => !/^(WIN|LOSS|CANDLE|RR FLOOR EXIT|Stop →)/.test(m.text || '')),
+    };
+    m5._shown = m5.activeMode;
+  }
+  if (m5._shown === mode) return;
+  m5._shown = mode;
+  const v = m5.modeViews[mode];
+  m5.rays = m5._base.rays.concat(v ? [v.ray] : []);
+  m5.priceLines = m5._base.priceLines.concat(v ? v.zoneLines : []);
+  m5.markers = m5._base.markers.concat(v ? v.markers : []).sort((a, b) => a.time - b.time);
+  if (rendered[idx]) {
+    const el = document.getElementById('cm5-' + idx);
+    if (el) { el.innerHTML = ''; _renderM5(idx, m5); }
+  }
+}
 function setCell(tr, sel, html, cls) {
   const td = tr.querySelector(sel);
   if (!td) return;
@@ -3564,6 +3654,7 @@ function applyTargetModes() {
       setCell(tr, '.mfe-cell', '-', 'mfe-cell');
       setCell(tr, '.gb-cell', '-', 'gb-cell');
       setCell(tr, '.gap-slot', '');
+      chartForMode(tr.dataset.idx, '');
       return;
     }
     const p = modes[pick];
@@ -3594,6 +3685,7 @@ function applyTargetModes() {
     setCell(tr, '.mfe-cell', p.mfe, 'mfe-cell good');
     setCell(tr, '.gb-cell', p.gb, 'gb-cell');
     setCell(tr, '.gap-slot', p.gap);
+    chartForMode(tr.dataset.idx, pick);
   });
 }
 function activeOutcomeBuckets() {
