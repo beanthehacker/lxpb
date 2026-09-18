@@ -80,6 +80,7 @@ MAX_BAR_GAP = pd.Timedelta(hours=1)   # a longer hole ends the run (see module d
 SWING_K_DEFAULT = 2                   # bars required on EACH side of a pivot
 
 ZIGZAG_THRESHOLD_DEFAULT = 3.0        # pt reversal that confirms a new zigzag leg
+ZIGZAG_MIN_BARS_DEFAULT = 3           # bars required after the extreme before it can confirm
 
 _AREA_CACHE = {}
 _PIVOT_CACHE = {}
@@ -334,7 +335,8 @@ def swings_near(price, tol, lo_ts, hi_ts, is_low, k=SWING_K_DEFAULT, bars=None):
 # Zigzag legs (new "opposite M5 target": most recent leg's crest/trough)
 # --------------------------------------------------------------------------
 
-def zigzag_pivots(bars=None, threshold_pts=ZIGZAG_THRESHOLD_DEFAULT):
+def zigzag_pivots(bars=None, threshold_pts=ZIGZAG_THRESHOLD_DEFAULT,
+                  min_bars=ZIGZAG_MIN_BARS_DEFAULT):
     """Every CONFIRMED zigzag pivot over the continuous M5 series, as a
     DataFrame of [time, price, kind, confirmed_time] sorted by time.
     `kind` is 'high' (a crest) or 'low' (a trough).
@@ -343,17 +345,22 @@ def zigzag_pivots(bars=None, threshold_pts=ZIGZAG_THRESHOLD_DEFAULT):
     extending the running extreme in the current direction (a crest's price
     only ever rises while one is being sought, a trough's only ever falls),
     and confirm it -- flip direction, anchor the new running extreme at the
-    bar that did it -- the first time the OPPOSITE side reverses by at least
-    `threshold_pts` from that running extreme. This is deliberately not
+    bar that did it -- the first bar, at least `min_bars` after the extreme's
+    own bar, where the OPPOSITE side has reversed by at least `threshold_pts`
+    from that running extreme (the reversal is tracked cumulatively since
+    the extreme, so a bar that dips deep enough and then bounces still
+    counts once `min_bars` catches up -- the threshold does not have to be
+    re-met on the confirming bar itself). This is deliberately not
     `swing_pivots`' k-bar fractal test: a fractal only asks whether a bar
     stands alone among its `k` neighbours, so two bars a small, noisy chop
     apart can both register as separate confirmed pivots even though price
     never actually left the first one's neighbourhood. A zigzag leg is
-    real only once price has demonstrably moved on -- which is also what
+    real only once price has demonstrably moved on for real, not just
+    ticked past the threshold on a single bar -- which is also what
     resolves the "lower second crest" case on its own: if the chop between
-    two highs never reverses `threshold_pts` off the first one, the first
-    one is still the running extreme and the second, lower high is simply
-    never confirmed as its own leg.
+    two highs never reverses `threshold_pts` off the first one (or does so
+    for less than `min_bars`), the first one is still the running extreme
+    and the second, lower high is simply never confirmed as its own leg.
 
     `confirmed_time` is the bar that completed the reversal -- the instant
     this pivot first became knowable, not the pivot's own bar. A caller
@@ -362,45 +369,54 @@ def zigzag_pivots(bars=None, threshold_pts=ZIGZAG_THRESHOLD_DEFAULT):
     The trailing, still-extending candidate at the end of the series is
     never confirmed and so never appears here.
 
-    Memoised per threshold for the default series."""
+    Memoised per (threshold, min_bars) for the default series."""
     if bars is None:
-        key = float(threshold_pts)
+        key = (float(threshold_pts), int(min_bars))
         if key in _ZIGZAG_CACHE:
             return _ZIGZAG_CACHE[key]
         bars = LC.m5_bars_continuous()
-        out = _scan_zigzag(bars, threshold_pts)
+        out = _scan_zigzag(bars, threshold_pts, min_bars)
         _ZIGZAG_CACHE[key] = out
         return out
-    return _scan_zigzag(bars, threshold_pts)
+    return _scan_zigzag(bars, threshold_pts, min_bars)
 
 
-def _scan_zigzag(bars, threshold_pts):
+def _scan_zigzag(bars, threshold_pts, min_bars):
     if bars is None or bars.empty:
         return pd.DataFrame(columns=["time", "price", "kind", "confirmed_time"])
     if not np.isfinite(threshold_pts) or threshold_pts <= 0:
         raise ValueError("Zigzag threshold must be finite and positive")
+    if min_bars < 1:
+        raise ValueError("Zigzag min_bars must be at least 1")
     highs = bars["high"].to_numpy(float)
     lows = bars["low"].to_numpy(float)
     n = len(bars)
 
     rows = []
     looking_for = "high"
-    extreme_price, extreme_time = highs[0], bars.index[0]
+    extreme_price, extreme_idx = highs[0], 0
+    worst_since = lows[0]   # lowest low (seeking a high) / highest high (seeking a low) since the extreme
     for i in range(1, n):
         if looking_for == "high":
             if highs[i] > extreme_price:
-                extreme_price, extreme_time = highs[i], bars.index[i]
-            elif extreme_price - lows[i] >= threshold_pts:
-                rows.append((extreme_time, extreme_price, "high", bars.index[i]))
-                looking_for = "low"
-                extreme_price, extreme_time = lows[i], bars.index[i]
+                extreme_price, extreme_idx, worst_since = highs[i], i, lows[i]
+            else:
+                worst_since = min(worst_since, lows[i])
+                if (extreme_price - worst_since >= threshold_pts and
+                        i - extreme_idx >= min_bars):
+                    rows.append((bars.index[extreme_idx], extreme_price, "high", bars.index[i]))
+                    looking_for = "low"
+                    extreme_price, extreme_idx, worst_since = lows[i], i, highs[i]
         else:
             if lows[i] < extreme_price:
-                extreme_price, extreme_time = lows[i], bars.index[i]
-            elif highs[i] - extreme_price >= threshold_pts:
-                rows.append((extreme_time, extreme_price, "low", bars.index[i]))
-                looking_for = "high"
-                extreme_price, extreme_time = highs[i], bars.index[i]
+                extreme_price, extreme_idx, worst_since = lows[i], i, highs[i]
+            else:
+                worst_since = max(worst_since, highs[i])
+                if (worst_since - extreme_price >= threshold_pts and
+                        i - extreme_idx >= min_bars):
+                    rows.append((bars.index[extreme_idx], extreme_price, "low", bars.index[i]))
+                    looking_for = "high"
+                    extreme_price, extreme_idx, worst_since = highs[i], i, lows[i]
     return pd.DataFrame(rows, columns=["time", "price", "kind", "confirmed_time"])
 
 
@@ -447,6 +463,6 @@ if __name__ == "__main__":
     n_hi = int((zz["kind"] == "high").sum())
     n_lo = int((zz["kind"] == "low").sum())
     print(f"{len(zz)} confirmed zigzag pivots ({n_hi} crests / {n_lo} troughs, "
-          f"threshold={ZIGZAG_THRESHOLD_DEFAULT:g}pt)")
+          f"threshold={ZIGZAG_THRESHOLD_DEFAULT:g}pt, min_bars={ZIGZAG_MIN_BARS_DEFAULT})")
     if not zz.empty:
         print(zz.tail(5).to_string(index=False))

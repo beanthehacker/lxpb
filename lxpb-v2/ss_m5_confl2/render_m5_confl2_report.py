@@ -75,10 +75,11 @@ the target are ALL M5 LXPB structure:
        * OPPOSITE M5 LEVEL, ZIGZAG ANCHOR (`_opposite_m5_zz_target`, src tag
          m5_opposite_zz): find the most recent CONFIRMED zigzag crest (long)
          or trough (short) in the window -- m5_structure.zigzag_pivots, a
-         >=`--zz-threshold-pts` (default 3pt) reversal off bar highs/lows,
-         confirmed only once price has actually reversed by that much, which
-         is what settles which of two crests separated by inconclusive chop
-         counts as "the" recent one. The target is then the EARLIEST-formed
+         >=`--zz-threshold-pts` (default 3pt) reversal off bar highs/lows
+         that has also taken >=`--zz-min-bars` (default 3) bars to develop,
+         confirmed only once both hold, which is what settles which of two
+         crests separated by inconclusive chop counts as "the" recent one.
+         The target is then the EARLIEST-formed
          opposite-type M5 P0 that is still untested and formed strictly
          after that pivot -- the first thing the market built right after
          price turned away, not merely the newest one, and with no shared-P1
@@ -234,6 +235,7 @@ CONSOL_MIN_BARS_DEFAULT = MS.MIN_BARS_DEFAULT
 CONSOL_MAX_HEIGHT_DEFAULT = MS.MAX_HEIGHT_PTS_DEFAULT
 CONSOL_MAX_ER_DEFAULT = MS.MAX_ER_DEFAULT
 ZZ_THRESHOLD_PTS_DEFAULT = MS.ZIGZAG_THRESHOLD_DEFAULT   # reversal that confirms a zigzag leg
+ZZ_MIN_BARS_DEFAULT = MS.ZIGZAG_MIN_BARS_DEFAULT          # bars required after the extreme to confirm
 SWERVE_TOL_PTS_DEFAULT = 1.0          # a swing this close to the planned entry triggers the move
 SWERVE_LOOKBACK_HOURS_DEFAULT = 24.0  # how far back before the retest swings are looked for
 # Furthest a swerved entry may be moved. This MUST exceed
@@ -734,7 +736,8 @@ def _opposite_m5_target(m5_ledger, level_type, price, is_long, touch_time,
 
 def _opposite_m5_zz_target(m5_ledger, level_type, price, is_long, touch_time,
                            p1_time=None, p2_time=None,
-                           zigzag_threshold=ZZ_THRESHOLD_PTS_DEFAULT):
+                           zigzag_threshold=ZZ_THRESHOLD_PTS_DEFAULT,
+                           zigzag_min_bars=ZZ_MIN_BARS_DEFAULT):
     """(target_price, target_info) under the OPPOSITE-M5-ZZ rule, or
     (None, None).
 
@@ -742,9 +745,10 @@ def _opposite_m5_zz_target(m5_ledger, level_type, price, is_long, touch_time,
     (short) inside this level's own P1..P2 window -- m5_structure's
     threshold zigzag (`zigzag_pivots`/`most_recent_pivot`), not the k-bar
     fractal `swing_pivots`: only a pivot the market has demonstrably
-    reversed `zigzag_threshold` points away from counts, which is what
-    resolves a lower second crest separated from the first by inconclusive
-    chop -- see `zigzag_pivots`'s own docstring.
+    reversed `zigzag_threshold` points away from, over at least
+    `zigzag_min_bars` bars, counts -- which is what resolves a lower second
+    crest separated from the first by inconclusive chop -- see
+    `zigzag_pivots`'s own docstring.
 
     Step 2: the EARLIEST-formed opposite-type M5 P0 that is both still
     untested ('live', `_live_m5_target_candidates`) as of the entry cutoff
@@ -755,7 +759,7 @@ def _opposite_m5_zz_target(m5_ledger, level_type, price, is_long, touch_time,
     qualifies. Still bounded MIN..MAX_DYNAMIC_TARGET_PTS on the favourable
     side, the same sanity floor/ceiling every rule here uses."""
     after, cutoff = _window_bounds(touch_time, p1_time, p2_time)
-    pivots = MS.zigzag_pivots(threshold_pts=zigzag_threshold)
+    pivots = MS.zigzag_pivots(threshold_pts=zigzag_threshold, min_bars=zigzag_min_bars)
     pivot_time, pivot_price = MS.most_recent_pivot(
         pivots, "high" if is_long else "low", cutoff, after=after)
     if pivot_time is None:
@@ -803,7 +807,8 @@ def _pick_targets(m5_ledger, level_type, price, is_long, touch_time, args,
         out["opposite-m5"] = (px, info)
     px, info = _opposite_m5_zz_target(m5_ledger, level_type, price, is_long,
                                       touch_time, p1_time, p2_time,
-                                      zigzag_threshold=args.zz_threshold_pts)
+                                      zigzag_threshold=args.zz_threshold_pts,
+                                      zigzag_min_bars=args.zz_min_bars)
     if px is not None:
         out["opposite-m5-zz"] = (px, info)
     px, info = _consolidation_target(m5_ledger, level_type, price, is_long,
@@ -2238,6 +2243,8 @@ def render(args):
         args.default_target_modes = DEFAULT_TARGET_MODES_BOTH
     if not getattr(args, "zz_threshold_pts", None):
         args.zz_threshold_pts = ZZ_THRESHOLD_PTS_DEFAULT
+    if not getattr(args, "zz_min_bars", None):
+        args.zz_min_bars = ZZ_MIN_BARS_DEFAULT
     if not np.isfinite(args.min_r) or args.min_r < 0:
         raise ValueError("--min-r must be finite and non-negative")
     if not np.isfinite(args.max_alt_fill_hours) or args.max_alt_fill_hours <= 0:
@@ -2768,8 +2775,9 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
         f"recently formed live opposite-type M5 level whose P1 candle broke at least two "
         f"distinct same-type P0s (src tag m5_opposite). (3) OPPOSITE M5 LEVEL, ZIGZAG ANCHOR: "
         f"the most recent CONFIRMED zigzag crest/trough in that window (a "
-        f"&ge;{args.zz_threshold_pts:g}pt reversal off bar highs/lows), then the EARLIEST-"
-        f"formed live opposite-type M5 P0 formed after it, no shared-P1 confluence required "
+        f"&ge;{args.zz_threshold_pts:g}pt reversal off bar highs/lows taking "
+        f"&ge;{args.zz_min_bars} bars to develop), then the EARLIEST-formed live opposite-type "
+        f"M5 P0 formed after it, no shared-P1 confluence required "
         f"(src tag m5_opposite_zz). All three are precomputed for every trade and all three are "
         f"live checkboxes in the Target rules row of the panel above: untick one and every row "
         f"re-resolves against whichever others are still on, or becomes a dimmed NO TARGET row "
@@ -3647,11 +3655,15 @@ if __name__ == "__main__":
                              "inside the same P1..P2 window. opposite-m5-zz: the earliest live "
                              "opposite-type M5 P0 (no shared-P1 confluence required) formed "
                              "after the most recent confirmed zigzag crest/trough in that "
-                             "window -- see --zz-threshold-pts.")
+                             "window -- see --zz-threshold-pts / --zz-min-bars.")
     parser.add_argument("--zz-threshold-pts", type=float, default=ZZ_THRESHOLD_PTS_DEFAULT,
                         help=f"Point reversal off bar highs/lows that confirms a new zigzag leg "
                              f"for the opposite-m5-zz target rule (default "
                              f"{ZZ_THRESHOLD_PTS_DEFAULT:g}).")
+    parser.add_argument("--zz-min-bars", type=int, default=ZZ_MIN_BARS_DEFAULT,
+                        help=f"Bars required after a zigzag leg's own extreme bar before it can "
+                             f"confirm, for the opposite-m5-zz target rule (default "
+                             f"{ZZ_MIN_BARS_DEFAULT}).")
     parser.add_argument("--consol-min-bars", type=int, default=CONSOL_MIN_BARS_DEFAULT,
                         help=f"Minimum M5 bars in a consolidation area (default "
                              f"{CONSOL_MIN_BARS_DEFAULT} = 30 minutes).")
