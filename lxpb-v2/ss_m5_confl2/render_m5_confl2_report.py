@@ -66,7 +66,7 @@ the target are ALL M5 LXPB structure:
          highs/lows, confirmed on a later bar at least `--zz-min-bars`
          (default 3) after the extreme. That pivot is where the latest leg
          into the retest began. The target is then the FARTHEST untested
-         opposite-type M5 P0 formed strictly after that pivot: the LOWEST
+         opposite-type M5 P0 formed at or after that pivot (the pivot's own bar counts): the LOWEST
          price for a short, the HIGHEST for a long -- with no shared-P1
          confluence requirement (any single P0 qualifies).
        * SWING EXTREME (`_swing_extreme_target`, src tag swing_extreme): the
@@ -701,8 +701,8 @@ def _opposite_m5_zz_target(m5_ledger, level_type, price, is_long, touch_time,
 
     Step 2: of the opposite-type M5 P0s that are still untested ('live',
     `_live_m5_target_candidates`, no shared-P1 requirement) as of the entry
-    cutoff and formed strictly after that pivot -- i.e. inside the latest
-    leg into the retest -- take the one FARTHEST from the entry: the LOWEST
+    cutoff and formed at or after that pivot (the pivot's own bar counts) -- i.e. inside the
+    latest leg into the retest -- take the one FARTHEST from the entry: the LOWEST
     price for a short, the HIGHEST for a long. Still bounded
     MIN..MAX_DYNAMIC_TARGET_PTS on the favourable side, the same sanity
     floor/ceiling every rule here uses; ties go to the earliest-formed.
@@ -722,7 +722,7 @@ def _opposite_m5_zz_target(m5_ledger, level_type, price, is_long, touch_time,
     if cand.empty:
         return None, None
     formed = pd.to_datetime(cand["formation_time"], utc=True)
-    cand = cand[formed > pivot_time]
+    cand = cand[formed >= pivot_time]
     if cand.empty:
         return None, None
     distance = (cand["price"] - price) if is_long else (price - cand["price"])
