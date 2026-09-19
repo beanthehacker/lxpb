@@ -40,13 +40,21 @@ def _meta(st):
 def run_refresh(force):
     """Run refresh.py in a fresh interpreter; returns (ok, message)."""
     cmd = [sys.executable, os.path.join(_RUNTIME, "refresh.py")] + (["--force"] if force else [])
+    # Vercel's Python runtime puts the installed dependencies (pandas, ...) on
+    # THIS interpreter's sys.path, not in the environment, so a bare child
+    # interpreter cannot import them: hand it the parent's whole import path.
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(p for p in sys.path if p))
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=290)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=290, env=env)
     except subprocess.TimeoutExpired:
         return False, "refresh timed out"
     if p.returncode != 0:
         tail = (p.stderr or p.stdout or "refresh failed").strip().splitlines()[-1:]
-        return False, tail[0] if tail else "refresh failed"
+        msg = tail[0] if tail else "refresh failed"
+        if "ModuleNotFoundError" in msg:   # say whether the function itself has the dependency
+            import importlib.util
+            msg += f" [function process sees pandas: {importlib.util.find_spec('pandas') is not None}]"
+        return False, msg
     return True, (p.stdout.strip().splitlines() or ["done"])[-1]
 
 
