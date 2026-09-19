@@ -36,6 +36,11 @@ SWING_K_DEFAULT = 2                   # bars required on EACH side of a pivot
 
 ZIGZAG_THRESHOLD_DEFAULT = 3.0        # pt reversal that confirms a new zigzag leg
 ZIGZAG_MIN_BARS_DEFAULT = 3           # bars required after the extreme before it can confirm
+# Second, FAST confirmation criterion: a bigger reversal is allowed to confirm
+# sooner. A pivot confirms on EITHER (threshold, min_bars) OR
+# (fast threshold, fast min_bars).
+ZIGZAG_FAST_THRESHOLD_DEFAULT = 5.0
+ZIGZAG_FAST_MIN_BARS_DEFAULT = 2
 
 _PIVOT_CACHE = {}
 _ZIGZAG_CACHE = {}
@@ -139,7 +144,9 @@ def swings_near(price, tol, lo_ts, hi_ts, is_low, k=SWING_K_DEFAULT, bars=None):
 # --------------------------------------------------------------------------
 
 def zigzag_pivots(bars=None, threshold_pts=ZIGZAG_THRESHOLD_DEFAULT,
-                  min_bars=ZIGZAG_MIN_BARS_DEFAULT):
+                  min_bars=ZIGZAG_MIN_BARS_DEFAULT,
+                  fast_threshold_pts=ZIGZAG_FAST_THRESHOLD_DEFAULT,
+                  fast_min_bars=ZIGZAG_FAST_MIN_BARS_DEFAULT):
     """Every CONFIRMED zigzag pivot over the continuous M5 series, as a
     DataFrame of [time, price, kind, confirmed_time] sorted by time.
     `kind` is 'high' (a crest) or 'low' (a trough).
@@ -172,19 +179,28 @@ def zigzag_pivots(bars=None, threshold_pts=ZIGZAG_THRESHOLD_DEFAULT,
     The trailing, still-extending candidate at the end of the series is
     never confirmed and so never appears here.
 
-    Memoised per (threshold, min_bars) for the default series."""
+    TWO confirmation criteria, either sufficing: (a) a reversal of at least
+    `threshold_pts` with at least `min_bars` bars since the extreme, OR (b) a
+    reversal of at least `fast_threshold_pts` with at least `fast_min_bars`
+    bars since the extreme (default 5pt / 2 bars). (b) lets a sharp swing
+    confirm before a small undercut of the extreme can restart the count.
+    Pass fast_threshold_pts=None to use (a) alone.
+
+    Memoised per parameter set for the default series."""
     if bars is None:
-        key = (float(threshold_pts), int(min_bars))
+        key = (float(threshold_pts), int(min_bars),
+               None if fast_threshold_pts is None else float(fast_threshold_pts),
+               None if fast_min_bars is None else int(fast_min_bars))
         if key in _ZIGZAG_CACHE:
             return _ZIGZAG_CACHE[key]
         bars = LC.m5_bars_continuous()
-        out = _scan_zigzag(bars, threshold_pts, min_bars)
+        out = _scan_zigzag(bars, threshold_pts, min_bars, fast_threshold_pts, fast_min_bars)
         _ZIGZAG_CACHE[key] = out
         return out
-    return _scan_zigzag(bars, threshold_pts, min_bars)
+    return _scan_zigzag(bars, threshold_pts, min_bars, fast_threshold_pts, fast_min_bars)
 
 
-def _scan_zigzag(bars, threshold_pts, min_bars):
+def _scan_zigzag(bars, threshold_pts, min_bars, fast_threshold_pts=None, fast_min_bars=None):
     if bars is None or bars.empty:
         return pd.DataFrame(columns=["time", "price", "kind", "confirmed_time"])
     if not np.isfinite(threshold_pts) or threshold_pts <= 0:
@@ -194,6 +210,15 @@ def _scan_zigzag(bars, threshold_pts, min_bars):
     highs = bars["high"].to_numpy(float)
     lows = bars["low"].to_numpy(float)
     n = len(bars)
+    use_fast = fast_threshold_pts is not None and fast_min_bars is not None
+    if use_fast and (not np.isfinite(fast_threshold_pts) or fast_threshold_pts <= 0
+                     or fast_min_bars < 1):
+        raise ValueError("Fast zigzag threshold/min_bars must be positive")
+
+    def confirms(reversal, bars_since):
+        if reversal >= threshold_pts and bars_since >= min_bars:
+            return True
+        return use_fast and reversal >= fast_threshold_pts and bars_since >= fast_min_bars
 
     rows = []
     looking_for = "high"
@@ -209,8 +234,7 @@ def _scan_zigzag(bars, threshold_pts, min_bars):
                 extreme_price, extreme_idx, worst_since = highs[i], i, np.inf
             else:
                 worst_since = min(worst_since, lows[i])
-                if (extreme_price - worst_since >= threshold_pts and
-                        i - extreme_idx >= min_bars):
+                if confirms(extreme_price - worst_since, i - extreme_idx):
                     rows.append((bars.index[extreme_idx], extreme_price, "high", bars.index[i]))
                     looking_for = "low"
                     extreme_price, extreme_idx, worst_since = lows[i], i, -np.inf
@@ -219,8 +243,7 @@ def _scan_zigzag(bars, threshold_pts, min_bars):
                 extreme_price, extreme_idx, worst_since = lows[i], i, -np.inf
             else:
                 worst_since = max(worst_since, highs[i])
-                if (worst_since - extreme_price >= threshold_pts and
-                        i - extreme_idx >= min_bars):
+                if confirms(worst_since - extreme_price, i - extreme_idx):
                     rows.append((bars.index[extreme_idx], extreme_price, "low", bars.index[i]))
                     looking_for = "high"
                     extreme_price, extreme_idx, worst_since = highs[i], i, np.inf

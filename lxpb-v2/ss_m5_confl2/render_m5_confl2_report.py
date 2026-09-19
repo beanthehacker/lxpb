@@ -62,9 +62,10 @@ the target are ALL M5 LXPB structure:
        * OPPOSITE M5 LEVEL, ZIGZAG ANCHOR (`_opposite_m5_zz_target`, src tag
          m5_opposite_zz): find the most recent CONFIRMED zigzag TROUGH (short,
          LLPB) or CREST (long, LHPB) in the window -- m5_structure.zigzag_pivots,
-         a standard >=`--zz-threshold-pts` (default 3pt) reversal off bar
+         a >=`--zz-threshold-pts` (default 3pt) reversal off bar
          highs/lows, confirmed on a later bar at least `--zz-min-bars`
-         (default 3) after the extreme. That pivot is where the latest leg
+         (default 3) after the extreme, OR a >=5pt reversal confirmed at
+         least 2 bars after it (m5_structure.ZIGZAG_FAST_*). That pivot is where the latest leg
          into the retest began. The target is then the FARTHEST untested
          opposite-type M5 P0 formed at or after that pivot (the pivot's own bar counts): the LOWEST
          price for a short, the HIGHEST for a long -- with no shared-P1
@@ -2897,7 +2898,8 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
         f"the fill on the favourable side. (1) OPPOSITE M5 LEVEL, ZIGZAG ANCHOR: "
         f"the most recent CONFIRMED zigzag trough (short) / crest (long) in that window (a "
         f"&ge;{args.zz_threshold_pts:g}pt reversal off bar highs/lows, confirmed "
-        f"&ge;{args.zz_min_bars} bars after the extreme), then the FARTHEST live opposite-type "
+        f"&ge;{args.zz_min_bars} bars after the extreme, or a &ge;{MS.ZIGZAG_FAST_THRESHOLD_DEFAULT:g}pt "
+        f"reversal &ge;{MS.ZIGZAG_FAST_MIN_BARS_DEFAULT} bars after it), then the FARTHEST live opposite-type "
         f"M5 P0 formed after it (lowest for a short, highest for a long), no shared-P1 confluence required "
         f"(src tag m5_opposite_zz). (2) SWING EXTREME: the most recent confirmed zigzag "
         f"trough (long) / crest (short) formed between P1 and P2, with the pivot's own price as the target "
