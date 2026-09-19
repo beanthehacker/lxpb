@@ -178,6 +178,10 @@ tr.lvl-row.outcome-hidden, tr.chart-row.outcome-hidden { display:none !important
    (see _apply_globex_open_filter's docstring) instead of sitting side by
    side as two separate chips. */
 .chip-stack { display:flex; flex-direction:column; align-items:flex-start; gap:3px; }
+/* MES sizing flags; NO TARGET rows are not trades, so hide their sizing/commission. */
+.mes-flag { margin-left:5px; padding:0 5px; border-radius:3px; font-size:0.72em; font-weight:600;
+            background:#fde8c8; color:#8a4b00; white-space:nowrap; }
+.no-target-row .contracts-cell > *, .no-target-row .comm-cell { visibility:hidden; }
 .chip-iso { opacity:0.7; font-size:0.78em; padding:1px 9px 1px 7px; }
 .chip-iso:hover { opacity:1; }
 .chip-iso input[type="radio"] { margin-right:5px; }
@@ -200,4 +204,6 @@ tr.lvl-row.no-target-row td { color:var(--text-faint); font-style:italic; }
    render_stop_target_report.CSS (left alone, for every other report) and
    resizes in both directions rather than only vertically. */
 textarea.trade-note { width:360px; height:150px; resize:both; }
+th.sortable-th { cursor:pointer; user-select:none; }
+th.sortable-th:hover { text-decoration:underline; }
 
