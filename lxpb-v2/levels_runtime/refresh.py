@@ -50,7 +50,7 @@ def _log(msg):
 
 def _gz_csv(bars):
     out = bars.reset_index()
-    out["time"] = out["time"].astype("int64") // 10**9
+    out["time"] = (out["time"] - pd.Timestamp(0, tz="UTC")) // pd.Timedelta(seconds=1)   # unit-independent (pandas 3 is not ns)
     return gzip.compress(out[["time", "open", "high", "low", "close"]].to_csv(index=False).encode(), 6)
 
 

@@ -106,7 +106,7 @@ def write_export(bars, path):
     """Write `bars` as an export-format CSV (epoch seconds + OHLC), atomically
     so a reader never sees a half-written file."""
     out = bars.reset_index()
-    out["time"] = out["time"].astype("int64") // 10**9
+    out["time"] = (out["time"] - pd.Timestamp(0, tz="UTC")) // pd.Timedelta(seconds=1)   # unit-independent (pandas 3 is not ns)
     tmp = path + ".tmp"
     out[["time", "open", "high", "low", "close"]].to_csv(tmp, index=False)
     os.replace(tmp, path)

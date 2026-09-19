@@ -55,7 +55,8 @@ def sync_seed():
     m5 = R._display_m5()
     os.makedirs(bootstrap.SEED_DIR, exist_ok=True)
     out = m5.reset_index()
-    out["time"] = out["time"].astype("int64") // 10**9
+    import pandas as pd
+    out["time"] = (out["time"] - pd.Timestamp(0, tz="UTC")) // pd.Timedelta(seconds=1)
     csv = out[["time", "open", "high", "low", "close"]].to_csv(index=False).encode()
     with gzip.open(bootstrap.SEED_M5, "wb", compresslevel=9) as f:
         f.write(csv)

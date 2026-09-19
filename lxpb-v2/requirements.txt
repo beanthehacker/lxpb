@@ -1,7 +1,7 @@
 # Python dependencies of api/levels.py (the /levels data function) and
 # levels_runtime/. Vercel installs these for the Python function only.
-numpy>=1.26
-pandas>=2.2
+numpy>=1.26,<3
+pandas>=2.2,<3   # the repo is written against 2.x: pandas 3 changes datetime resolution (asi8, .value, astype int64)
 pyarrow>=15
 websocket-client>=1.8
 pg8000>=1.31
