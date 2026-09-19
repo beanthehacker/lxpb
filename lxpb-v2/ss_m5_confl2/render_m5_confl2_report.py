@@ -2615,19 +2615,19 @@ def _render_row(idx, res, chart_stacks, fps):
         gap_val = res.get("p1_p2_day_gap")
         gap_cell = (f'<span title="P1 (breakout) {R._to_pt_str(row_d["breakout_time"])} '
                    f'&rarr; P2 (retest) {retest_str}, {gap_val} trading day(s) apart '
-                   f'(Globex/ETH reopen boundary, 15:00 PT)">{gap_val}d</span>'
+                   f'(Globex/ETH reopen boundary, 15:00 PT)">{gap_val}</span>'
                    if gap_val is not None else '-')
         daygap_attr = gap_val if gap_val is not None else ""
         h1gap_val = res.get("p1_p2_h1_gap")
         h1gap_cell = (f'<span title="P1 (breakout) {R._to_pt_str(row_d["breakout_time"])} '
                      f'&rarr; P2 (retest) {retest_str}, {h1gap_val} H1 candle(s) close in between">'
-                     f'{h1gap_val}h1</span>'
+                     f'{h1gap_val}</span>'
                      if h1gap_val is not None else '-')
         h1gap_attr = h1gap_val if h1gap_val is not None else ""
         mingap_val = res.get("p1_p2_minutes")
         mingap_cell = (f'<span title="P1 (breakout) {R._to_pt_str(row_d["breakout_time"])} '
                       f'&rarr; P2 (retest) {retest_str}, {mingap_val:.0f} minute(s) apart">'
-                      f'{mingap_val:.0f}m</span>'
+                      f'{mingap_val:.0f}</span>'
                       if mingap_val is not None else '-')
         mingap_attr = f"{mingap_val:.2f}" if mingap_val is not None else ""
         vspike = res.get("volume_spike")
@@ -3271,7 +3271,7 @@ the box is checked.">Trade management</span>
             f"<th title=\"Whole trading days between this level's own P1 (breakout) and its "
             f"P2 (retest), under the Globex/ETH reopen boundary (15:00 PT / 18:00 ET): 0 when "
             f"both fall in the same reopen-to-reopen session, 1 when the retest is the very "
-            f"next trading day, etc.\">P1&rarr;P2</th>"
+            f"next trading day, etc.\">P1&rarr;P2 (d)</th>"
             f"<th title=\"Whole H1 candles that CLOSE strictly between this level's own P1 "
             f"(breakout) and its P2 (retest) (trade_management.py's h1_bar_gap): 0 when both "
             f"fall inside the same H1 bar or in two back-to-back bars, 1 when exactly one H1 "
@@ -3439,6 +3439,8 @@ tr.lvl-row.no-target-row td { color:var(--text-faint); font-style:italic; }
    render_stop_target_report.CSS (left alone, for every other report) and
    resizes in both directions rather than only vertically. */
 textarea.trade-note { width:360px; height:150px; resize:both; }
+th.sortable-th { cursor:pointer; user-select:none; }
+th.sortable-th:hover { text-decoration:underline; }
 </style>
 """
 JS = SR.JS + """
@@ -3816,6 +3818,69 @@ if (weakp1WEl) weakp1WEl.addEventListener('input', recomputeDynStats);
 const mgmtToggleCb = document.getElementById('mgmt-thrust-trail');
 if (mgmtToggleCb) mgmtToggleCb.addEventListener('change', recomputeDynStats);
 recomputeDynStats();
+
+// Multi-select column sort. Click a sortable header to sort by it alone
+// (descending first, click again to flip); Shift+click adds it as a further
+// key, or flips its direction if already a key. Reads each cell's CURRENT
+// text, so R / PnL / MAE / MFE / Max DD sort by whatever the ticked target
+// rules and management toggle currently show. Empty / '-' cells always sink
+// to the bottom. A trade's chart row travels with its trade row.
+const SORT_COLS = [0, 4, 5, 6, 7, 8, 11, 16, 20, 23, 24, 25];  // Trade Id, P1->P2 (d/H1/min), Pre-P1 ER, P1 range ratio, H1 P0 confl, R, PnL, MAE, MFE, Max DD
+const SUPERS = ['¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹', '¹⁰'];
+let sortSpec = [];
+(function () {
+  const table = document.getElementById('lvl-table');
+  if (!table) return;
+  const tbody = table.tBodies[0];
+  const origOrder = new Map();
+  Array.from(tbody.querySelectorAll('tr.lvl-row')).forEach((tr, i) => origOrder.set(tr, i));
+  const heads = Array.from(table.tHead.rows[0].cells);
+  function cellNum(tr, col) {
+    const v = parseFloat(tr.cells[col].innerText.replace(/,/g, ''));
+    return Number.isNaN(v) ? null : v;
+  }
+  function renderHeaders() {
+    SORT_COLS.forEach(c => {
+      const th = heads[c];
+      const k = sortSpec.findIndex(s => s.col === c);
+      th.textContent = th.dataset.label + (k === -1 ? '' :
+        ' ' + (sortSpec[k].dir === 'asc' ? '▲' : '▼') + (sortSpec.length > 1 ? SUPERS[k] : ''));
+    });
+  }
+  function applySort() {
+    const pairs = Array.from(tbody.querySelectorAll('tr.lvl-row')).map(tr => ({
+      tr, chart: document.getElementById('chart-row-' + tr.dataset.idx),
+      vals: sortSpec.map(s => cellNum(tr, s.col)), o: origOrder.get(tr)}));
+    pairs.sort((a, b) => {
+      for (let i = 0; i < sortSpec.length; i++) {
+        const x = a.vals[i], y = b.vals[i];
+        if (x === y) continue;
+        if (x === null) return 1;
+        if (y === null) return -1;
+        return sortSpec[i].dir === 'asc' ? x - y : y - x;
+      }
+      return a.o - b.o;
+    });
+    pairs.forEach(p => { tbody.appendChild(p.tr); if (p.chart) tbody.appendChild(p.chart); });
+    renderHeaders();
+  }
+  SORT_COLS.forEach(c => {
+    const th = heads[c];
+    th.dataset.label = th.textContent;
+    th.classList.add('sortable-th');
+    th.addEventListener('click', ev => {
+      const cur = sortSpec.find(s => s.col === c);
+      if (ev.shiftKey) {
+        if (cur) cur.dir = cur.dir === 'asc' ? 'desc' : 'asc';
+        else sortSpec.push({col: c, dir: 'desc'});
+      } else {
+        const only = sortSpec.length === 1 && cur;
+        sortSpec = [{col: c, dir: only && cur.dir === 'desc' ? 'asc' : 'desc'}];
+      }
+      applySort();
+    });
+  });
+})();
 </script>
 """
 
