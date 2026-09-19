@@ -2233,7 +2233,46 @@ def _apply_h1_p0_confluence(results):
     return results
 
 
-N_COLS = 29  # keep in sync with `head` below and every colspan in this section
+N_COLS = 31  # keep in sync with `head` below and every colspan in this section
+
+# MES position sizing / commissions. R stays a fixed $1,000 and the stop is not
+# widened for costs: contracts = floor(R_DOLLARS / (stop pts x MES_POINT_VALUE)),
+# and the round-trip commission is only reported (Commission column + chip), never
+# folded into R or the sizing. Reference only -- nothing here changes which trades
+# are taken or their R / PnL.
+MES_POINT_VALUE = 5.0          # $ per point per MES contract
+MES_COMMISSION_RT = 0.84       # $ round trip per MES contract
+R_DOLLARS = 1000.0             # 1R
+MES_HIGH_CONTRACTS = 50        # flag (not cap) sizes at/above this (stop <= 4 pts)
+MES_MAX_STOP_PTS = R_DOLLARS / MES_POINT_VALUE   # 200 pts: beyond this 1 contract risks > 1R
+
+
+def _mes_sizing(stop_pts):
+    """(contracts, commission $, flag) for a trade with this stop distance.
+    flag is '' , 'high' (>= MES_HIGH_CONTRACTS contracts) or 'wide' (stop over
+    200 pts -> 0 whole contracts fit in 1R; left at 0, flagged for review)."""
+    contracts = int(R_DOLLARS // (stop_pts * MES_POINT_VALUE))
+    flag = ("wide" if stop_pts > MES_MAX_STOP_PTS
+            else ("high" if contracts >= MES_HIGH_CONTRACTS else ""))
+    return contracts, contracts * MES_COMMISSION_RT, flag
+
+
+def _mes_cells(stop_pts):
+    """(data attrs, contracts-cell inner HTML, commission-cell text, title) for a
+    filled row. The browser blanks these on NO TARGET rows and restores them."""
+    contracts, comm, flag = _mes_sizing(stop_pts)
+    badge = {"": "",
+             "high": f'<span class="mes-flag" title="Very high size: {contracts} '
+                     f'contracts (stop {stop_pts:.2f} pts). Flagged for review, not capped.">'
+                     f'HIGH SIZE</span>',
+             "wide": f'<span class="mes-flag" title="Stop {stop_pts:.2f} pts is over '
+                     f'{MES_MAX_STOP_PTS:g}: not even 1 MES contract fits in 1R '
+                     f'(${R_DOLLARS:,.0f}). Sized 0, flagged for review.">STOP &gt;200</span>'}[flag]
+    title = (f"${R_DOLLARS:,.0f} / ({stop_pts:.2f} pts x ${MES_POINT_VALUE:g}) rounded down = "
+             f"{contracts} MES; x ${MES_COMMISSION_RT} round trip = ${comm:.2f}")
+    attrs = (f'data-contracts="{contracts}" data-comm="{comm:.2f}" '
+             f'data-mes-flag="{flag}"')
+    return attrs, f"{contracts}{badge}", f"${comm:.2f}", title
 
 
 def _fail_reason_label(reason):
@@ -2680,6 +2719,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="outcome-cell"><span class="outcome-label">{_fail_reason_label(reason)}{rr_note}</span></td>
   <td class="left exit-cell">-</td><td class="exitpx-cell">-</td>
   <td class="pnl-cell">-</td>
+  <td class="contracts-cell">-</td><td class="comm-cell">-</td>
   <td class="mae-cell">-</td><td class="mfe-cell">-</td><td class="gb-cell">-</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
   <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb"></td>
@@ -2763,6 +2803,7 @@ def _render_row(idx, res, chart_stacks, fps):
                     f'<span class="mode-tag-badges">{act["modeTagBadges"]}</span>')
         modes_attr = _attr_json(payloads)
         h1_confl_cell, h1_confl_title = _h1_confl_cell(res.get("h1_p0_confl"))
+        mes_attrs, mes_contracts_html, mes_comm_text, mes_title = _mes_cells(res["stop_pts"])
 
         chart_stack, fp = chart_stacks[idx], fps[idx]
         fp_narrow_html = fp.get("narrow")
@@ -2784,7 +2825,7 @@ def _render_row(idx, res, chart_stacks, fps):
     data-r="{act['r']}" data-rr="{act['rrVal']}" data-pnl-pts="{act['pnlPts']}" data-outcome="{act['outcome']}"
     data-mgmt-r="{act['mgmtR']}" data-mgmt-pnl-pts="{act['mgmtPnl']}"
     data-mgmt-outcome="{act['mgmtOutcome']}" data-mgmt-fired="{act['mgmtFired']}"
-    data-mode="{active_mode}" data-modes="{modes_attr}"
+    data-mode="{active_mode}" data-modes="{modes_attr}" {mes_attrs}
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td>
   <td class="tags-cell">{tags_cell}</td>
@@ -2806,6 +2847,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="outcome-cell {act['outcomeCls']}"><span class="outcome-label">{act['outcomeLabel']}</span><span class="mgmt-badge">{act['mgmtBadge']}</span></td>
   <td class="left exit-cell">{act['exit']}</td><td class="exitpx-cell">{act['exitPx']}</td>
   <td class="pnl-cell {act['pnlCls']}">{act['pnl']}</td>
+  <td class="contracts-cell" title="{mes_title}">{mes_contracts_html}</td><td class="comm-cell" title="{mes_title}">{mes_comm_text}</td>
   <td class="mae-cell bad">{act['mae']}</td><td class="mfe-cell good">{act['mfe']}</td><td class="gb-cell">{act['gb']}</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
   <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb"></td>
@@ -2870,6 +2912,8 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
         for reason, n in sorted(reason_counts.items(), key=lambda kv: -kv[1]))
     total_pnl_pts = sum(r["resolved"]["r"] * r["stop_pts"] for r in filled
                        if r["resolved"].get("r") is not None)
+    total_comm = sum(_mes_sizing(r["stop_pts"])[1] for r in filled
+                     if r["resolved"].get("r") is not None)
     summary_html = f"""
 <div class="summary">
   <div class="box"><strong>{len(candidates)}</strong>SS Confl &ge; {args.ss_confl_min}</div>
@@ -2945,6 +2989,7 @@ Trades tab for trade-exclusion toggles you can flip live in the browser, no rege
         (f"{stats['losses']}", "losses", "sum-losses", False),
         (f"{stats['total_r']:.1f}", "total R", "sum-total-r", False),
         (f"{total_pnl_pts:+.1f}", "total PnL (pts)", "sum-total-pnl", False),
+        (f"${total_comm:,.2f}", "commissions (MES)", "sum-total-comm", False),
         (f"{max_win_mae:.2f}", "max MAE (win)", "sum-max-win-mae", False),
         (f"{max_loss_mfe:.2f}", "max MFE (loss)", "sum-max-loss-mfe", False),
     ])
@@ -3283,6 +3328,12 @@ the box is checked.">Trade management</span>
             f"<th>Outcome</th><th class=\"left\">Exit time</th><th>Exit px</th>"
             f"<th title=\"Realized profit/loss in points (signed): +target pts on a win, "
             f"-stop pts on a loss\">PnL</th>"
+            f"<th title=\"MES contracts for 1R = ${R_DOLLARS:,.0f}: floor(${R_DOLLARS:,.0f} / "
+            f"(stop pts x ${MES_POINT_VALUE:g})). Commission is NOT in the sizing. HIGH SIZE = "
+            f"&ge;{MES_HIGH_CONTRACTS} contracts; STOP &gt;200 = 0 contracts fit. Flagged, not "
+            f"capped or skipped\">MES</th>"
+            f"<th title=\"Round-trip commission = contracts x ${MES_COMMISSION_RT} per MES. "
+            f"Reported only; R and PnL are gross of it\">Comm.</th>"
             f"<th>MAE (win)</th><th>MFE (loss)</th><th>Max DD</th>"
             f"<th>Reviewed</th><th>Valid</th><th>Replayed</th>"
             f"<th class=\"left\">Notes</th><th class=\"expand-th\">\u25b6</th>")
@@ -3362,6 +3413,10 @@ tr.lvl-row.outcome-hidden, tr.chart-row.outcome-hidden { display:none !important
    (see _apply_globex_open_filter's docstring) instead of sitting side by
    side as two separate chips. */
 .chip-stack { display:flex; flex-direction:column; align-items:flex-start; gap:3px; }
+/* MES sizing flags; NO TARGET rows are not trades, so hide their sizing/commission. */
+.mes-flag { margin-left:5px; padding:0 5px; border-radius:3px; font-size:0.72em; font-weight:600;
+            background:#fde8c8; color:#8a4b00; white-space:nowrap; }
+.no-target-row .contracts-cell > *, .no-target-row .comm-cell { visibility:hidden; }
 .chip-iso { opacity:0.7; font-size:0.78em; padding:1px 9px 1px 7px; }
 .chip-iso:hover { opacity:1; }
 .chip-iso input[type="radio"] { margin-right:5px; }
@@ -3598,7 +3653,7 @@ function recomputeDynStats() {
   const outcomeOn = activeOutcomeBuckets();
   const mgmtCb = document.getElementById('mgmt-thrust-trail');
   const useMgmt = !!(mgmtCb && mgmtCb.checked);
-  let n = 0, wins = 0, sumR = 0, sumPnl = 0, maxWinMae = 0, maxLossMfe = 0;
+  let n = 0, wins = 0, sumR = 0, sumPnl = 0, sumComm = 0, maxWinMae = 0, maxLossMfe = 0;
   // MAE/MFE live only in their cells, and applyTargetModes (called above) has
   // already rewritten those for whichever target rule is ticked, so reading
   // the cell is reading the excursion of the bracket actually in force.
@@ -3666,6 +3721,8 @@ function recomputeDynStats() {
     if (!isNaN(rVal)) {
       n += 1;
       sumR += rVal;
+      const comm = parseFloat(tr.dataset.comm);   // fixed by the stop, same under every rule
+      if (!isNaN(comm)) sumComm += comm;
       if (outcome === 'target') {
         wins += 1;
         const mae = cellNum(tr, '.mae-cell');
@@ -3687,6 +3744,7 @@ function recomputeDynStats() {
   setText('sum-avg-r', avgR.toFixed(2));
   setText('sum-total-r', sumR.toFixed(1));
   setText('sum-total-pnl', (sumPnl >= 0 ? '+' : '') + sumPnl.toFixed(1));
+  setText('sum-total-comm', '$' + sumComm.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}));
   setText('sum-max-win-mae', maxWinMae.toFixed(2));
   setText('sum-max-loss-mfe', maxLossMfe.toFixed(2));
   // applyReviewFilters (shared JS) re-applies the review-status/valid/
