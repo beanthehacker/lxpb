@@ -1,10 +1,12 @@
 # Upcoming M5 levels dashboard
 
-Live table of the M5 LXPB levels that are broken out (P1) but not yet retested (P2), within ±N pts
-of the latest ES price, prepared the way the `ss_m5_confl2` report would trade them: same-side
+Live table of the M5 LXPB levels that are broken out (P1) but not yet retested (P2), within ±N pts of the latest completed M5 close
+of the latest ES close, prepared the way the `ss_m5_confl2` report would trade them: same-side
 confluence >= 1, clustering, fine-tuned entry, swerve rule, spike-P0 / thrust stop. No target
 (the retest is still ahead), no `.scid`/tick data. Each row shows H1 (left) and M5 (right) charts
-with the entry and stop rays anchored at their source candles.
+with the original entry (gold), refined entry (blue) and stop (red dashed) as rays from their source candles.
+The page reuses the ss_m5_confl2 report's own CSS, chart renderer and chart-spec format (lifted by `build.py`
+into `data/assets.*`), so it looks and behaves like the report. `?open=N` expands the first N rows on load.
 
     python m5_levels_dashboard/serve.py        # http://127.0.0.1:8765
 

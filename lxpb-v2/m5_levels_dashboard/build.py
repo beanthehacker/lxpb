@@ -30,6 +30,7 @@ history by an offset measured on the overlap, exactly as for any export.
 import argparse
 import json
 import os
+import re
 import sys
 import time
 
@@ -49,11 +50,11 @@ import render_labels_report as R           # noqa: E402
 import lxpb_levels_cache as LC             # noqa: E402
 import render_ss_confl_finetune_report as SF   # noqa: E402
 import render_m5_confl2_report as RM       # noqa: E402
+import render_stop_target_report as SR     # noqa: E402
+import charts as CH                        # noqa: E402
 
 MAX_RANGE_PTS = 200.0        # widest N the page offers; rows are built out to here
 RANGE_MARGIN_PTS = 40.0      # extra reach so clusters at the edge are not truncated
-M5_BARS_SHIPPED = 4000       # ~14 days of extended-hours M5 for the row charts
-H1_BARS_SHIPPED = 1000
 LIVE_M5 = os.path.join(DATA_DIR, "live_M5.csv")
 LIVE_H1 = os.path.join(DATA_DIR, "live_H1.csv")
 M5 = pd.Timedelta(minutes=5)
@@ -153,6 +154,9 @@ def _clusters(cands):
 
 
 def _process(cluster, ledger, next_bar, last_price, swerve_args):
+    """One cluster -> the result dict (report-style names: own_price, alt_price,
+    alt_source, stop_price, ...) or None when it has no valid stop -- which the
+    report treats as no trade."""
     anchor = SF.cluster_anchor(cluster)
     row_d = anchor["row"]
     level_type = row_d["type"]
@@ -170,7 +174,6 @@ def _process(cluster, ledger, next_bar, last_price, swerve_args):
 
     stop_from = (pd.Timestamp(stop_row["formation_time"]) if stop_source == "m5_p0_spike"
                  else pd.Timestamp(stop_row["breakout_time"]))
-    breakout = pd.Timestamp(entry_level["breakout_time"]) if entry_level is not None else None
     ratio = RM._m5_p1_range_ratio_by_window(row_d["breakout_time"])[RM.M5_RANGE_RATIO_WINDOW_DEFAULT - 1]
     members = sorted({round(float(c["row"]["price"]), 2) for c in cluster},
                      reverse=(level_type == "LLPB"))
@@ -178,66 +181,124 @@ def _process(cluster, ledger, next_bar, last_price, swerve_args):
     if swerve is not None:
         tags.append("swerved" if swerve["moved"] else "swerve_blocked")
     return {
-        "type": level_type,
-        "entry": _price(entry), "stop": _price(stop_price),
-        "risk": _price(abs(entry - stop_price)),
-        "dist": _price(entry - last_price),
-        "members": members, "cluster_size": len(cluster), "pool": int(conf["group_n"]),
+        "level_type": level_type, "is_long": is_long, "last_price": last_price,
+        "own_price": float(row_d["price"]), "own_formed": pd.Timestamp(row_d["formation_time"]),
+        "own_p1": pd.Timestamp(row_d["breakout_time"]),
+        "alt_price": entry, "alt_source": conf["alt_source"],
+        "alt_formation_time": pd.Timestamp(conf["alt_formation_time"]),
+        "group_n": int(conf["group_n"]), "cluster_size": len(cluster), "members": members,
         "qualified": bool(anchor["qualified"]),
-        "entry_source": conf["alt_source"],
-        "entry_formed": _epoch(conf["alt_formation_time"]),
-        "entry_p1": _epoch(breakout) if breakout is not None else None,
-        "entry_spike": bool(entry_level is not None and entry_level.get("is_spike")),
-        "stop_source": stop_source, "stop_from": _epoch(stop_from),
-        "p1_ratio": _price(ratio),
-        "planned_entry": _price(swerve["planned_price"]) if swerve is not None else None,
-        "tags": tags,
+        "stop_price": float(stop_price), "stop_source": stop_source,
+        "stop_from_ts": stop_from, "stop_title": _stop_title(is_long, stop_source, stop_row),
+        "p1_ratio": ratio, "swerve": swerve, "tags": tags,
     }
+
+
+def _stop_title(is_long, stop_source, stop_level):
+    """The report's own Stop-cell tooltip wording."""
+    if stop_source == "m5_p0_spike":
+        extreme = "low" if is_long else "high"
+        return (f"Entry level's OWN P0 was a spike candle "
+                f"({'hammer' if is_long else 'shooting star'}): {stop_level['type']} "
+                f"{stop_level['price']:.2f}, P0 {R._to_pt_str(stop_level['formation_time'])}, "
+                f"P0 {extreme} {stop_level['p0_' + extreme]:.2f}; one tick "
+                f"{'below' if is_long else 'above'} THAT candle (not the P1 thrust candle)")
+    extreme = "breakout_low" if is_long else "breakout_high"
+    return (f"Live M5 {stop_level['type']} {stop_level['price']:.2f}, "
+            f"P0 {R._to_pt_str(stop_level['formation_time'])}; "
+            f"P1 {R._to_pt_str(stop_level['breakout_time'])}, "
+            f"{extreme} {stop_level[extreme]:.2f}; one tick {'below' if is_long else 'above'}")
+
+
+def _row_payload(res, m5, h1, ledger):
+    """Everything the page needs for one row: cells, tooltips, both chart specs."""
+    last = res["last_price"]
+    entry, own = res["alt_price"], res["own_price"]
+    nearest = min(res["members"], key=lambda p: abs(p - last))
+    sw = res["swerve"]
+    swings = ""
+    if sw:
+        swings = ", ".join(f"{px:.2f} @ {R._to_pt_str(t)}" for t, px in sw["swings"][:3])
+    return {
+        "type": res["level_type"], "own": _price(own), "entry": _price(entry),
+        "stop": _price(res["stop_price"]), "risk": _price(abs(entry - res["stop_price"])),
+        "away_level": _price(nearest - last), "away_entry": _price(entry - last),
+        "members": res["members"], "cluster_size": res["cluster_size"], "pool": res["group_n"],
+        "qualified": res["qualified"], "entry_source": res["alt_source"],
+        "improved": abs(entry - own) > 1e-9,
+        "stop_source": res["stop_source"], "stop_title": res["stop_title"],
+        "p0": R._to_pt_str(res["own_formed"]), "p1": R._to_pt_str(res["own_p1"]),
+        "p1_ratio": _price(res["p1_ratio"]),
+        "tags": res["tags"],
+        "swerve": None if not sw else {"planned": _price(sw["planned_price"]),
+                                       "price": _price(sw["price"]), "swings": swings},
+        "m5": CH.m5_spec(res, m5, ledger, last),
+        "h1": CH.h1_spec(res, h1, last),
+    }
+
+
+def _write_assets():
+    """The report's own CSS and chart renderer, lifted at build time so the
+    page cannot drift from render_m5_confl2_report / render_stop_target_report."""
+    css = re.sub(r"</?style>", "", RM.CSS)
+    with open(os.path.join(DATA_DIR, "assets.css"), "w", encoding="utf-8") as f:
+        f.write(css)
+    js = SR.JS
+    a, b = js.index("const rendered = {};"), js.index("function _renderTrio")
+    with open(os.path.join(DATA_DIR, "assets.js"), "w", encoding="utf-8") as f:
+        f.write(js[a:b])
 
 
 def build():
     t0 = time.time()
     os.makedirs(DATA_DIR, exist_ok=True)
-    last_price, last_time = _fetch_live()
+    _fetch_live()
     _wire_series()
 
     ledger = LC.m5_levels(verbose=True)
     m5 = LC.m5_bars_continuous()
     h1 = R._display_h1()
     next_bar = m5.index[-1] + M5
+    # The latest ES CLOSE: the last completed M5 bar's close. Every distance
+    # on the page is measured from this.
+    last_price = float(m5["close"].iloc[-1])
     _log(f"M5 series {m5.index[0]} -> {m5.index[-1]} ({len(m5):,} bars); "
-         f"latest price {last_price} @ {last_time}")
+         f"latest close {last_price}")
 
     cands = _awaiting_candidates(ledger, last_price, next_bar)
     _log(f"{len(cands)} awaiting levels within {MAX_RANGE_PTS + RANGE_MARGIN_PTS:.0f}pt, "
          f"{sum(c['qualified'] for c in cands)} with same-side confluence")
     swerve_args = _swerve_args()
-    rows, no_stop = [], 0
+    results, no_stop = [], 0
     for cluster in _clusters(cands):
         res = _process(cluster, ledger, next_bar, last_price, swerve_args)
         if res is None:
             no_stop += 1
         else:
-            rows.append(res)
-    rows = [r for r in rows if abs(r["dist"]) <= MAX_RANGE_PTS]
-    rows.sort(key=lambda r: abs(r["dist"]))
-    for i, r in enumerate(rows):
-        r["id"] = i
+            results.append(res)
 
-    def pack(bars, n):
-        b = bars.iloc[-n:]
-        return {"t": [_epoch(t) for t in b.index],
-                "o": [_price(x) for x in b["open"]], "h": [_price(x) for x in b["high"]],
-                "l": [_price(x) for x in b["low"]], "c": [_price(x) for x in b["close"]]}
+    def reach(r):   # the row's nearest LXPB level to the latest close
+        return min(abs(p - last_price) for p in r["members"])
+
+    results = sorted((r for r in results if reach(r) <= MAX_RANGE_PTS), key=reach)
+    rows = []
+    for i, r in enumerate(results):
+        p = _row_payload(r, m5, h1, ledger)
+        p["id"] = i
+        rows.append(p)
 
     state = {
         "built_at": _epoch(pd.Timestamp.now(tz="UTC")),
-        "last_price": _price(last_price), "last_price_time": _epoch(last_time),
-        "last_m5_bar": _epoch(m5.index[-1]), "next_bar": _epoch(next_bar),
-        "max_range": MAX_RANGE_PTS,
+        "last_price": _price(last_price), "last_bar": _epoch(m5.index[-1]),
+        "last_bar_pt": R._to_pt_str(m5.index[-1]),
+        "next_bar": _epoch(next_bar), "max_range": MAX_RANGE_PTS,
         "n_awaiting": len(cands), "n_no_stop": no_stop,
-        "rows": rows, "m5": pack(m5, M5_BARS_SHIPPED), "h1": pack(h1, H1_BARS_SHIPPED),
+        "confl_radius": RM.M5_CONFLUENCE_N_POINTS_DEFAULT,
+        "swerve_tol": RM.SWERVE_TOL_PTS_DEFAULT, "swerve_max_move": RM.SWERVE_MAX_MOVE_PTS_DEFAULT,
+        "stop_radius": RM.DYNAMIC_STOP_RADIUS_PTS, "near_pts": SR.M5_NEAR_PTS,
+        "rows": rows,
     }
+    _write_assets()
     tmp = STATE_PATH + ".tmp"
     with open(tmp, "w") as f:
         json.dump(state, f, separators=(",", ":"))

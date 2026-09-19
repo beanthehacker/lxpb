@@ -28,7 +28,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 _HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_PATH = os.path.join(_HERE, "data", "state.json")
 LOG_PATH = os.path.join(_HERE, "data", "build.log")
+# assets.css / assets.js are the report's own stylesheet and chart renderer,
+# lifted by build.py on every build.
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
+          "/assets.css": (os.path.join("data", "assets.css"), "text/css; charset=utf-8"),
+          "/assets.js": (os.path.join("data", "assets.js"), "application/javascript"),
           "/static/lightweight-charts.js": (os.path.join("static", "lightweight-charts.js"),
                                             "application/javascript")}
 HOUR_LAG_S = 45          # run this long after the top of the hour
@@ -113,9 +117,12 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path in STATIC:
             name, ctype = STATIC[path]
-            with open(os.path.join(_HERE, name), "rb") as f:
-                self._send(200, f.read(), ctype,
-                           cache="max-age=86400" if path.startswith("/static") else "no-store")
+            try:
+                with open(os.path.join(_HERE, name), "rb") as f:
+                    self._send(200, f.read(), ctype,
+                               cache="max-age=86400" if path.startswith("/static") else "no-store")
+            except OSError:
+                self._json({"error": "not built yet"}, 503)
         elif path == "/api/state":
             try:
                 with open(STATE_PATH, "rb") as f:

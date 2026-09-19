@@ -2,345 +2,258 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Upcoming M5 Levels</title>
+<title>Upcoming M5 levels</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%AF%3C/text%3E%3C/svg%3E">
+<!-- The stylesheet (assets.css) and chart renderer (assets.js) are lifted from the
+     ss_m5_confl2 / stop-target reports by build.py, so this page looks and behaves
+     like them. They are injected once the first build exists. -->
 <style>
-:root {
-  --bg: #0d1117; --panel: #161b22; --panel2: #1c2230; --line: #2a3140; --text: #e6edf3;
-  --muted: #8b96a5; --accent: #58a6ff; --long: #3fb950; --short: #f85149;
-  --entry: #fbbf24; --stop: #f472b6; --warn: #d29922;
-}
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    --bg: #f6f8fa; --panel: #ffffff; --panel2: #f0f3f6; --line: #d0d7de; --text: #1f2328;
-    --muted: #59636e; --accent: #0969da; --long: #1a7f37; --short: #cf222e;
-    --entry: #b7791f; --stop: #c2255c; --warn: #9a6700;
-  }
-}
-* { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text);
-  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-.wrap { max-width: 1500px; margin: 0 auto; padding: 16px; }
-header { display: flex; flex-wrap: wrap; gap: 12px 28px; align-items: baseline; margin-bottom: 12px; }
-h1 { font-size: 20px; margin: 0; }
-.stat { color: var(--muted); }
-.stat b { color: var(--text); font-variant-numeric: tabular-nums; }
-.price { font-size: 20px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
-button, input, select { font: inherit; color: inherit; }
-button { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px;
-  padding: 4px 10px; cursor: pointer; }
-button:hover { border-color: var(--accent); }
-button:focus-visible, input:focus-visible, .seg label:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
-.banner { background: color-mix(in srgb, var(--warn) 18%, var(--panel)); border: 1px solid var(--warn);
-  border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; }
-.controls { display: flex; flex-wrap: wrap; gap: 14px 28px; align-items: center; background: var(--panel);
-  border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; }
-.controls .grp { display: flex; align-items: center; gap: 8px; }
-.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-.seg input { position: absolute; opacity: 0; pointer-events: none; }
-.seg label { padding: 4px 12px; cursor: pointer; background: var(--panel2); border-right: 1px solid var(--line); }
-.seg label:last-child { border-right: 0; }
-.seg input:checked + label { background: var(--accent); color: #fff; }
-input[type=number] { width: 68px; background: var(--panel2); border: 1px solid var(--line);
-  border-radius: 6px; padding: 4px 6px; }
-input[type=range] { width: 200px; accent-color: var(--accent); }
-.count { margin-left: auto; color: var(--muted); }
-table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line);
-  border-radius: 8px; overflow: hidden; }
-th, td { padding: 6px 10px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-th { background: var(--panel2); color: var(--muted); font-weight: 600; font-size: 12px;
-  text-transform: uppercase; letter-spacing: .03em; position: sticky; top: 0; z-index: 2; }
-th:nth-child(-n+2), td:nth-child(-n+2) { text-align: left; }
-tbody { counter-reset: lv; }
-tr.lv { counter-increment: lv; }
-td.n::before { content: counter(lv); }
-tr.lv td { border-top: 2px solid var(--line); }
-tr.lv:first-of-type td { border-top: 0; }
-tr.dim td { color: var(--muted); }
-.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
-.badge.long { background: color-mix(in srgb, var(--long) 22%, transparent); color: var(--long); }
-.badge.short { background: color-mix(in srgb, var(--short) 22%, transparent); color: var(--short); }
-.entry { color: var(--entry); font-weight: 600; }
-.stopv { color: var(--stop); font-weight: 600; }
-.tag { font-size: 11px; padding: 0 6px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); }
-.tag.spike { color: var(--warn); border-color: var(--warn); }
-tr.ch td { padding: 0 10px 10px; text-align: left; }
-.charts { display: grid; grid-template-columns: minmax(280px, 2fr) minmax(360px, 3fr); gap: 10px; }
-.cbox { position: relative; height: 270px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
-  background: var(--panel); }
-.clabel { position: absolute; left: 8px; top: 4px; z-index: 3; font-size: 11px; color: var(--muted);
-  pointer-events: none; }
-.empty { padding: 40px; text-align: center; color: var(--muted); }
-footer { color: var(--muted); font-size: 12px; margin: 14px 2px; }
-@media (max-width: 900px) { .charts { grid-template-columns: 1fr; } .wrap { padding: 12px 16px; } }
+body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#111316; color:#d4d8df; }
+td.n::before { content:counter(lv); }
+tbody { counter-reset:lv; }
+tr.lvl-row { counter-increment:lv; }
+input#f-n-range { vertical-align:middle; width:180px; accent-color:#60a5fa; }
+.filter-label.wide { width:160px; }
+.sync-note { color:var(--text-dim); font-size:0.82em; margin-left:6px; }
+.away-neg { color:var(--bear); } .away-pos { color:var(--bull); }
+#banner { background:#4a3010; color:#fbbf24; border:1px solid #6b4a12; border-radius:6px;
+          padding:8px 12px; margin:10px 0; font-size:0.85em; }
+.empty-msg { padding:30px; text-align:center; color:var(--text-dim); }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <h1>Upcoming M5 levels &middot; ES</h1>
-    <span class="stat">Latest <span class="price" id="price">&ndash;</span>
-      <span id="price-time"></span></span>
-    <span class="stat">Last completed M5 bar <b id="last-bar">&ndash;</b></span>
-    <span class="stat">Next update <b id="next-run">&ndash;</b></span>
-    <button id="refresh" type="button">Refresh now</button>
-  </header>
-  <div id="banner" class="banner" hidden></div>
+<h1>Upcoming M5 levels &middot; ES <span class="src-tag">(M5-native SS Confl &ge; 1, awaiting retest)</span></h1>
+<p class="lead">M5 LXPB levels that have formed (P0) and broken out (P1) but have not been retested yet, near the
+latest ES close, prepared as the ss_m5_confl2 report would trade them if they were retested on the next bar.
+<b>Own</b> is the level's original price; <b>Entry</b> is the fine-tuned entry (the most extreme price among the merged
+levels and their same-side M5 confluence pool, moved off any swing that already turned price there). The stop is one
+tick beyond the entry level's spike P0 candle, else beyond the P1 thrust candle of the live same-side levels within
+&plusmn;<span id="lead-stop">10</span>pt. No target is shown: the retest is still ahead. Click a row for its M5 and H1
+charts: gold ray = original entry, blue ray = refined entry, red dashed = stop, light-blue = other live M5 levels
+(hover any ray for details). All times are PT.</p>
 
-  <div class="controls" role="group" aria-label="Filters">
-    <div class="grp">
-      <span class="stat">Side</span>
-      <div class="seg" id="seg-side">
-        <input type="radio" name="side" id="s-all" value="all" checked><label for="s-all">All</label>
-        <input type="radio" name="side" id="s-lhpb" value="LHPB"><label for="s-lhpb">LHPB &middot; long</label>
-        <input type="radio" name="side" id="s-llpb" value="LLPB"><label for="s-llpb">LLPB &middot; short</label>
-      </div>
-    </div>
-    <div class="grp">
-      <label for="n-range" class="stat">Within &plusmn;</label>
-      <input type="range" id="n-range" min="1" max="200" step="1" value="50">
-      <input type="number" id="n-num" min="1" max="200" step="1" value="50" aria-label="Points from latest price">
-      <span class="stat">pts</span>
-    </div>
-    <label class="grp"><input type="checkbox" id="f-confl" checked>
-      <span>Same-side confluence &ge; 1</span></label>
-    <label class="grp"><input type="checkbox" id="f-blocked">
-      <span>Show swerve-blocked</span></label>
-    <span class="count" id="count"></span>
-  </div>
-
-  <div id="out"></div>
-  <footer id="foot"></footer>
+<div class="summary">
+  <div class="box true"><strong id="sum-close">&ndash;</strong>latest ES close</div>
+  <div class="box"><strong id="sum-bar">&ndash;</strong>last completed M5 bar</div>
+  <div class="box"><strong id="sum-shown">0</strong>shown</div>
+  <div class="box"><strong id="sum-lhpb">0</strong>LHPB (long)</div>
+  <div class="box"><strong id="sum-llpb">0</strong>LLPB (short)</div>
+  <div class="box"><strong id="sum-total">0</strong>levels built (&plusmn;200pt)</div>
+  <div class="box"><strong id="sum-next">&ndash;</strong>next update</div>
+  <div class="toolbar"><button class="btn" id="refresh" type="button">&#8635; Refresh now</button></div>
 </div>
+<div id="banner" hidden></div>
+
+<div class="filter-panel">
+  <div class="filter-row">
+    <span class="filter-label">Type</span>
+    <label class="chip"><input type="checkbox" class="f-cb f-type" value="LHPB" checked> LHPB</label>
+    <label class="chip"><input type="checkbox" class="f-cb f-type" value="LLPB" checked> LLPB</label>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label wide" title="How far an LXPB level may sit from the latest ES close (the close of the last completed M5 bar) and still be listed: |level price &minus; close| &le; N points. A row counts as near if ANY level merged into it is within N (the Away (level) column shows the nearest one). 1 to 200; refetched prices move the window with the close on every update.">Within &plusmn; N pts of close</span>
+    <input type="range" id="f-n-range" min="1" max="200" step="1" value="50">
+    <input type="number" class="f-num-val" id="f-n" value="50" min="1" max="200" step="1">
+    <span class="sync-note">pts</span>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label" title="The report's own selection rule: at least one other same-type M5 level within &plusmn;10pt that was broken out and not yet retested as of this level's own P1. Untick to also list levels with no confluence (their entry is their own price).">Confluence</span>
+    <label class="chip"><input type="checkbox" id="f-confl" checked> Require same-side M5 confluence &ge; 1</label>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label" title="Same convention as the report's Dynamic filters: tagged rows stay in the table and can be excluded or isolated live. swerve_blocked: a confirmed M5 swing sits on the planned entry and no other live same-side M5 level is available to move to, so the report would not take the trade.">Dynamic filters</span>
+    <div class="chip-stack">
+      <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="swerve_blocked" checked> Exclude swerve-blocked entries</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged swerve_blocked -- overrides the Exclude box. Click again to turn off."><input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="swerve_blocked"> only</label>
+    </div>
+  </div>
+</div>
+
+<div class="table-wrap"><table id="lvl-table">
+<thead><tr>
+  <th class="left">#</th>
+  <th>Tags</th>
+  <th class="left">Type</th>
+  <th class="left" title="The level's own P0: the candle whose high (LHPB) / low (LLPB) is the level.">P0 (formed)</th>
+  <th class="left" title="The level's own P1: the candle that broke out through it. The level is live from here until price comes back to it (P2).">P1 (breakout)</th>
+  <th title="This level's own P1 (breakout) candle range, divided by its trailing 20-bar M5 average range (the average excludes the bar itself) -- the report's own range-ratio calc. A thin ratio is a thin thrust that barely out-ranged the recent tape.">P1 range ratio</th>
+  <th class="left" title="Distinct M5 prices merged into this one trade (mutually-confluent levels), extreme-first: highest for LLPB, lowest for LHPB. Single-level rows show their own M5 price.">Merged M5 levels</th>
+  <th title="The level's original M5 price, before fine-tuning to the confluence group's extreme price">Own</th>
+  <th title="Fine-tuned entry: the most extreme price (highest for LLPB / lowest for LHPB) among the merged levels and every member's same-side M5 confluence pool, still live now. The src tag shows own/m5; &uarr; marks an entry improved over Own. A swerve moves it off a swing that already turned price there.">Entry</th>
+  <th title="If the entry level's own P0 was a spike candle (hammer for LHPB / shooting star for LLPB), one tick beyond THAT candle's own low/high (m5_p0_spike). Otherwise one tick beyond the live same-side M5 breakout-candle extreme (m5_thrust), searching &plusmn;10pt of the entry.">Stop</th>
+  <th title="Entry to stop, in points.">Risk</th>
+  <th title="Nearest merged level's price minus the latest close. Negative = below price (LHPB, support); positive = above (LLPB, resistance). This is what the &plusmn;N filter uses.">Away (level)</th>
+  <th title="Fine-tuned entry minus the latest close.">Away (entry)</th>
+  <th class="expand-th">&#9654;</th>
+</tr></thead>
+<tbody id="tbody"></tbody>
+</table></div>
+<div class="empty-msg" id="empty" hidden>No upcoming levels match these filters.</div>
+<p class="note" id="foot"></p>
 
 <script src="/static/lightweight-charts.js"></script>
 <script>
-(function () {
-  "use strict";
-  var PT = "America/Los_Angeles";
-  var $ = function (s) { return document.querySelector(s); };
-  var state = null, status = null, charts = [], observer = null;
+"use strict";
+var state = null, srv = null, loadedMtime = null, assetsReady = false;
+var openKeys = {};
+var CH_N = 14;   // colspan
+function $(s) { return document.querySelector(s); }
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
+function px(x) { return x == null ? "-" : x.toFixed(2); }
+var clockFmt = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "2-digit", minute: "2-digit", hour12: false });
+function ptClock(t) { return clockFmt.format(new Date(t * 1000)) + " PT"; }
 
-  // ---- time (always Pacific) ---------------------------------------------
-  var fmtCache = {};
-  function fmt(t, opts) {
-    var key = JSON.stringify(opts);
-    var f = fmtCache[key] || (fmtCache[key] = new Intl.DateTimeFormat("en-US",
-      Object.assign({ timeZone: PT }, opts)));
-    return f.format(new Date(t * 1000));
-  }
-  function ptFull(t) { return fmt(t, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) + " PT"; }
-  function ptClock(t) { return fmt(t, { hour: "2-digit", minute: "2-digit", hour12: false }) + " PT"; }
-  function px(x) { return x == null ? "–" : x.toFixed(2); }
-  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
-
-  // ---- data --------------------------------------------------------------
-  function getJSON(url) {
-    return fetch(url, { cache: "no-store" }).then(function (r) {
-      if (!r.ok) throw new Error(url + " " + r.status);
-      return r.json();
-    });
-  }
-  function loadState() {
-    return getJSON("/api/state").then(function (s) { state = s; render(); });
-  }
-  function poll() {
-    getJSON("/api/status").then(function (s) {
-      status = s;
-      if (s.built_at && (!state || s.built_at !== state._mtime)) {
-        return getJSON("/api/state").then(function (st) { st._mtime = s.built_at; state = st; render(); });
-      }
-    }).catch(function () {}).then(updateHeader);
-  }
-  function updateHeader() {
-    var b = $("#banner"), msgs = [];
-    if (status && status.error) msgs.push("Last refresh failed &mdash; showing the previous data. " + esc(status.error));
-    if (status && status.building) msgs.push("Refreshing from TradingView&hellip;");
-    if (state && status && status.now - state.built_at > 75 * 60) msgs.push("Data is more than an hour old.");
-    b.hidden = !msgs.length; b.innerHTML = msgs.join("<br>");
-    var nr = $("#next-run");
-    if (status && status.next_run) {
-      var s = Math.max(0, status.next_run - Math.floor(Date.now() / 1000));
-      nr.textContent = ptClock(status.next_run) + " (in " + Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s)";
-    }
-  }
-
-  // ---- filters -----------------------------------------------------------
-  function filters() {
-    return {
-      side: document.querySelector("input[name=side]:checked").value,
-      n: Number($("#n-num").value) || 50,
-      confl: $("#f-confl").checked,
-      blocked: $("#f-blocked").checked
-    };
-  }
-  function passes(r, f) {
-    if (f.side !== "all" && r.type !== f.side) return false;
-    if (Math.abs(r.dist) > f.n) return false;
-    if (f.confl && !r.qualified) return false;
-    if (!f.blocked && r.tags.indexOf("swerve_blocked") >= 0) return false;
-    return true;
-  }
-  function applyFilters() {
-    if (!state) return;
-    var f = filters(), shown = 0;
-    state.rows.forEach(function (r) {
-      var ok = passes(r, f);
-      document.querySelectorAll('[data-row="' + r.id + '"]').forEach(function (tr) { tr.hidden = !ok; });
-      if (ok) shown++;
-    });
-    $("#count").textContent = shown + " of " + state.rows.length + " levels shown";
-    $("#empty").hidden = shown > 0;
-    watchVisible();
-  }
-  function setN(v) {
-    v = Math.min(200, Math.max(1, Math.round(Number(v) || 1)));
-    $("#n-num").value = v; $("#n-range").value = v;
-    try { localStorage.setItem("m5dash.n", String(v)); } catch (e) {}
-    applyFilters();
-  }
-
-  // ---- table -------------------------------------------------------------
-  function rowHTML(r) {
-    var long = r.type === "LHPB";
-    var tags = [];
-    if (r.entry_spike) tags.push('<span class="tag spike" title="The level that supplies the entry formed on a spike candle; the stop sits beyond that candle">spike P0</span>');
-    if (r.tags.indexOf("swerved") >= 0) tags.push('<span class="tag" title="Entry moved off ' + px(r.planned_entry) + ' past a swing that already turned price there">swerved</span>');
-    if (r.tags.indexOf("swerve_blocked") >= 0) tags.push('<span class="tag" title="A swing sits on the planned entry and no other live level to move to">swerve-blocked</span>');
-    if (!r.qualified) tags.push('<span class="tag" title="No other same-side level within 10pt">no confluence</span>');
-    var away = r.dist;
-    var dim = r.tags.indexOf("swerve_blocked") >= 0 || !r.qualified ? " dim" : "";
-    return '<tr class="lv' + dim + '" data-row="' + r.id + '">' +
-      '<td class="n"></td>' +
-      '<td><span class="badge ' + (long ? "long" : "short") + '">' + r.type + '</span> ' + (long ? "long" : "short") + '</td>' +
-      '<td class="entry">' + px(r.entry) + '</td>' +
-      '<td class="stopv">' + px(r.stop) + '</td>' +
-      '<td>' + px(r.risk) + '</td>' +
-      '<td>' + (away > 0 ? "+" : "") + px(away) + '</td>' +
-      '<td>' + r.members.map(px).join(", ") + '</td>' +
-      '<td>' + r.pool + '</td>' +
-      '<td>' + (r.stop_source === "m5_p0_spike" ? "P0 spike" : "P1 thrust") + '</td>' +
-      '<td>' + (r.p1_ratio == null ? "–" : r.p1_ratio.toFixed(2) + "x") + '</td>' +
-      '<td>' + ptFull(r.entry_formed) + '</td>' +
-      '<td style="text-align:left">' + tags.join(" ") + '</td></tr>' +
-      '<tr class="ch" data-row="' + r.id + '"><td colspan="12"><div class="charts">' +
-      '<div class="cbox" data-kind="h1" data-id="' + r.id + '"><span class="clabel">H1</span></div>' +
-      '<div class="cbox" data-kind="m5" data-id="' + r.id + '"><span class="clabel">M5</span></div>' +
-      '</div></td></tr>';
-  }
-  function render() {
-    disposeCharts();
-    var s = state;
-    $("#price").textContent = px(s.last_price);
-    $("#price-time").textContent = "@ " + ptClock(s.last_price_time);
-    $("#last-bar").textContent = ptFull(s.last_m5_bar);
-    var head = '<table><thead><tr><th>#</th><th>Side</th><th>Entry</th><th>Stop</th><th>Risk</th>' +
-      '<th title="Entry minus latest price">Away</th><th title="Levels in the cluster">Levels</th>' +
-      '<th title="Levels in the entry pool (cluster plus same-side levels within 10pt)">Pool</th>' +
-      '<th>Stop from</th><th title="P1 candle range vs its trailing 20-bar average">P1 ratio</th>' +
-      '<th>Formed (PT)</th><th style="text-align:left">Tags</th></tr></thead><tbody>';
-    $("#out").innerHTML = head + s.rows.map(rowHTML).join("") + '</tbody></table>' +
-      '<div class="empty" id="empty" hidden>No upcoming levels match these filters.</div>';
-    $("#foot").textContent = s.n_awaiting + " open levels within reach of the latest price; " +
-      (s.n_no_stop ? s.n_no_stop + " dropped for lacking a valid stop. " : "") +
-      "Entry, stop and cluster follow the ss_m5_confl2 report's rules with the retest assumed on the next bar; no target is shown because the retest is still ahead. Bars are TradingView continuous ES1!.";
-    applyFilters();
-  }
-
-  // ---- charts ------------------------------------------------------------
-  function lower(arr, x) { var lo = 0, hi = arr.length; while (lo < hi) { var m = (lo + hi) >> 1; if (arr[m] < x) lo = m + 1; else hi = m; } return lo; }
-  function disposeCharts() {
-    if (observer) observer.disconnect();
-    charts.forEach(function (c) { try { c.remove(); } catch (e) {} });
-    charts = [];
-  }
-  function watchVisible() {
-    if (!window.IntersectionObserver) { document.querySelectorAll(".cbox").forEach(drawChart); return; }
-    if (observer) observer.disconnect();
-    observer = new IntersectionObserver(function (entries) {
-      entries.forEach(function (e) { if (e.isIntersecting) { drawChart(e.target); observer.unobserve(e.target); } });
-    }, { rootMargin: "300px" });
-    document.querySelectorAll(".cbox:not([data-done])").forEach(function (el) {
-      if (!el.closest("tr").hidden) observer.observe(el);
-    });
-  }
-  function palette() {
-    var cs = getComputedStyle(document.documentElement);
-    var g = function (n) { return cs.getPropertyValue(n).trim(); };
-    return { text: g("--muted"), line: g("--line"), bg: g("--panel"), entry: g("--entry"), stop: g("--stop"),
-      up: g("--long"), down: g("--short") };
-  }
-  function drawChart(el) {
-    if (el.dataset.done || !window.LightweightCharts) return;
-    el.dataset.done = "1";
-    var r = state.rows[Number(el.dataset.id)], kind = el.dataset.kind;
-    var bars = state[kind], t = bars.t, n = t.length, p = palette();
-    var period = kind === "m5" ? 300 : 3600;
-    var src = Math.min(r.entry_formed, r.stop_from);
-    var i0 = Math.max(0, lower(t, src) - 15);
-    i0 = Math.max(i0, n - (kind === "m5" ? 700 : 500));
-    i0 = Math.min(i0, n - 120);
-    var data = [];
-    for (var i = i0; i < n; i++) data.push({ time: t[i], open: bars.o[i], high: bars.h[i], low: bars.l[i], close: bars.c[i] });
-
-    var chart = LightweightCharts.createChart(el, {
-      autoSize: true,
-      layout: { background: { color: p.bg }, textColor: p.text, fontSize: 11 },
-      grid: { vertLines: { color: p.line, visible: false }, horzLines: { color: p.line } },
-      rightPriceScale: { borderColor: p.line },
-      timeScale: { borderColor: p.line, timeVisible: true, secondsVisible: false,
-        tickMarkFormatter: function (time) { return fmt(time, kind === "m5" ? { hour: "2-digit", minute: "2-digit", hour12: false } : { month: "short", day: "numeric" }); } },
-      localization: { timeFormatter: function (time) { return ptFull(time); } },
-      crosshair: { mode: 0 }
-    });
-    charts.push(chart);
-    var candles = chart.addCandlestickSeries({ upColor: p.up, downColor: p.down, borderVisible: false,
-      wickUpColor: p.up, wickDownColor: p.down, priceLineVisible: false, lastValueVisible: false });
-    candles.setData(data);
-    var first = data[0].time, last = data[data.length - 1].time;
-
-    function ray(price, from, color, title, dashed) {
-      var s = chart.addLineSeries({ color: color, lineWidth: 2, lineStyle: dashed ? 2 : 0,
-        priceLineVisible: false, lastValueVisible: true, title: title, crosshairMarkerVisible: false });
-      var from2 = Math.min(Math.max(from - (from % period), first), last - period);
-      s.setData([{ time: from2, value: price }, { time: last, value: price }]);
-    }
-    ray(r.entry, r.entry_formed, p.entry, "Entry", false);
-    ray(r.stop, r.stop_from, p.stop, "Stop", true);
-    candles.createPriceLine({ price: state.last_price, color: p.text, lineWidth: 1, lineStyle: 3,
-      axisLabelVisible: true, title: "Last" });
-    if (kind === "m5") {
-      r.members.forEach(function (m) {
-        if (Math.abs(m - r.entry) > 1e-9) candles.createPriceLine({ price: m, color: p.entry, lineWidth: 1, lineStyle: 1,
-          axisLabelVisible: false, title: "" });
-      });
-      var long = r.type === "LHPB", marks = [];
-      if (r.entry_formed >= first) marks.push({ time: r.entry_formed, position: long ? "aboveBar" : "belowBar", color: p.entry, shape: "circle", text: "P0" });
-      if (r.entry_p1 && r.entry_p1 >= first && r.entry_p1 !== r.entry_formed) marks.push({ time: r.entry_p1, position: long ? "aboveBar" : "belowBar", color: p.entry, shape: long ? "arrowUp" : "arrowDown", text: "P1" });
-      marks.sort(function (a, b) { return a.time - b.time; });
-      candles.setMarkers(marks);
-    }
-    chart.timeScale().fitContent();
-    var lab = el.querySelector(".clabel");
-    lab.textContent = (kind === "m5" ? "M5" : "H1") + " · entry " + px(r.entry) + " · stop " + px(r.stop);
-  }
-
-  // ---- wiring ------------------------------------------------------------
-  document.querySelectorAll("input[name=side], #f-confl, #f-blocked").forEach(function (el) {
-    el.addEventListener("change", applyFilters);
+function getJSON(url) {
+  return fetch(url, { cache: "no-store" }).then(function (r) { if (!r.ok) throw new Error(url + " " + r.status); return r.json(); });
+}
+function injectAssets(v) {
+  if (assetsReady) return Promise.resolve();
+  var l = document.createElement("link"); l.rel = "stylesheet"; l.href = "/assets.css?v=" + v; document.head.appendChild(l);
+  return new Promise(function (ok, bad) {
+    var s = document.createElement("script"); s.src = "/assets.js?v=" + v;
+    s.onload = function () { assetsReady = true; ok(); }; s.onerror = bad; document.body.appendChild(s);
   });
-  $("#n-range").addEventListener("input", function (e) { setN(e.target.value); });
-  $("#n-num").addEventListener("change", function (e) { setN(e.target.value); });
-  $("#refresh").addEventListener("click", function () {
-    fetch("/api/refresh", { method: "POST" }).then(function () { setTimeout(poll, 1500); });
+}
+function reload(mtime) {
+  return getJSON("/api/state").then(function (s) {
+    return injectAssets(s.built_at).then(function () { state = s; loadedMtime = mtime; render(); });
   });
-  try { var saved = localStorage.getItem("m5dash.n"); if (saved) { $("#n-num").value = saved; $("#n-range").value = saved; } } catch (e) {}
-  if (!window.LightweightCharts) $("#banner").hidden = false, $("#banner").textContent = "Chart library failed to load.";
-  loadState().catch(function () { $("#out").innerHTML = '<div class="empty">First build in progress &mdash; this can take a minute or two&hellip;</div>'; }).then(poll);
-  setInterval(poll, 20000);
-  setInterval(updateHeader, 1000);
-})();
+}
+function poll() {
+  return getJSON("/api/status").then(function (s) {
+    srv = s;
+    if (s.built_at && s.built_at !== loadedMtime) return reload(s.built_at);
+  }).catch(function () {}).then(banner);
+}
+function banner() {
+  var msgs = [];
+  if (srv && srv.error) msgs.push("Last refresh failed &mdash; showing the previous data. " + esc(srv.error));
+  if (srv && srv.building) msgs.push("Refreshing from TradingView&hellip;");
+  if (!state && !(srv && srv.building)) msgs.push("Waiting for the first build (a minute or two)&hellip;");
+  if (state && srv && srv.now - state.built_at > 75 * 60) msgs.push("Data is more than an hour old.");
+  var b = $("#banner"); b.hidden = !msgs.length; b.innerHTML = msgs.join("<br>");
+  if (srv && srv.next_run) {
+    var s = Math.max(0, srv.next_run - Math.floor(Date.now() / 1000));
+    $("#sum-next").textContent = ptClock(srv.next_run) + " (" + Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s)";
+  }
+}
+
+// ---- rows (same markup as the report's lvl-row / chart-row) ---------------
+function awayCell(v) { return '<span class="' + (v < 0 ? "away-neg" : "away-pos") + '">' + (v > 0 ? "+" : "") + px(v) + "</span>"; }
+function tagBadges(r) {
+  var out = "";
+  var sw = r.swerve;
+  if (r.tags.indexOf("swerved") >= 0)
+    out += '<span class="dyn-tag-badge swerve-tag-badge" title="Dynamic filter &lsquo;swerved&rsquo;: a confirmed M5 swing sat on the planned entry ' + px(sw.planned) + ' (' + esc(sw.swings) + '), so the order is moved to the next live M5 ' + r.type + ' level at ' + px(sw.price) + '.">SWERVED ' + px(sw.planned) + '&rarr;' + px(sw.price) + '</span>';
+  if (r.tags.indexOf("swerve_blocked") >= 0)
+    out += '<span class="dyn-tag-badge swerve-tag-badge" title="Dynamic filter &lsquo;swerve_blocked&rsquo;: a confirmed M5 swing sat on the planned entry ' + px(sw.planned) + ' (' + esc(sw.swings) + ') and no other live M5 ' + r.type + ' level is available to move to, so this trade would NOT be taken. Shown at its original entry so it can still be reviewed.">SWERVE BLOCKED</span>';
+  if (!r.qualified)
+    out += '<span class="dyn-tag-badge" title="No other same-side M5 level within &plusmn;' + state.confl_radius + 'pt was broken out and unretested as of this level&rsquo;s P1, so the report would not select it. Shown only because the confluence filter is off.">NO CONFLUENCE</span>';
+  return out;
+}
+function rowHTML(r) {
+  var i = r.id, cls = r.type === "LHPB" ? "type-lhpb" : "type-llpb";
+  var members = r.members.map(px).join(", ");
+  var ownCell = r.cluster_size > 1
+    ? '<span class="cluster-tag" title="' + r.cluster_size + ' mutually-confluent M5 levels merged into this one trade: ' + members + '">' + px(r.own) + '†</span>'
+    : px(r.own);
+  var dyn = r.tags.join(" ");
+  return '<tr class="lvl-row ' + cls + '" data-idx="' + i + '" data-key="' + r.type + "_" + r.entry + "_" + r.p1 + '" data-dyn-tags="' + dyn + '" data-away="' + Math.abs(r.away_level) + '" data-qual="' + (r.qualified ? 1 : 0) + '" onclick="toggleChart(' + i + ')">' +
+    '<td class="left n"></td>' +
+    '<td class="tags-cell"><span class="row-badges">' + tagBadges(r) + '</span></td>' +
+    '<td class="left type-cell">' + r.type + '</td>' +
+    '<td class="left">' + esc(r.p0) + '</td>' +
+    '<td class="left">' + esc(r.p1) + '</td>' +
+    '<td class="p1ratio-cell">' + (r.p1_ratio == null ? "-" : r.p1_ratio.toFixed(2) + "x") + '</td>' +
+    '<td class="left merged-h1-levels">' + members + '</td>' +
+    '<td>' + ownCell + '</td>' +
+    '<td>' + px(r.entry) + '<span class="src-tag ' + r.entry_source + '">' + r.entry_source + (r.improved ? " &uarr;" : "") + '</span></td>' +
+    '<td title="' + esc(r.stop_title) + '">' + px(r.stop) + '<span class="src-tag m5">' + r.stop_source + '</span></td>' +
+    '<td>' + px(r.risk) + '</td>' +
+    '<td>' + awayCell(r.away_level) + '</td>' +
+    '<td>' + awayCell(r.away_entry) + '</td>' +
+    '<td class="expand-cell"><button class="expand-btn" data-idx="' + i + '" onclick="event.stopPropagation();toggleChart(' + i + ')">▶</button></td></tr>' +
+    '<tr class="chart-row hidden" data-idx="' + i + '" id="chart-row-' + i + '"><td colspan="' + CH_N + '"><div class="chart-stack">' +
+    '<div class="chart-row-2col chart-row-solo"><div class="chart-cell chart-h1"><div class="chart-title" id="tm5-' + i + '"></div><div class="chart-ph" id="cm5-' + i + '"></div></div></div>' +
+    '<div class="chart-row-2col chart-row-solo"><div class="chart-cell" style="height:380px"><div class="chart-title" id="th1-' + i + '"></div><div class="chart-ph" id="ch1-' + i + '"></div></div></div>' +
+    '</div></td></tr>';
+}
+var drawn = {};
+function toggleChart(i) {
+  var row = document.getElementById("chart-row-" + i), btn = document.querySelector('.expand-btn[data-idx="' + i + '"]');
+  if (!row) return;
+  var opening = row.classList.contains("hidden");
+  row.classList.toggle("hidden", !opening);
+  if (btn) { btn.classList.toggle("open", opening); btn.textContent = opening ? "▼" : "▶"; }
+  var r = state.rows[i], key = r.type + "_" + r.entry + "_" + r.p1;
+  if (opening) openKeys[key] = 1; else delete openKeys[key];
+  if (opening && !drawn[i]) { _renderPane("cm5-" + i, "tm5-" + i, r.m5); _renderPane("ch1-" + i, "th1-" + i, r.h1); drawn[i] = true; }
+}
+function render() {
+  drawn = {};
+  var s = state;
+  $("#sum-close").textContent = px(s.last_price);
+  $("#sum-bar").textContent = s.last_bar_pt;
+  $("#sum-total").textContent = s.rows.length;
+  $("#lead-stop").textContent = s.stop_radius;
+  $("#tbody").innerHTML = s.rows.map(rowHTML).join("");
+  $("#foot").textContent = s.n_awaiting + " open broken-out levels within " + (s.max_range + 40) + "pt of the close" +
+    (s.n_no_stop ? "; " + s.n_no_stop + " merged trade(s) dropped for lacking a valid stop (the report's no_m5_stop)" : "") +
+    ". Entry, stop, clustering and swerve follow render_m5_confl2_report's rules with the retest assumed on the next M5 bar. Bars are TradingView continuous ES1!.";
+  applyFilters();
+  var wasOpen = Object.keys(openKeys);   // reopen what was open before the refresh
+  openKeys = {};
+  s.rows.forEach(function (r) {
+    if (wasOpen.indexOf(r.type + "_" + r.entry + "_" + r.p1) >= 0) toggleChart(r.id);
+  });
+  var pre = /[?&]open=(\d+)/.exec(location.search);   // ?open=N expands the first N shown rows
+  if (pre && !render.done) {
+    document.querySelectorAll("tr.lvl-row:not(.dyn-hidden)").forEach(function (tr, k) { if (k < Number(pre[1])) toggleChart(Number(tr.dataset.idx)); });
+  }
+  render.done = true;
+}
+
+// ---- filters (same class names / semantics as the report's) ---------------
+function applyFilters() {
+  if (!state) return;
+  var types = {};
+  document.querySelectorAll(".f-type").forEach(function (c) { if (c.checked) types[c.value] = 1; });
+  var n = Number($("#f-n").value) || 50;
+  var confl = $("#f-confl").checked;
+  var iso = document.querySelector(".f-dyn-isolate:checked");
+  var excl = {};
+  document.querySelectorAll(".f-dyn-exclude").forEach(function (c) { if (c.checked) excl[c.dataset.tag] = 1; });
+  var shown = 0, lh = 0, ll = 0;
+  document.querySelectorAll("tr.lvl-row").forEach(function (tr) {
+    var tags = tr.dataset.dynTags ? tr.dataset.dynTags.split(" ") : [];
+    var ok = !!types[tr.querySelector(".type-cell").textContent] && Number(tr.dataset.away) <= n;
+    if (confl && tr.dataset.qual === "0") ok = false;
+    if (iso) ok = ok && tags.indexOf(iso.dataset.tag) >= 0;
+    else tags.forEach(function (t) { if (excl[t]) ok = false; });
+    tr.classList.toggle("dyn-hidden", !ok);
+    var cr = document.getElementById("chart-row-" + tr.dataset.idx);
+    if (cr) cr.classList.toggle("dyn-hidden", !ok);
+    if (ok) { shown++; if (tr.classList.contains("type-lhpb")) lh++; else ll++; }
+  });
+  $("#sum-shown").textContent = shown; $("#sum-lhpb").textContent = lh; $("#sum-llpb").textContent = ll;
+  $("#empty").hidden = shown > 0;
+}
+function setN(v) {
+  v = Math.min(200, Math.max(1, Math.round(Number(v) || 1)));
+  $("#f-n").value = v; $("#f-n-range").value = v;
+  try { localStorage.setItem("m5dash.n", String(v)); } catch (e) {}
+  applyFilters();
+}
+document.querySelectorAll(".f-type, #f-confl, .f-dyn-exclude").forEach(function (c) { c.addEventListener("change", applyFilters); });
+var lastIso = null;
+document.querySelectorAll(".f-dyn-isolate").forEach(function (c) {
+  c.addEventListener("click", function () { if (lastIso === c) { c.checked = false; lastIso = null; } else lastIso = c; applyFilters(); });
+});
+$("#f-n-range").addEventListener("input", function (e) { setN(e.target.value); });
+$("#f-n").addEventListener("change", function (e) { setN(e.target.value); });
+$("#refresh").addEventListener("click", function () { fetch("/api/refresh", { method: "POST" }).then(function () { setTimeout(poll, 1500); }); });
+try { var sv = localStorage.getItem("m5dash.n"); if (sv) { $("#f-n").value = sv; $("#f-n-range").value = sv; } } catch (e) {}
+poll(); setInterval(poll, 20000); setInterval(banner, 1000);
 </script>
 </body>
 </html>
