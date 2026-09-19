@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/levels.py": {
+      "maxDuration": 300,
+      "excludeFiles": "{public/reports/**,app/**,node_modules/**,.next/**,sierra-chart/**,ss_m5_confl2/data/**,levels_runtime/.dev_store/**}"
+    }
+  }
+}

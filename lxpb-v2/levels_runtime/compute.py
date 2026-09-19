@@ -1,67 +1,38 @@
 """
-build.py -- one refresh of the upcoming-M5-levels dashboard.
-
-Fetches the live tail from TradingView (tv_feed.py), joins it to the repo's
-TradingView exports as one more vintage, runs the M5 LXPB state machine over
-the whole continuous series, and writes `data/state.json` for the page.
+compute.py -- the upcoming-M5-levels computation, on the repo's own rules.
 
 WHAT "UPCOMING" MEANS. The ss_m5_confl2 report trades M5 LXPB *retests*: a
 level that has been formed (P0) and broken out (P1) and is then touched again
-(P2). This dashboard shows the levels that are between P1 and P2 right now --
-open, broken out, not yet retested -- and prepares each one exactly as the
-report would if it were retested on the next bar:
+(P2). This shows the levels that are between P1 and P2 right now -- open,
+broken out, not yet retested -- prepared exactly as the report would if each
+were retested on the next bar:
 
-  * Selection / clustering / fine-tuned entry / swerve / stop are the
-    report's OWN functions (render_m5_confl2_report), called unchanged. The
-    only thing supplied here is the missing P2: every awaiting level gets a
-    stand-in `retest_time` of the next M5 bar, so "as of the retest" reads
-    "as of now". Nothing in the rule set is restated in this file.
+  * Selection / clustering / fine-tuned entry / swerve / stop are the report's
+    OWN functions (render_m5_confl2_report), called unchanged. The only thing
+    supplied here is the missing P2: every awaiting level gets a stand-in
+    `retest_time` of the next M5 bar, so "as of the retest" reads "as of now".
+    Nothing in the rule set is restated in this file.
   * No fill scan, no target, no tick data: the retest is in the future.
-    Tick-side filters (liquidity, volume spike, EOD) are not applicable.
 
-The whole thing runs in a fresh process every refresh (server.py spawns it),
-so none of the modules' per-process caches can go stale between hours.
-
-Bars: the TradingView-only convention (lxpb-v2/CLAUDE.md) holds. The live
-tail is one more TradingView export -- a same-vintage M5 tail joins the newest
-vintage at offset 0; after a roll, `_merge_vintages` re-anchors the older
-history by an offset measured on the overlap, exactly as for any export.
+`compute_state(ledger, m5, h1)` is pure: bars and ledger in, the JSON-able page
+state out. Fetching, storage and the level cache live in refresh.py.
+Import bootstrap.setup() before this module.
 """
 import argparse
-import json
-import os
-import re
-import sys
-import time
 
 import numpy as np
 import pandas as pd
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_V2 = os.path.dirname(_HERE)
-DATA_DIR = os.path.join(_HERE, "data")
-STATE_PATH = os.path.join(DATA_DIR, "state.json")
-sys.path.insert(0, _V2)
-sys.path.insert(0, os.path.join(_V2, "ss_m5_confl2"))
-sys.path.insert(0, _HERE)
-
-import tv_feed as TV                       # noqa: E402
-import render_labels_report as R           # noqa: E402
-import lxpb_levels_cache as LC             # noqa: E402
-import render_ss_confl_finetune_report as SF   # noqa: E402
-import render_m5_confl2_report as RM       # noqa: E402
-import render_stop_target_report as SR     # noqa: E402
-import charts as CH                        # noqa: E402
+import render_labels_report as R
+import lxpb_levels_cache as LC
+import render_ss_confl_finetune_report as SF
+import render_m5_confl2_report as RM
+import render_stop_target_report as SR
+import charts as CH
 
 MAX_RANGE_PTS = 200.0        # widest N the page offers; rows are built out to here
 RANGE_MARGIN_PTS = 40.0      # extra reach so clusters at the edge are not truncated
-LIVE_M5 = os.path.join(DATA_DIR, "live_M5.csv")
-LIVE_H1 = os.path.join(DATA_DIR, "live_H1.csv")
 M5 = pd.Timedelta(minutes=5)
-
-
-def _log(msg):
-    print(f"[build {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 def _epoch(ts):
@@ -70,45 +41,6 @@ def _epoch(ts):
 
 def _price(x):
     return None if x is None or not np.isfinite(x) else round(float(x), 2)
-
-
-# --------------------------------------------------------------------------
-# Data: exports + live tail, on the repo's own loaders
-# --------------------------------------------------------------------------
-
-def _fetch_live():
-    """Fetch M5 and H1, write them as export-format CSVs, and return
-    (latest_price, latest_price_time) read off the still-forming M5 bar."""
-    m5 = TV.fetch_bars("5")
-    h1 = TV.fetch_bars("60")
-    last_price, last_time = float(m5["close"].iloc[-1]), m5.index[-1]
-    now = pd.Timestamp.now(tz="UTC")
-    TV.write_export(TV.completed(m5, 5, now), LIVE_M5)
-    TV.write_export(TV.completed(h1, 60, now), LIVE_H1)
-    _log(f"fetched M5 {len(m5)} bars to {m5.index[-1]}, H1 {len(h1)} bars to {h1.index[-1]}")
-    return last_price, last_time
-
-
-def _wire_series():
-    """Point the repo's loaders at exports + live tail, and the level cache at
-    this dashboard's own folder (never the shared one)."""
-    base_h1, base_m5 = list(R.DISPLAY_H1_PATHS), [list(v) for v in R.DISPLAY_M5_PATHS]
-    R.DISPLAY_M5_PATHS = base_m5 + [[LIVE_M5]]
-    R.DISPLAY_H1_PATHS = base_h1 + [LIVE_H1]
-    R._DISPLAY_H1_CACHE = R._DISPLAY_M5_CACHE = None
-    try:
-        R._display_h1()
-    except RuntimeError as e:
-        if "vintage" not in str(e):
-            raise
-        # A roll has re-anchored TradingView's history since the H1 export was
-        # made: the live H1 (5000 bars, ~8 months) is the only current-vintage
-        # H1, and is what the M5 scale check needs anyway. See CLAUDE.md,
-        # "Rollover checklist", step 1.
-        _log("H1 export is an older vintage than the live tail -- using live H1 alone")
-        R.DISPLAY_H1_PATHS = [LIVE_H1]
-        R._DISPLAY_H1_CACHE = None
-    LC.CACHE_DIR = os.path.join(DATA_DIR, "levels_cache")
 
 
 # --------------------------------------------------------------------------
@@ -237,37 +169,16 @@ def _row_payload(res, m5, h1, ledger):
     }
 
 
-def _write_assets():
-    """The report's own CSS and chart renderer, lifted at build time so the
-    page cannot drift from render_m5_confl2_report / render_stop_target_report."""
-    css = re.sub(r"</?style>", "", RM.CSS)
-    with open(os.path.join(DATA_DIR, "assets.css"), "w", encoding="utf-8") as f:
-        f.write(css)
-    js = SR.JS
-    a, b = js.index("const rendered = {};"), js.index("function _renderTrio")
-    with open(os.path.join(DATA_DIR, "assets.js"), "w", encoding="utf-8") as f:
-        f.write(js[a:b])
 
 
-def build():
-    t0 = time.time()
-    os.makedirs(DATA_DIR, exist_ok=True)
-    _fetch_live()
-    _wire_series()
-
-    ledger = LC.m5_levels(verbose=True)
-    m5 = LC.m5_bars_continuous()
-    h1 = R._display_h1()
+def compute_state(ledger, m5, h1):
+    """The page's state for the series as it stands: every awaiting level within
+    MAX_RANGE_PTS of the latest completed close, prepared as the report would."""
     next_bar = m5.index[-1] + M5
-    # The latest ES CLOSE: the last completed M5 bar's close. Every distance
-    # on the page is measured from this.
+    # The latest ES CLOSE: the last completed M5 bar's close. Every distance on
+    # the page is measured from this.
     last_price = float(m5["close"].iloc[-1])
-    _log(f"M5 series {m5.index[0]} -> {m5.index[-1]} ({len(m5):,} bars); "
-         f"latest close {last_price}")
-
     cands = _awaiting_candidates(ledger, last_price, next_bar)
-    _log(f"{len(cands)} awaiting levels within {MAX_RANGE_PTS + RANGE_MARGIN_PTS:.0f}pt, "
-         f"{sum(c['qualified'] for c in cands)} with same-side confluence")
     swerve_args = _swerve_args()
     results, no_stop = [], 0
     for cluster in _clusters(cands):
@@ -286,26 +197,12 @@ def build():
         p = _row_payload(r, m5, h1, ledger)
         p["id"] = i
         rows.append(p)
-
-    state = {
-        "built_at": _epoch(pd.Timestamp.now(tz="UTC")),
+    return {
         "last_price": _price(last_price), "last_bar": _epoch(m5.index[-1]),
-        "last_bar_pt": R._to_pt_str(m5.index[-1]),
-        "next_bar": _epoch(next_bar), "max_range": MAX_RANGE_PTS,
-        "n_awaiting": len(cands), "n_no_stop": no_stop,
+        "last_bar_pt": R._to_pt_str(m5.index[-1]), "next_bar": _epoch(next_bar),
+        "max_range": MAX_RANGE_PTS, "n_awaiting": len(cands), "n_no_stop": no_stop,
         "confl_radius": RM.M5_CONFLUENCE_N_POINTS_DEFAULT,
         "swerve_tol": RM.SWERVE_TOL_PTS_DEFAULT, "swerve_max_move": RM.SWERVE_MAX_MOVE_PTS_DEFAULT,
         "stop_radius": RM.DYNAMIC_STOP_RADIUS_PTS, "near_pts": SR.M5_NEAR_PTS,
         "rows": rows,
     }
-    _write_assets()
-    tmp = STATE_PATH + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(state, f, separators=(",", ":"))
-    os.replace(tmp, STATE_PATH)
-    _log(f"wrote {len(rows)} rows ({no_stop} clusters dropped: no valid stop) "
-         f"in {time.time() - t0:.0f}s")
-
-
-if __name__ == "__main__":
-    build()

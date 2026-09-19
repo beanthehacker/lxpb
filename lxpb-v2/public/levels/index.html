@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <title>Upcoming M5 levels</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%AF%3C/text%3E%3C/svg%3E">
-<!-- The stylesheet (assets.css) and chart renderer (assets.js) are lifted from the
-     ss_m5_confl2 / stop-target reports by build.py, so this page looks and behaves
-     like them. They are injected once the first build exists. -->
+<link rel="stylesheet" href="/levels/assets.css">
+<!-- assets.css / assets.js are the ss_m5_confl2 report's own stylesheet and chart
+     renderer (levels_runtime/sync_runtime.py), so this page looks and behaves like it. -->
 <style>
 body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#111316; color:#d4d8df; }
 td.n::before { content:counter(lv); }
@@ -30,7 +30,7 @@ levels and their same-side M5 confluence pool, moved off any swing that already 
 tick beyond the entry level's spike P0 candle, else beyond the P1 thrust candle of the live same-side levels within
 &plusmn;<span id="lead-stop">10</span>pt. No target is shown: the retest is still ahead. Click a row for its M5 and H1
 charts: gold ray = original entry, blue ray = refined entry, red dashed = stop, light-blue = other live M5 levels
-(hover any ray for details). All times are PT.</p>
+(hover any ray for details). All times are PT. Data refreshes from TradingView the first time this page is opened in a new hour.</p>
 
 <div class="summary">
   <div class="box true"><strong id="sum-close">&ndash;</strong>latest ES close</div>
@@ -39,7 +39,7 @@ charts: gold ray = original entry, blue ray = refined entry, red dashed = stop, 
   <div class="box"><strong id="sum-lhpb">0</strong>LHPB (long)</div>
   <div class="box"><strong id="sum-llpb">0</strong>LLPB (short)</div>
   <div class="box"><strong id="sum-total">0</strong>levels built (&plusmn;200pt)</div>
-  <div class="box"><strong id="sum-next">&ndash;</strong>next update</div>
+  <div class="box"><strong id="sum-next">&ndash;</strong>data built</div>
   <div class="toolbar"><button class="btn" id="refresh" type="button">&#8635; Refresh now</button></div>
 </div>
 <div id="banner" hidden></div>
@@ -91,10 +91,16 @@ charts: gold ray = original entry, blue ray = refined entry, red dashed = stop, 
 <div class="empty-msg" id="empty" hidden>No upcoming levels match these filters.</div>
 <p class="note" id="foot"></p>
 
-<script src="/static/lightweight-charts.js"></script>
+<script src="/levels/lightweight-charts.js"></script>
+<script src="/levels/assets.js"></script>
 <script>
 "use strict";
-var state = null, srv = null, loadedMtime = null, assetsReady = false;
+// Data flow: GET /api/levels -> render what is stored. If the server says the
+// state is from a previous hour (or there is none), POST /api/levels: the
+// server fetches TradingView, rebuilds and answers with the fresh state. Nothing
+// runs on a schedule -- the first person to open the page in a new hour pays for
+// the refresh, and an open page notices the hour change and refreshes itself.
+var state = null, meta = null, refreshing = false, lastError = null;
 var openKeys = {};
 var CH_N = 14;   // colspan
 function $(s) { return document.querySelector(s); }
@@ -103,39 +109,47 @@ function px(x) { return x == null ? "-" : x.toFixed(2); }
 var clockFmt = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "2-digit", minute: "2-digit", hour12: false });
 function ptClock(t) { return clockFmt.format(new Date(t * 1000)) + " PT"; }
 
-function getJSON(url) {
-  return fetch(url, { cache: "no-store" }).then(function (r) { if (!r.ok) throw new Error(url + " " + r.status); return r.json(); });
-}
-function injectAssets(v) {
-  if (assetsReady) return Promise.resolve();
-  var l = document.createElement("link"); l.rel = "stylesheet"; l.href = "/assets.css?v=" + v; document.head.appendChild(l);
-  return new Promise(function (ok, bad) {
-    var s = document.createElement("script"); s.src = "/assets.js?v=" + v;
-    s.onload = function () { assetsReady = true; ok(); }; s.onerror = bad; document.body.appendChild(s);
+function api(method, qs) {
+  return fetch("/api/levels" + (qs || ""), { method: method, cache: "no-store", credentials: "same-origin" }).then(function (r) {
+    if (r.redirected && /\/login/.test(r.url)) { location.href = "/login"; throw new Error("signed out"); }
+    return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ("HTTP " + r.status)); return j; });
   });
 }
-function reload(mtime) {
-  return getJSON("/api/state").then(function (s) {
-    return injectAssets(s.built_at).then(function () { state = s; loadedMtime = mtime; render(); });
-  });
+function apply(resp) {
+  meta = resp.meta;
+  if (resp.state) { state = resp.state; render(); }
+  banner();
 }
-function poll() {
-  return getJSON("/api/status").then(function (s) {
-    srv = s;
-    if (s.built_at && s.built_at !== loadedMtime) return reload(s.built_at);
-  }).catch(function () {}).then(banner);
+function refresh(force) {
+  if (refreshing) return;
+  refreshing = true; lastError = null; banner();
+  api("POST", force ? "?force=1" : "").then(function (resp) {
+    if (resp.meta.refresh_ok === false) lastError = resp.meta.refresh;
+    apply(resp);
+  }).catch(function (e) { lastError = e.message; }).then(function () { refreshing = false; banner(); });
+}
+function load() {
+  api("GET").then(function (resp) {
+    apply(resp);
+    if (!state || meta.stale) refresh(false);
+  }).catch(function (e) { lastError = e.message; banner(); });
+}
+function watch() {   // an open page: pick up another tab's refresh, and the next hour
+  if (refreshing) return;
+  api("GET", "?meta=1").then(function (resp) {
+    meta = resp.meta;
+    if (state && meta.built_at && Math.floor(meta.built_at) > state.built_at + 2) return api("GET").then(apply);
+    if (meta.stale) refresh(false);
+    banner();
+  }).catch(function () {});
 }
 function banner() {
   var msgs = [];
-  if (srv && srv.error) msgs.push("Last refresh failed &mdash; showing the previous data. " + esc(srv.error));
-  if (srv && srv.building) msgs.push("Refreshing from TradingView&hellip;");
-  if (!state && !(srv && srv.building)) msgs.push("Waiting for the first build (a minute or two)&hellip;");
-  if (state && srv && srv.now - state.built_at > 75 * 60) msgs.push("Data is more than an hour old.");
+  if (refreshing || (meta && meta.building)) msgs.push("Refreshing from TradingView&hellip; " + (state ? "(showing the previous data meanwhile)" : "(the very first build takes a minute or two)"));
+  var err = lastError || (meta && meta.error);
+  if (err) msgs.push("Last refresh failed &mdash; " + (state ? "showing the previous data. " : "") + esc(err));
   var b = $("#banner"); b.hidden = !msgs.length; b.innerHTML = msgs.join("<br>");
-  if (srv && srv.next_run) {
-    var s = Math.max(0, srv.next_run - Math.floor(Date.now() / 1000));
-    $("#sum-next").textContent = ptClock(srv.next_run) + " (" + Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s)";
-  }
+  if (state) $("#sum-next").textContent = ptClock(state.built_at);
 }
 
 // ---- rows (same markup as the report's lvl-row / chart-row) ---------------
@@ -251,9 +265,9 @@ document.querySelectorAll(".f-dyn-isolate").forEach(function (c) {
 });
 $("#f-n-range").addEventListener("input", function (e) { setN(e.target.value); });
 $("#f-n").addEventListener("change", function (e) { setN(e.target.value); });
-$("#refresh").addEventListener("click", function () { fetch("/api/refresh", { method: "POST" }).then(function () { setTimeout(poll, 1500); }); });
+$("#refresh").addEventListener("click", function () { refresh(true); });
 try { var sv = localStorage.getItem("m5dash.n"); if (sv) { $("#f-n").value = sv; $("#f-n-range").value = sv; } } catch (e) {}
-poll(); setInterval(poll, 20000); setInterval(banner, 1000);
+load(); setInterval(watch, 30000);
 </script>
 </body>
 </html>

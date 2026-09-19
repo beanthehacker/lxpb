@@ -3,10 +3,10 @@
 # them out of the upload so `vercel deploy` stays fast and small.
 data/
 sierra-chart/
-patterns_pure/
 __pycache__/
 *.log
 ss_m5_confl2/*.log
 ss_m5_confl2/data/
 ss_m5_confl2/__pycache__/
 .claude/
+levels_runtime/.dev_store/

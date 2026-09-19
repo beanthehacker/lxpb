@@ -16,3 +16,8 @@ public/reports/ss_m5_confl2/ss_m5_confl2_report_2026_full_year.html
 public/reports/ss_m5_confl2/ss_m5_confl2_report_2025_full_year.html
 .vercel
 .env*
+
+# /levels dev runtime
+levels_runtime/.dev_store/
+levels_runtime/dev.log
+npm_install.log

@@ -126,6 +126,32 @@ export default function HomePage() {
         </p>
       </header>
 
+      <section style={{ marginBottom: 28 }}>
+        <h2 style={{ fontSize: 15, margin: "0 0 2px", color: "#e6e8eb" }}>Live</h2>
+        <p style={{ color: "#6f7680", fontSize: 12, margin: "0 0 10px" }}>
+          Refreshed from TradingView the first time it is opened in each new hour.
+        </p>
+        <a
+          href="/levels"
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "baseline",
+            gap: 12,
+            padding: "10px 14px",
+            border: "1px solid #23262b",
+            borderRadius: 8,
+            background: "#12151a",
+            color: "#e6e8eb",
+            textDecoration: "none",
+            fontSize: 13,
+          }}
+        >
+          <span>Upcoming M5 levels -- LHPB / LLPB awaiting retest near the latest ES close</span>
+          <span style={{ color: "#6f7680", fontSize: 11, whiteSpace: "nowrap" }}>/levels</span>
+        </a>
+      </section>
+
       {groups.map((g) => (
         <section key={g.key} style={{ marginBottom: 28 }}>
           <h2 style={{ fontSize: 15, margin: "0 0 2px", color: "#e6e8eb" }}>{g.title}</h2>

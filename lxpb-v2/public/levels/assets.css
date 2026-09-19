@@ -1,0 +1,203 @@
+
+
+:root { --bg:#111316; --surface:#1c1f24; --surface2:#22262d; --border:#2e333b;
+        --text:#d4d8df; --text-dim:#6b7280; --text-faint:#444c58;
+        --bull:#4ade80; --bear:#f87171; --accent:#60a5fa; --done:#16321f; --invalid:#3a1414; }
+* { box-sizing:border-box; }
+body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+       padding:16px 24px; max-width:100%; margin:0;
+       background:var(--bg); color:var(--text); }
+h1 { font-size:1.4em; margin:0 0 4px; color:#e8eaed; }
+p.lead { color:var(--text-dim); margin:0 0 12px; font-size:0.87em; }
+.summary { display:flex; gap:10px; flex-wrap:wrap; margin:14px 0; align-items:center; }
+.summary .box { padding:8px 14px; background:var(--surface);
+                border:1px solid var(--border); border-radius:6px;
+                font-size:0.82em; line-height:1.3; }
+.summary .box strong { display:block; font-size:1.4em; color:#e8eaed; }
+.summary .box.true strong { color:var(--bull); }
+.toolbar { display:flex; gap:8px; margin-left:auto; }
+.btn { background:var(--surface2); color:var(--text); border:1px solid var(--border);
+       border-radius:5px; padding:6px 12px; cursor:pointer; font-size:0.82em; }
+.btn:hover { border-color:var(--accent); }
+.filter-panel { background:var(--surface); border:1px solid var(--border);
+                border-radius:6px; padding:10px 14px; margin-bottom:14px; }
+.filter-row { display:flex; align-items:center; gap:10px; margin:4px 0; }
+.filter-label { color:var(--text-dim); width:80px; font-size:0.85em; }
+.chip { background:var(--surface2); border:1px solid var(--border);
+        border-radius:14px; padding:3px 10px; cursor:pointer; user-select:none;
+        font-size:0.85em; }
+.chip input { margin-right:4px; }
+table { width:100%; border-collapse:collapse; font-size:0.8em;
+        background:var(--surface); border:1px solid var(--border);
+        border-radius:6px; }
+th, td { border-bottom:1px solid var(--border); padding:5px 7px;
+         text-align:center; white-space:nowrap; vertical-align:top; }
+th { background:var(--surface2); font-weight:600; color:var(--text-dim);
+     letter-spacing:.02em; font-size:0.82em;
+     position:sticky; top:0; z-index:2; }
+td.left, th.left { text-align:left; }
+tr.lvl-row:hover td { background:rgba(255,255,255,.03); cursor:pointer; }
+tr.lvl-row.type-lhpb td.type-cell { color:var(--bull); font-weight:600; }
+tr.lvl-row.type-llpb td.type-cell { color:var(--bear); font-weight:600; }
+tr.lvl-row.band-1 td, tr.chart-row.band-1 td { background:rgba(96,165,250,0.055); }
+tr.lvl-row.is-reviewed td { background:var(--done); }
+tr.lvl-row.is-invalid td { background:var(--invalid); }
+.cluster-badge { background:var(--surface2); border:1px solid var(--accent); color:var(--accent);
+                 border-radius:4px; padding:1px 6px; font-size:0.82em; font-weight:600; cursor:help; }
+.text-faint { color:var(--text-faint); }
+.hint { color:var(--text-faint); font-size:0.85em; display:block; }
+.expand-cell { text-align:center; }
+.expand-btn { background:var(--surface2); color:var(--text); border:1px solid var(--border);
+              border-radius:4px; padding:2px 8px; cursor:pointer; }
+.expand-btn.open { background:#1e3a5f; color:#7bb4f5; border-color:#1d3a5c; }
+tr.detail-row td.detail-cell { background:#0a0c0e; padding:10px 12px; border-top:none; }
+.chart-stack { display:flex; flex-direction:column; gap:8px; padding:8px 0; }
+.chart-h1 { height:516px; }
+.chart-row-2col { display:grid; grid-template-columns: 1fr 1fr; gap:8px; align-items:start; }
+.chart-col-1s { display:grid; grid-template-rows: 300px 100px 100px; gap:8px; }
+.chart-col-1m .chart-cell { height:516px; }
+.chart-cell { background:#000; border:1px solid var(--border); border-radius:5px;
+              overflow:hidden; }
+.chart-title { color:#cccccc; padding:5px 8px; font-size:0.75em;
+               font-family:ui-monospace,monospace; background:#0a0a0a;
+               border-bottom:1px solid #1f1f1f; white-space:nowrap;
+               overflow:hidden; text-overflow:ellipsis; }
+.chart-ph { height:calc(100% - 24px); width:100%; }
+textarea.misc-note { width:140px; height:34px; resize:vertical; background:var(--surface2);
+                      color:var(--text); border:1px solid var(--border); border-radius:4px;
+                      font-size:0.9em; padding:3px 5px; }
+.hidden { display:none !important; }
+
+/* --- tick volume-by-price footprint (compact, 2-up, left half only) --- */
+.footprint-outer-row { margin-top:0; }
+.footprint-pair { display:grid; grid-template-columns: 1fr 1fr; gap:8px; }
+.footprint-placeholder { display:flex; align-items:center; justify-content:center;
+                          border-style:dashed; opacity:0.4; }
+.footprint-cell { padding:0; width:100%; }
+.footprint-wrap { max-height:170px; overflow-y:auto; font-family:ui-monospace,monospace; font-size:0.62em; width:100%; }
+.fp-header { color:var(--text-dim); padding:3px 6px; background:#0a0a0a; border-bottom:1px solid #1f1f1f;
+             position:sticky; top:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.fp-row { display:grid; grid-template-columns: 42px 1fr 1fr 44px; align-items:center; border-bottom:1px solid #1a1d24; }
+.fp-row.fp-poc { background:#26210a; }
+.fp-row.fp-entry { outline:1px solid var(--accent); outline-offset:-1px; }
+.fp-delta { display:flex; justify-content:flex-end; align-items:center; gap:2px; padding:0 3px; position:relative; }
+.fp-bar-delta { height:7px; border-radius:1px; }
+.fp-delta-neg .fp-bar-delta, .fp-delta-neg .fp-val { color:var(--bear); }
+.fp-delta-neg .fp-bar-delta { background:var(--bear); }
+.fp-delta-pos .fp-bar-delta, .fp-delta-pos .fp-val { color:var(--bull); }
+.fp-delta-pos .fp-bar-delta { background:var(--bull); }
+.fp-delta-flat .fp-bar-delta { background:var(--text-dim); }
+.fp-bid { display:flex; justify-content:flex-end; align-items:center; gap:2px; padding:0 3px; position:relative; }
+.fp-ask { display:flex; justify-content:flex-start; align-items:center; gap:2px; padding:0 3px; position:relative; }
+.fp-bar { height:7px; background:#9aa4b2; border-radius:1px; }
+.fp-bar-ask { background:#3b9ee5; }
+.fp-val { color:var(--text); min-width:22px; text-align:right; }
+.fp-ask .fp-val { text-align:left; }
+.fp-price { text-align:center; color:#e8eaed; font-weight:600; background:#12141a; padding:0 2px; white-space:nowrap; }
+.note { color:var(--text-dim); font-size:0.85em; margin:6px 0; }
+
+
+
+td.good { color:#4ade80; }
+td.bad { color:#f87171; }
+td.candle { color:#fbbf24; }
+.gap-flag { color:#fbbf24; margin-left:4px; cursor:help; }
+.table-wrap { max-height:none; }
+.expand-th { width:28px; }
+tr.lvl-row.is-replayed td.replayed-cell { color:#7bb4f5; font-weight:600; }
+tr.lvl-row.is-valid td.valid-cell { color:#4ade80; font-weight:600; }
+textarea.trade-note { width:160px; height:34px; resize:vertical; background:var(--surface2);
+                       color:var(--text); border:1px solid var(--border); border-radius:4px;
+                       font-size:0.9em; padding:3px 5px; }
+select.f-num-op, input.f-num-val { background:var(--surface2); color:var(--text);
+    border:1px solid var(--border); border-radius:4px; font-size:0.85em; padding:3px 5px; }
+input.f-num-val { width:4.5em; }
+.pctile-wrap { margin:14px 0 18px; }
+.pctile-wrap h2 { font-size:1.05em; margin:0 0 6px; color:var(--text); }
+.pctile-tbl { border-collapse:collapse; font-size:0.92em; }
+.pctile-tbl th, .pctile-tbl td { border:1px solid var(--border); padding:3px 9px;
+                                 text-align:right; white-space:nowrap; }
+.pctile-tbl th { background:var(--surface2); }
+.pctile-tbl td.left, .pctile-tbl th.left { text-align:left; }
+.pctile-tbl tr.pctile-r td { color:#94a3b8; border-top:none; font-style:italic; }
+.pctile-note { color:#94a3b8; font-style:italic; margin-left:8px; font-size:0.9em; }
+.pctile-cap { max-width:1100px; color:#94a3b8; font-size:0.88em; line-height:1.5;
+              margin:8px 0 0; }
+.tab-bar { display:flex; gap:4px; margin:12px 0 0; border-bottom:1px solid var(--border); }
+.tab-btn { background:none; border:none; border-bottom:2px solid transparent; cursor:pointer;
+           color:var(--text-dim); font-size:0.95em; padding:7px 15px; }
+.tab-btn:hover { color:var(--text); }
+.tab-btn.active { color:var(--text); border-bottom-color:#38bdf8; }
+.tab-panel.tab-hidden { display:none; }
+.stats-bar { margin:10px 0 6px; }
+.stats-bar .box { padding:6px 12px; }
+.stats-bar .box strong { font-size:1.25em; }
+/* Half-width H1/M5 panes: keep the hover OHLC readout pinned right and
+   fully visible, letting the descriptive part ellipsis instead. */
+.chart-title.chart-title-split { display:flex; align-items:baseline; gap:10px; }
+.chart-title-split .ct-base { flex:1 1 auto; min-width:0; overflow:hidden;
+                              text-overflow:ellipsis; white-space:nowrap; }
+.chart-title-split .ct-ohlc { flex:0 0 auto; white-space:nowrap; color:#e5e7eb; }
+/* Hover tooltip for the M5 level rays. Positioned inside the chart body (not
+   the title bar) so it can wrap onto several lines and list several
+   overlapping rays without ever being clipped or ellipsised. */
+.chart-ph { position:relative; }
+.pane-tip { position:absolute; display:none; z-index:5; pointer-events:none;
+            background:rgba(10,14,20,0.94); border:1px solid #38bdf8; border-radius:4px;
+            color:#e5e7eb; font-family:'Courier New', monospace; font-size:11px;
+            line-height:1.45; padding:5px 8px; max-width:none; white-space:nowrap;
+            box-shadow:0 2px 10px rgba(0,0,0,0.6); }
+
+
+
+.src-tag { font-size:0.75em; color:var(--text-dim); margin-left:4px; }
+.src-tag.m5 { color:#38bdf8; }
+.src-tag.own { color:var(--text-dim); }
+.src-tag.chase { color:#f59e0b; margin-left:6px; cursor:help; }
+.unfilled-row td { color:var(--text-faint); font-style:italic; }
+tr.lvl-row.type-lhpb td.type-cell, tr.lvl-row.type-llpb td.type-cell {
+  color:var(--text); font-weight:normal;
+}
+.cluster-tag { border-bottom:1px dotted var(--text-dim); cursor:help; }
+td.merged-h1-levels { max-width:220px; white-space:normal; }
+td.h1-confl-cell { max-width:220px; white-space:normal; cursor:help; }
+td.tags-cell { max-width:200px; white-space:normal; }
+/* Dynamic filters (see _apply_globex_open_filter's docstring): a row tagged
+   res['dyn_tags'] gets data-dyn-tags plus this badge; the matching
+   f-dyn-exclude checkbox hides it via .dyn-hidden (kept separate from the
+   review-workflow filters' own .hidden class so the two systems never
+   fight over one class -- either one hides the row, independently). */
+tr.lvl-row.dyn-hidden, tr.chart-row.dyn-hidden { display:none !important; }
+/* Outcome filter (Win/Loss/No trade chips): same independent-hide pattern
+   as .dyn-hidden above, toggled in recomputeDynStats() from whichever
+   outcome bucket a row currently falls in. */
+tr.lvl-row.outcome-hidden, tr.chart-row.outcome-hidden { display:none !important; }
+.dyn-tag-badge { display:inline-block; margin-left:6px; padding:1px 6px; font-size:0.72em;
+                border-radius:3px; background:#4a3010; color:#fbbf24; cursor:help; }
+/* Exclude checkbox + Only radio, stacked as one unit per dynamic-filter tag
+   (see _apply_globex_open_filter's docstring) instead of sitting side by
+   side as two separate chips. */
+.chip-stack { display:flex; flex-direction:column; align-items:flex-start; gap:3px; }
+.chip-iso { opacity:0.7; font-size:0.78em; padding:1px 9px 1px 7px; }
+.chip-iso:hover { opacity:1; }
+.chip-iso input[type="radio"] { margin-right:5px; }
+/* This strategy has no H1 pane -- the M5 pane is the only thing in its own
+   chart-row-2col row (see build_chart_stack_for_row), so it should fill
+   the row instead of sitting in the grid's first 1fr column with an empty
+   second column beside it. */
+.chart-row-2col.chart-row-solo { grid-template-columns: 1fr; }
+.mgmt-tag-badge { background:#0e3a4a; color:#67e8f9; }
+/* A row whose target rule is switched off in the browser (see applyTargetModes
+   in JS): still listed, still clickable for its charts, but it is not a trade
+   under the rules currently ticked, so it is dimmed and left out of the
+   stats -- the same treatment an unfilled row gets from Python. */
+tr.lvl-row.no-target-row td { color:var(--text-faint); font-style:italic; }
+.liq-tag-badge { background:#3f1d2e; color:#fda4af; }
+.swerve-tag-badge { background:#1e3a2f; color:#86efac; }
+.vol-spike-tag-badge { background:#3f2d0e; color:#fdba74; }
+/* Notes box: this report is reviewed with long, written-out notes per trade,
+   so it ships far larger than the shared 160x34 default in
+   render_stop_target_report.CSS (left alone, for every other report) and
+   resizes in both directions rather than only vertically. */
+textarea.trade-note { width:360px; height:150px; resize:both; }
+
