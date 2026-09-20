@@ -2240,37 +2240,38 @@ SPIKE_CONFL_RADIUS_PTS = 10.0  # +/- band around the refined entry price for the
 def _apply_h1_spike_confluence(results):
     """Mutates and returns `results`. Dynamic-filter convention as
     _apply_globex_open_filter: a FILLED trade gets the row tag 'spike_confl'
-    when a patterns-pure spike candle on the H1 series sits within
-    +/-SPIKE_CONFL_RADIUS_PTS of its REFINED entry price (res['alt_price'] --
-    after confluence/swerve/crest refinement, before any fill chase).
+    when an H1 SPIKE P0 of its own type sits within +/-SPIKE_CONFL_RADIUS_PTS
+    of its REFINED entry price (res['alt_price'] -- after confluence/swerve/
+    crest refinement, before any fill chase).
 
-    Pairing (DETECTOR, see CLAUDE.md "Spike candles"): an LHPB (long) trade
-    looks for an H1 HAMMER, an LLPB (short) for an H1 SHOOTING STAR, both
-    via patterns-pure's find_hammer / find_shooting_star run over the whole
-    H1 series (previous bar in frame, as R.is_spike_pp does). The price
-    compared is the spike's own level: a hammer's HIGH / a shooting star's LOW.
-    The spike must have CLOSED at or before the trade's fill; there is no
-    other time limit, and it need not be an untested level.
-    Ships res['spike_confl'] = list of {kind, time, price, dist} nearest first
-    ([] if none) for the badge tooltip."""
-    h1 = R._display_h1()
-    hammer = h1.index.isin(R._pp_find_hammer(h1, atr=0.0).index)
-    star = h1.index.isin(R._pp_find_shooting_star(h1, atr=0.0).index)
-    closed_at = (h1.index + pd.Timedelta(hours=1)).values
-    high, low = h1["high"].to_numpy(), h1["low"].to_numpy()
+    Pairing (DETECTOR, see CLAUDE.md "Spike candles"): the H1 ledger's own
+    is_spike, i.e. patterns-pure -- an H1 LHPB on a hammer (long trades), an
+    H1 LLPB on a shooting star (short trades); the level price is the
+    hammer's high / shooting star's low.
+
+    The H1 P0 must have been UNTESTED up to the hour before the trade's
+    retest (P2): formed by P2, and either never died or died no earlier than
+    P2's hour floor minus H1_CONFL_HOUR_TOLERANCE (retest 01:15 -> still
+    untested through 12:00). Same liveness test as _apply_h1_p0_confluence.
+    Ships res['spike_confl'] = list of {kind, time, price, dist, death_time}
+    nearest first ([] if none) for the badge tooltip."""
+    h1_ledger = LC.h1_levels(verbose=False)
+    spikes = h1_ledger[h1_ledger["is_spike"].astype(bool)]
     for res in results:
         if not res["filled"]:
             continue
-        is_long = res["is_long"]
-        flag, key = (hammer, high) if is_long else (star, low)
-        dist = np.abs(key - float(res["alt_price"]))
-        fill_ns = pd.Timestamp(res["touch_time_alt"]).tz_convert("UTC").tz_localize(None).to_datetime64()
-        hit = np.flatnonzero(flag & (dist <= SPIKE_CONFL_RADIUS_PTS) & (closed_at <= fill_ns))
-        hit = hit[np.argsort(dist[hit], kind="stable")]
-        res["spike_confl"] = [{"kind": "hammer" if is_long else "shooting star",
-                               "time": h1.index[i], "price": float(key[i]),
-                               "dist": float(dist[i])} for i in hit]
-        if hit.size:
+        p2 = pd.Timestamp(res["row"]["retest_time"])
+        window_low = p2.floor("h") - H1_CONFL_HOUR_TOLERANCE
+        cand = spikes[(spikes["type"] == res["level_type"]) &
+                      (spikes["formation_time"] <= p2) &
+                      (spikes["death_time"].isna() | (spikes["death_time"] >= window_low))]
+        cand = cand.assign(dist=(cand["price"] - float(res["alt_price"])).abs())
+        near = cand[cand["dist"] <= SPIKE_CONFL_RADIUS_PTS].sort_values("dist")
+        res["spike_confl"] = [{"kind": "hammer" if res["is_long"] else "shooting star",
+                               "time": r["formation_time"], "price": float(r["price"]),
+                               "dist": float(r["dist"]), "death_time": r["death_time"]}
+                              for _, r in near.iterrows()]
+        if res["spike_confl"]:
             res.setdefault("dyn_tags", []).append("spike_confl")
     return results
 
@@ -2617,8 +2618,8 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
                            for c in sc[:4])
         kind = "hammer" if level_type == "LHPB" else "shooting star"
         out += (f'<span class="dyn-tag-badge spike-confl-tag-badge" title="Dynamic filter '
-                f'‘spike_confl’: an H1 {kind} (patterns-pure) closed before this fill with its '
-                f'{"high" if level_type == "LHPB" else "low"} within '
+                f'‘spike_confl’: an H1 {kind} P0 (patterns-pure), still untested until the hour '
+                f'before this retest, with its {"high" if level_type == "LHPB" else "low"} within '
                 f'&plusmn;{SPIKE_CONFL_RADIUS_PTS:g}pt of the refined entry '
                 f'{res["alt_price"]:.2f}: {detail}. Purely informational; use the Only radio to '
                 f'isolate these trades.">SPIKE CONFL</span>')
@@ -3234,7 +3235,7 @@ other row -- overrides every Exclude box. Click again to turn off.">
     <div class="chip-stack">
       <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="spike_confl">
         Exclude H1 spike-confluence trades</label>
-      <label class="chip chip-iso" title="Only: show ONLY rows tagged spike_confl (an H1 hammer for LHPB longs / shooting star for LLPB shorts within +/-10pt of the refined entry), hiding every
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged spike_confl (an H1 hammer P0 for LHPB longs / shooting star P0 for LLPB shorts, untested until the retest hour minus 1h, within +/-10pt of the refined entry), hiding every
 other row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="spike_confl"> only</label>
     </div>
