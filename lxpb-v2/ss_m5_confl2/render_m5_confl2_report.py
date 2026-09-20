@@ -2234,6 +2234,47 @@ def _apply_h1_p0_confluence(results):
     return results
 
 
+SPIKE_CONFL_RADIUS_PTS = 10.0  # +/- band around the refined entry price for the H1 spike-confluence tag
+
+
+def _apply_h1_spike_confluence(results):
+    """Mutates and returns `results`. Dynamic-filter convention as
+    _apply_globex_open_filter: a FILLED trade gets the row tag 'spike_confl'
+    when a patterns-pure spike candle on the H1 series sits within
+    +/-SPIKE_CONFL_RADIUS_PTS of its REFINED entry price (res['alt_price'] --
+    after confluence/swerve/crest refinement, before any fill chase).
+
+    Pairing (DETECTOR, see CLAUDE.md "Spike candles"): an LHPB (long) trade
+    looks for an H1 HAMMER, an LLPB (short) for an H1 SHOOTING STAR, both
+    via patterns-pure's find_hammer / find_shooting_star run over the whole
+    H1 series (previous bar in frame, as R.is_spike_pp does). The price
+    compared is the spike's own level: a hammer's HIGH / a shooting star's LOW.
+    The spike must have CLOSED at or before the trade's fill; there is no
+    other time limit, and it need not be an untested level.
+    Ships res['spike_confl'] = list of {kind, time, price, dist} nearest first
+    ([] if none) for the badge tooltip."""
+    h1 = R._display_h1()
+    hammer = h1.index.isin(R._pp_find_hammer(h1, atr=0.0).index)
+    star = h1.index.isin(R._pp_find_shooting_star(h1, atr=0.0).index)
+    closed_at = (h1.index + pd.Timedelta(hours=1)).values
+    high, low = h1["high"].to_numpy(), h1["low"].to_numpy()
+    for res in results:
+        if not res["filled"]:
+            continue
+        is_long = res["is_long"]
+        flag, key = (hammer, high) if is_long else (star, low)
+        dist = np.abs(key - float(res["alt_price"]))
+        fill_ns = pd.Timestamp(res["touch_time_alt"]).tz_convert("UTC").tz_localize(None).to_datetime64()
+        hit = np.flatnonzero(flag & (dist <= SPIKE_CONFL_RADIUS_PTS) & (closed_at <= fill_ns))
+        hit = hit[np.argsort(dist[hit], kind="stable")]
+        res["spike_confl"] = [{"kind": "hammer" if is_long else "shooting star",
+                               "time": h1.index[i], "price": float(key[i]),
+                               "dist": float(dist[i])} for i in hit]
+        if hit.size:
+            res.setdefault("dyn_tags", []).append("spike_confl")
+    return results
+
+
 N_COLS = 31  # keep in sync with `head` below and every colspan in this section
 
 # MES position sizing / commissions. R stays a fixed $1,000 and the stop is not
@@ -2376,6 +2417,7 @@ def render(args):
     results, chart_stacks, fps = process_clusters(clusters, args)
     results = _apply_globex_open_filter(results)
     results = _apply_h1_p0_confluence(results)
+    results = _apply_h1_spike_confluence(results)
     tag_counts = {}
     for r in results:
         if not r["filled"]:
@@ -2569,6 +2611,17 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
                 f'trailing baseline -- an outlier-fast move -- so the entry was pushed '
                 f'{cr["refine_pts"]:.2f}pt further to {cr["price"]:.2f}.">CREST REFINED '
                 f'{cr["planned_price"]:.2f}&rarr;{cr["price"]:.2f}</span>')
+    if "spike_confl" in dyn_tags:
+        sc = res.get("spike_confl") or []
+        detail = "; ".join(f'{c["kind"]} {c["price"]:.2f} ({c["dist"]:.2f}pt away), H1 bar {R._to_pt_str(c["time"])}'
+                           for c in sc[:4])
+        kind = "hammer" if level_type == "LHPB" else "shooting star"
+        out += (f'<span class="dyn-tag-badge spike-confl-tag-badge" title="Dynamic filter '
+                f'‘spike_confl’: an H1 {kind} (patterns-pure) closed before this fill with its '
+                f'{"high" if level_type == "LHPB" else "low"} within '
+                f'&plusmn;{SPIKE_CONFL_RADIUS_PTS:g}pt of the refined entry '
+                f'{res["alt_price"]:.2f}: {detail}. Purely informational; use the Only radio to '
+                f'isolate these trades.">SPIKE CONFL</span>')
     if "volume-spike" in dyn_tags:
         side_word = "bid" if level_type == "LHPB" else "ask"
         vs = res.get("volume_spike") or {}
@@ -3178,6 +3231,13 @@ row -- overrides every Exclude box. Click again to turn off.">
 other row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="volume-spike"> only</label>
     </div>
+    <div class="chip-stack">
+      <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="spike_confl">
+        Exclude H1 spike-confluence trades</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged spike_confl (an H1 hammer for LHPB longs / shooting star for LLPB shorts within +/-10pt of the refined entry), hiding every
+other row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="spike_confl"> only</label>
+    </div>
   </div>
   <div class="filter-row">
     <span class="filter-label" title="How many seconds before(-)/after(+) the fill the CLOSEST
@@ -3436,6 +3496,7 @@ tr.lvl-row.no-target-row td { color:var(--text-faint); font-style:italic; }
 .liq-tag-badge { background:#3f1d2e; color:#fda4af; }
 .swerve-tag-badge { background:#1e3a2f; color:#86efac; }
 .vol-spike-tag-badge { background:#3f2d0e; color:#fdba74; }
+.spike-confl-tag-badge { background:#0e3a2f; color:#6ee7b7; }
 /* Notes box: this report is reviewed with long, written-out notes per trade,
    so it ships far larger than the shared 160x34 default in
    render_stop_target_report.CSS (left alone, for every other report) and
