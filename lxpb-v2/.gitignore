@@ -21,3 +21,6 @@ public/reports/ss_m5_confl2/ss_m5_confl2_report_2025_full_year.html
 levels_runtime/.dev_store/
 levels_runtime/dev.log
 npm_install.log
+
+# per-machine cache of which .scid files were checked to be in time order
+/data/scid_order_verified.json

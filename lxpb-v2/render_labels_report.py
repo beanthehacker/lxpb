@@ -45,6 +45,7 @@ Usage:
 import os
 import sys
 import json
+import hashlib
 import argparse
 import numpy as np
 import pandas as pd
@@ -654,6 +655,35 @@ def _display_m5():
 _SCID_OFFSET_MIN_OVERLAP = 100
 _SCID_OFFSETS = {}
 
+# The measurement is the same every run until the export changes, so its
+# RESULT is remembered in data/scid_offsets.json under a content hash of the
+# display M5 export itself. That is a memo, not a return of the old hardcoded
+# constants: a new vintage (a roll re-anchors every bar) changes the hash and
+# discards every remembered value, and a value that survives is still
+# re-checked against real ticks before it is used (_stored_scid_offset).
+_SCID_OFFSET_STORE = os.path.join(_HERE, "data", "scid_offsets.json")
+_SCID_OFFSET_STORE_VERSION = 1
+_SCID_OFFSET_RECHECK_DAYS = 3
+_SCID_OFFSET_STORE_CACHE = None
+_DISPLAY_M5_FINGERPRINT = None
+
+
+def _display_m5_fingerprint():
+    """Content hash of the display M5 export -- every bar time and close.
+
+    The WHOLE series, not its endpoints and length: a revised export that
+    keeps both still describes different prices, and an offset measured
+    against the superseded one would be reused with nothing to show it was
+    wrong. Same argument as lxpb_levels_cache's own bars fingerprint, and
+    about as cheap."""
+    global _DISPLAY_M5_FINGERPRINT
+    if _DISPLAY_M5_FINGERPRINT is None:
+        tv = _display_m5()
+        h = hashlib.sha1(tv.index.values.tobytes())
+        h.update(tv["close"].to_numpy("float64").tobytes())
+        _DISPLAY_M5_FINGERPRINT = f"{len(tv)}-{h.hexdigest()[:16]}"
+    return _DISPLAY_M5_FINGERPRINT
+
 
 def _front_month_start(seg_idx):
     """When CONTRACTS[seg_idx] actually BECAME front month.
@@ -677,42 +707,156 @@ def _front_month_start(seg_idx):
     return B26.roll_switch_utc(prev_year, prev_month)
 
 
-def _measure_scid_offset(sym, seg_idx):
-    """Points to ADD to `sym`'s raw .scid prices to land on the continuous
-    scale, from the mode of (TradingView close - raw close) over the bars
-    where that contract was actually front month.
+def _scid_offset_span(sym, seg_idx):
+    """[lo, hi) over which `sym` was genuinely front month AND has ticks."""
+    _seg_start, seg_end = _segment_for(seg_idx)
+    bounds = _scid_bounds(sym)
+    if bounds is not None:
+        first_tick, last_tick = bounds
+    else:
+        df = _load_contract(sym)
+        if df is None or df.empty:
+            raise RuntimeError(f"cannot measure {sym}'s .scid offset: no tick data")
+        first_tick, last_tick = df.index[0], df.index[-1]
+    lo = max(_front_month_start(seg_idx), first_tick)
+    hi = seg_end if seg_end is not None else last_tick + pd.Timedelta(seconds=1)
+    return lo, hi
+
+
+def _raw_closes_5min(sym, lo, hi):
+    """`sym`'s own raw tick closes as 5-minute bars over [lo, hi)."""
+    if _scid_memmap(sym) is not None:
+        return _scid_close_5min(sym, lo, hi)
+    return (_slice_sorted(_load_contract(sym), lo, hi)["Close"]
+            .resample("5min").last().dropna())
+
+
+def _mode_offset(sym, lo, hi):
+    """(offset, agreement share, bars compared, distinct values) over [lo, hi),
+    or (None, None, bars, None) when too few bars overlap the export to judge.
 
     The mode, not the mean: a back-adjustment shift is one constant applied
     to a whole segment, so the right answer is the value nearly every bar
     agrees on, and averaging would let a handful of cross-vendor tick
     discrepancies drag it off a real tick boundary."""
     tv = _display_m5()
-    _seg_start, seg_end = _segment_for(seg_idx)
-    df = _load_contract(sym)
-    if df is None or df.empty:
-        raise RuntimeError(f"cannot measure {sym}'s .scid offset: no tick data")
-    lo = max(_front_month_start(seg_idx), df.index[0])
-    hi = seg_end if seg_end is not None else df.index[-1] + pd.Timedelta(seconds=1)
-    raw = _slice_sorted(df, lo, hi)["Close"].resample("5min").last().dropna()
+    raw = _raw_closes_5min(sym, lo, hi)
     common = raw.index.intersection(tv.index)
     if len(common) < _SCID_OFFSET_MIN_OVERLAP:
+        return None, None, len(common), None
+    diff = (tv.loc[common, "close"] - raw.loc[common]).round(4)
+    offset = float(diff.mode().iloc[0])
+    return offset, float((diff == offset).mean()), len(common), int(diff.nunique())
+
+
+def _read_scid_offset_file():
+    """Offsets on disk that were measured against the CURRENT export, keyed by
+    contract. Anything else is dropped unread -- a roll re-anchors every bar of
+    TradingView's history, so every offset measured before one is wrong
+    afterwards by exactly that roll's spread, which is the failure that made
+    the old hardcoded constants need a second correction on top of them."""
+    try:
+        with open(_SCID_OFFSET_STORE, encoding="utf-8") as f:
+            blob = json.load(f)
+        if (blob.get("version") == _SCID_OFFSET_STORE_VERSION
+                and blob.get("export") == _display_m5_fingerprint()):
+            return dict(blob.get("offsets") or {})
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {}
+
+
+def _load_scid_offsets():
+    global _SCID_OFFSET_STORE_CACHE
+    if _SCID_OFFSET_STORE_CACHE is None:
+        _SCID_OFFSET_STORE_CACHE = _read_scid_offset_file()
+    return _SCID_OFFSET_STORE_CACHE
+
+
+def _store_scid_offset(sym, offset, share, n, lo, hi):
+    """Remember a freshly measured offset under this export's fingerprint.
+
+    The file is re-read and merged immediately before writing, because the
+    parallel workers of a regen measure different contracts at the same time
+    and each only knows its own; a plain overwrite would drop the others'.
+    Written to a private temp file and moved into place, so a reader never
+    sees half a file."""
+    entry = {"offset": offset, "agreement": round(share, 6), "bars": int(n),
+             "span": [str(lo), str(hi)], "measured_utc": str(pd.Timestamp.now(tz="UTC"))}
+    _load_scid_offsets()[sym] = entry
+    merged = _read_scid_offset_file()
+    merged[sym] = entry
+    blob = {"version": _SCID_OFFSET_STORE_VERSION,
+            "export": _display_m5_fingerprint(), "offsets": merged}
+    try:
+        os.makedirs(os.path.dirname(_SCID_OFFSET_STORE), exist_ok=True)
+        tmp = f"{_SCID_OFFSET_STORE}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(blob, f, indent=2, sort_keys=True)
+        os.replace(tmp, _SCID_OFFSET_STORE)
+    except OSError:
+        pass
+
+
+def _stored_scid_offset(sym, lo, hi):
+    """A remembered offset for `sym`, RE-CHECKED before use, or None.
+
+    The re-check re-measures over the last few days of this contract's own
+    span that the export actually reaches -- one small tick read. It is what
+    keeps this a memo rather than a constant: a tick file that was replaced,
+    truncated or belongs to another contract disagrees on the spot, and the
+    full measurement runs instead. Too few bars there to judge is also None,
+    never a silent pass."""
+    entry = _load_scid_offsets().get(sym)
+    if not isinstance(entry, dict) or not isinstance(entry.get("offset"), (int, float)):
+        return None
+    tv = _display_m5()
+    check_hi = min(pd.Timestamp(hi), tv.index[-1] + pd.Timedelta(minutes=5))
+    check_lo = max(pd.Timestamp(lo), check_hi - pd.Timedelta(days=_SCID_OFFSET_RECHECK_DAYS))
+    if check_lo >= check_hi:
+        return None
+    offset, share, n, _distinct = _mode_offset(sym, check_lo, check_hi)
+    if offset is None:
+        return None
+    stored = float(entry["offset"])
+    if abs(offset - stored) > 1e-6 or share < _SCID_OFFSET_MIN_MODE_SHARE:
+        print(f"  [scale] {sym}: remembered offset {stored:+.2f}pt no longer holds "
+              f"({offset:+.2f}pt on {share:.1%} of {n:,} recent M5 bars) -- re-measuring")
+        return None
+    print(f"  [scale] {sym} .scid -> TradingView continuous: {stored:+.2f}pt "
+          f"(remembered, re-checked on {n:,} recent M5 bars)")
+    return stored
+
+
+def _measure_scid_offset(sym, seg_idx):
+    """Points to ADD to `sym`'s raw .scid prices to land on the continuous
+    scale, from the mode of (TradingView close - raw close) over the bars
+    where that contract was actually front month.
+
+    Served from the memo when one was measured against this very export and
+    still agrees on a recent sample (see _stored_scid_offset); measured over
+    the whole front-month span otherwise, and remembered."""
+    lo, hi = _scid_offset_span(sym, seg_idx)
+    stored = _stored_scid_offset(sym, lo, hi)
+    if stored is not None:
+        return stored
+    offset, share, n, distinct = _mode_offset(sym, lo, hi)
+    if offset is None:
         raise RuntimeError(
-            f"cannot measure {sym}'s .scid offset: only {len(common)} M5 bars "
+            f"cannot measure {sym}'s .scid offset: only {n} M5 bars "
             f"overlap between its front-month span [{lo}, {hi}) and the display "
             f"M5 export (need >= {_SCID_OFFSET_MIN_OVERLAP}). Add an export "
             "covering that span to DISPLAY_M5_PATHS.")
-    diff = (tv.loc[common, "close"] - raw.loc[common]).round(4)
-    offset = float(diff.mode().iloc[0])
-    share = float((diff == offset).mean())
     if share < _SCID_OFFSET_MIN_MODE_SHARE:
         raise RuntimeError(
             f"{sym}: the difference between the display M5 export and this "
             f"contract's raw .scid closes is not a constant ({share:.1%} of "
-            f"{len(common)} bars are {offset:+.2f}, {diff.nunique()} distinct "
+            f"{n} bars are {offset:+.2f}, {distinct} distinct "
             "values) -- the export and the tick file do not describe the same "
             "contract over that span, so ticks cannot be mapped onto it.")
     print(f"  [scale] {sym} .scid -> TradingView continuous: {offset:+.2f}pt "
-          f"(measured on {len(common):,} M5 bars, {share:.1%} agreement)")
+          f"(measured on {n:,} M5 bars, {share:.1%} agreement)")
+    _store_scid_offset(sym, offset, share, n, lo, hi)
     return offset
 
 
@@ -743,6 +887,213 @@ def _load_contract(symbol):
     return _CONTRACT_CACHE[symbol]
 
 
+# --- windowed .scid reads ---------------------------------------------------
+# _load_contract materialises a whole contract (~2-3GB, ~10s) to serve windows
+# of hours or days. The .scid file is fixed 40-byte records in time order, so
+# a window is found by binary search on the record timestamps and only those
+# records are turned into a frame. Same cleaning as scidReader.get_scid_df
+# (rows with a NaN price or an out-of-range time dropped), so a window is
+# row-for-row what slicing the full frame gives. A file whose raw times are
+# not in order can't be binary-searched: it returns None and the callers fall
+# back to the full frame. LXPB_SCID_WINDOWS=0 forces that fallback everywhere.
+_SCID_HEADER_BYTES = 56
+_SCID_TIME_SHIFT_US = 2209161600000000   # Sierra epoch (1899-12-30) -> unix, microseconds
+_SCID_TIME_MAX_US = 2705466561000000
+_SCID_REC = np.dtype([
+    ("Time", "<u8"), ("Open", "<f4"), ("High", "<f4"), ("Low", "<f4"),
+    ("Close", "<f4"), ("Trades", "<i4"), ("Volume", "<i4"),
+    ("BidVolume", "<i4"), ("AskVolume", "<i4"),
+])
+_SCID_PRICE_FIELDS = ("Open", "High", "Low", "Close")
+_SCID_MM = {}
+_SCID_ORDER_SIDECAR = os.path.join(_HERE, "data", "scid_order_verified.json")
+_SCID_CHUNK = 4_000_000
+_SCID_WINDOW_CACHE = []              # newest first: (symbol, lo_ns, exclusive hi_ns, frame)
+_SCID_WINDOW_CACHE_KEEP = 3
+_SCID_WINDOW_CACHE_MAX_ROWS = 6_000_000
+
+
+def _scid_order_verified(path, mm):
+    """True when the raw record times are non-decreasing. The scan reads the
+    time column of the whole file (~1s), so the verdict is remembered on disk
+    against the file's size and mtime; a growing file is simply re-scanned."""
+    st = os.stat(path)
+    stamp = [st.st_size, st.st_mtime_ns]
+    try:
+        with open(_SCID_ORDER_SIDECAR) as f:
+            known = json.load(f)
+    except (OSError, ValueError):
+        known = {}
+    key = os.path.basename(path)
+    if known.get(key) == stamp:
+        return True
+    tm = mm["Time"]
+    prev = None
+    for i in range(0, len(tm), _SCID_CHUNK):
+        c = np.asarray(tm[i:i + _SCID_CHUNK]).astype(np.int64)
+        if (prev is not None and c[0] < prev) or (np.diff(c) < 0).any():
+            return False
+        prev = int(c[-1])
+    known[key] = stamp
+    try:
+        tmp = f"{_SCID_ORDER_SIDECAR}.{os.getpid()}.tmp"
+        with open(tmp, "w") as f:
+            json.dump(known, f)
+        os.replace(tmp, _SCID_ORDER_SIDECAR)
+    except OSError:
+        pass
+    return True
+
+
+def _scid_memmap(symbol):
+    """Memory-mapped records of `symbol`'s .scid, or None when window reads
+    aren't safe for it (disabled, missing, empty, or not in time order)."""
+    if os.environ.get("LXPB_SCID_WINDOWS") == "0":
+        return None
+    if symbol not in _SCID_MM:
+        path = os.path.join(SCID_DIR, f"F.US.{symbol}.scid")
+        mm = None
+        if os.path.exists(path) and os.path.getsize(path) > _SCID_HEADER_BYTES + 40:
+            cand = np.memmap(path, dtype=_SCID_REC, offset=_SCID_HEADER_BYTES, mode="r")
+            if _scid_order_verified(path, cand):
+                mm = cand
+        _SCID_MM[symbol] = mm
+    return _SCID_MM[symbol]
+
+
+def _scid_first_at_or_after(tm, raw_us):
+    """First record position whose raw time is >= raw_us (binary search on the
+    memory-mapped time column; searchsorted would copy the strided column)."""
+    lo, hi = 0, len(tm)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if int(tm[mid]) < raw_us:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+def _scid_clean_mask(rec):
+    """Rows get_scid_df keeps: no NaN price, time inside its accepted range."""
+    t = rec["Time"].astype(np.int64) - _SCID_TIME_SHIFT_US
+    keep = (t >= 1) & (t <= _SCID_TIME_MAX_US)
+    for name in _SCID_PRICE_FIELDS:
+        keep &= ~np.isnan(rec[name])
+    return keep, t
+
+
+def _scid_pos_range(mm, lo_ns, hi_ns, hi_inclusive):
+    """Record positions [a, b) holding lo_ns <= t < hi_ns (t <= hi_ns when
+    hi_inclusive), t in ns since the unix epoch. Records are microseconds."""
+    tm = mm["Time"]
+    lo_us = -(-int(lo_ns) // 1000)                    # ceil: first us with t_ns >= lo_ns
+    if hi_inclusive:
+        hi_us = int(hi_ns) // 1000 + 1               # floor + 1: first us with t_ns > hi_ns
+    else:
+        hi_us = -(-int(hi_ns) // 1000)               # first us with t_ns >= hi_ns
+    a = _scid_first_at_or_after(tm, lo_us + _SCID_TIME_SHIFT_US)
+    b = _scid_first_at_or_after(tm, hi_us + _SCID_TIME_SHIFT_US)
+    return a, max(a, b)
+
+
+def _scid_window(symbol, lo, hi, hi_inclusive=False):
+    """Rows of `symbol`'s cleaned tick frame with lo <= t < hi (t <= hi when
+    hi_inclusive), or None when the caller must slice the full frame instead.
+    Identical to _slice_sorted(_load_contract(symbol), lo, hi)."""
+    mm = _scid_memmap(symbol)
+    if mm is None:
+        return None
+    lo_ns, hi_ns = pd.Timestamp(lo).value, pd.Timestamp(hi).value
+    # The multi-day windows the minute bars, fill scan and 1s panes ask for
+    # nest inside one another for a given trade, so keep the last few and
+    # serve inner requests from them (same rows: it's the same searchsorted
+    # the full frame uses, on the window's own index).
+    need_hi = hi_ns + (1 if hi_inclusive else 0)     # exclusive upper bound, in ns
+    for sym, c_lo, c_hi, frame in _SCID_WINDOW_CACHE:
+        if sym == symbol and c_lo <= lo_ns and need_hi <= c_hi:
+            idx = frame.index
+            return frame.iloc[idx.searchsorted(pd.Timestamp(lo), side="left"):
+                              idx.searchsorted(pd.Timestamp(hi), side="right" if hi_inclusive else "left")]
+    a, b = _scid_pos_range(mm, lo_ns, hi_ns, hi_inclusive)
+    rec = np.asarray(mm[a:b])
+    if len(rec):
+        # Raw times are non-decreasing (checked when the file was opened), so
+        # the accepted-time range only needs testing at the two ends.
+        t_first = int(rec["Time"][0]) - _SCID_TIME_SHIFT_US
+        t_last = int(rec["Time"][-1]) - _SCID_TIME_SHIFT_US
+        if t_first < 1 or t_last > _SCID_TIME_MAX_US:
+            keep, _t = _scid_clean_mask(rec)
+            rec = rec[keep]
+        else:
+            bad = np.zeros(len(rec), dtype=bool)
+            for name in _SCID_PRICE_FIELDS:
+                bad |= np.isnan(rec[name])
+            if bad.any():
+                rec = rec[~bad]
+    t_us = rec["Time"].astype(np.int64) - _SCID_TIME_SHIFT_US
+    idx = pd.DatetimeIndex((t_us * 1000).view("datetime64[ns]")).tz_localize("UTC")
+    idx.name = "Time"
+    frame = pd.DataFrame({n: rec[n] for n in _SCID_REC.names[1:]}, index=idx)
+    if len(frame) <= _SCID_WINDOW_CACHE_MAX_ROWS:
+        _SCID_WINDOW_CACHE.insert(0, (symbol, lo_ns, need_hi, frame))
+        del _SCID_WINDOW_CACHE[_SCID_WINDOW_CACHE_KEEP:]
+    return frame
+
+
+def _scid_bounds(symbol):
+    """(first, last) tick time of the cleaned frame as UTC Timestamps, or None
+    when unavailable -- what df.index[0] / df.index[-1] give on the full frame."""
+    mm = _scid_memmap(symbol)
+    if mm is None:
+        return None
+
+    def edge(rng, last):
+        for lo_pos in rng:
+            rec = np.asarray(mm[lo_pos[0]:lo_pos[1]])
+            keep, t = _scid_clean_mask(rec)
+            if keep.any():
+                v = t[keep][-1 if last else 0]
+                return pd.Timestamp(int(v), unit="us", tz="UTC")
+        return None
+
+    n = len(mm)
+    step = 65536
+    first = edge(((s, min(s + step, n)) for s in range(0, n, step)), False)
+    last = edge(((max(e - step, 0), e) for e in range(n, 0, -step)), True)
+    return (first, last) if first is not None and last is not None else None
+
+
+def _scid_close_5min(symbol, lo, hi):
+    """The Series _slice_sorted(df, lo, hi)["Close"].resample("5min").last()
+    .dropna() gives on the full frame, without building the full frame or the
+    tick-level slice: bins are found straight from the record times."""
+    mm = _scid_memmap(symbol)
+    a, b = _scid_pos_range(mm, pd.Timestamp(lo).value, pd.Timestamp(hi).value, False)
+    bin_ns = 300 * 10**9
+    bins, closes = [], []
+    for s in range(a, b, _SCID_CHUNK):
+        rec = np.asarray(mm[s:min(s + _SCID_CHUNK, b)])
+        keep, t = _scid_clean_mask(rec)
+        if not keep.all():
+            rec, t = rec[keep], t[keep]
+        if not len(t):
+            continue
+        binned = (t * 1000) // bin_ns
+        last = np.r_[binned[1:] != binned[:-1], True]
+        bins.append(binned[last])
+        closes.append(rec["Close"][last])
+    if not bins:
+        return pd.Series([], dtype="float32",
+                         index=pd.DatetimeIndex([], tz="UTC", name="Time"))
+    bins, closes = np.concatenate(bins), np.concatenate(closes)
+    last = np.r_[bins[1:] != bins[:-1], True]          # a bin split across chunks: keep its later value
+    bins, closes = bins[last], closes[last]
+    idx = pd.DatetimeIndex(pd.to_datetime(bins * bin_ns, unit="ns")).tz_localize("UTC")
+    idx.name = "Time"
+    return pd.Series(closes, index=idx, name="Close")
+
+
 def _ticks_for_window(lo_utc, hi_utc):
     """Real ticks covering [lo_utc, hi_utc) from whichever contract(s) were
     front-month across that span -- almost always a single contract; only
@@ -754,8 +1105,9 @@ def _ticks_for_window(lo_utc, hi_utc):
         hi = min(hi_utc, seg_end) if seg_end is not None else hi_utc
         if lo >= hi:
             continue
-        df = _load_contract(sym)
-        sl = _slice_sorted(df, lo, hi)
+        sl = _scid_window(sym, lo, hi)
+        if sl is None:
+            sl = _slice_sorted(_load_contract(sym), lo, hi)
         if not sl.empty:
             parts.append(sl)
     if not parts:
@@ -893,14 +1245,16 @@ def build_footprint(touch_time_utc, entry_price_raw, pre_s, post_s, offset=0.0):
     lo = touch_time_utc - pd.Timedelta(seconds=pre_s)
     hi = touch_time_utc + pd.Timedelta(seconds=post_s)
     _, sym = _offset_for_ts(touch_time_utc)
-    raw = _footprint_load_contract(sym)
-    if raw.index.is_monotonic_increasing:
-        # Same rows as the mask below (hi inclusive), without materialising
-        # two whole-contract boolean arrays per footprint.
-        ticks = raw.iloc[raw.index.searchsorted(lo, side="left"):
-                         raw.index.searchsorted(hi, side="right")]
-    else:
-        ticks = raw.loc[(raw.index >= lo) & (raw.index <= hi)]
+    ticks = _scid_window(sym, lo, hi, hi_inclusive=True)
+    if ticks is None:
+        raw = _footprint_load_contract(sym)
+        if raw.index.is_monotonic_increasing:
+            # Same rows as the mask below (hi inclusive), without materialising
+            # two whole-contract boolean arrays per footprint.
+            ticks = raw.iloc[raw.index.searchsorted(lo, side="left"):
+                             raw.index.searchsorted(hi, side="right")]
+        else:
+            ticks = raw.loc[(raw.index >= lo) & (raw.index <= hi)]
     if ticks.empty:
         return None
     price = np.round(ticks["Close"].to_numpy(float) / TICK_SIZE_DEFAULT) * TICK_SIZE_DEFAULT
