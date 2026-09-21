@@ -12,8 +12,8 @@ __pycache__/
 # as public/reports/**/*.html.gz instead and inflated by
 # scripts/decompress-gz-reports.mjs (runs before dev/build) -- the inflated
 # .html itself is a build artifact, not source, so list each one here.
-public/reports/ss_m5_confl2/ss_m5_confl2_report_2026_full_year.html
-public/reports/ss_m5_confl2/ss_m5_confl2_report_2025_full_year.html
+public/reports/ss_m5_confl2/2026.html
+public/reports/ss_m5_confl2/2025.html
 .vercel
 .env*
 

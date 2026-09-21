@@ -206,7 +206,7 @@ silently reusing an hour-wide H1 fudge factor).
 Usage:
     python render_m5_confl2_report.py
     python render_m5_confl2_report.py --ss-confl-min 2 --min-r 1.0
-    python render_m5_confl2_report.py --start 2026-01-01 --end 2026-12-31 --output ss_m5_confl2_report_2026_full_year.html
+    python render_m5_confl2_report.py --start 2026-01-01 --end 2026-12-31 --output 2026.html
     python render_m5_confl2_report.py --max-rows 5   # quick smoke test
 """
 import os
@@ -4236,6 +4236,6 @@ if __name__ == "__main__":
     args.default_target_modes = (DEFAULT_TARGET_MODES_BOTH if args.target_mode == "both"
                                  else (args.target_mode,))
     args.output = args.output or os.path.join(
-        _REPO_ROOT, "public", "reports", "ss_m5_confl2", "ss_m5_confl2_report.html"
+        _REPO_ROOT, "public", "reports", "ss_m5_confl2", "jul-aug.html"
     )
     render(args)

@@ -24,10 +24,10 @@ OUT_DIR = os.path.join(REPO, "public", "reports", "ss_m5_confl2")
 
 # (label, output file, extra args, also write .html.gz)
 REPORTS = [
-    ("Jul-Aug 2026 (default report)", "ss_m5_confl2_report.html", [], False),
-    ("Full 2025", "ss_m5_confl2_report_2025_full_year.html",
+    ("Jul-Aug 2026 (default report)", "jul-aug.html", [], False),
+    ("Full 2025", "2025.html",
      ["--start", "2025-01-01", "--end", "2025-12-31"], True),
-    ("Full 2026", "ss_m5_confl2_report_2026_full_year.html",
+    ("Full 2026", "2026.html",
      ["--start", "2026-01-01", "--end", "2026-12-31"], True),
 ]
 

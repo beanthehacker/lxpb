@@ -41,7 +41,8 @@ without hitting the old name.
 
 ## Regenerated report file
 
-`public/reports/ss_m5_confl2/ss_m5_confl2_report.html` in this commit is
+`public/reports/ss_m5_confl2/jul-aug.html` (named
+`ss_m5_confl2_report.html` at the time) in this commit is
 much smaller than the last full regen (~3600 fewer lines) -- almost
 certainly a `--max-rows` smoke-test regen, not a full one (see repo memory:
 always smoke-test before a full regen). **Do not treat this HTML as

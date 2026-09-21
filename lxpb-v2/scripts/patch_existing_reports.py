@@ -613,7 +613,7 @@ CANONICAL_GLOBS = [
     "stop*_trades_report*.html",
     "ss_confl1_finetune_report*.html",
     "ss_confl2_finetune_report*.html",
-    "ss_m5_confl2/ss_m5_confl2_report*.html",
+    "ss_m5_confl2/*.html",
 ]
 LEGACY_A_FILES = ["lxpb_cluster_selection_report.html"]
 LEGACY_B_FILES = ["lxpb_labels_report.html", "lxpb_strong_breakout_report.html"]
