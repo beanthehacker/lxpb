@@ -1412,6 +1412,9 @@ const timeFmt = new Intl.DateTimeFormat('en-US', { timeZone: PT_TZ,
 const timeFmtH1 = new Intl.DateTimeFormat('en-US', { timeZone: PT_TZ,
   month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false });
 
+const timeFmtD = new Intl.DateTimeFormat('en-US', { timeZone: PT_TZ,
+  year:'2-digit', month:'2-digit', day:'2-digit' });   // daily panes (cd.dateOnly)
+
 function _baseOpts(tickFmt) {
   return {
     autoSize: true,
@@ -1468,7 +1471,7 @@ function _renderPane(elId, titleId, cd) {
   ohlcEl.className = 'ct-ohlc';
   titleEl.appendChild(baseEl);
   titleEl.appendChild(ohlcEl);
-  const chart = LightweightCharts.createChart(el, Object.assign(_baseOpts(timeFmtH1), {
+  const chart = LightweightCharts.createChart(el, Object.assign(_baseOpts(cd.dateOnly ? timeFmtD : timeFmtH1), {
     autoSize: false, width: el.clientWidth || 800, height: el.clientHeight || 320,
   }));
   const series = _addCandles(chart, cd.precision);

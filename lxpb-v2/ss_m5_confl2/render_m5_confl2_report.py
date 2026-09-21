@@ -1762,10 +1762,120 @@ def _add_mode_views(chart_m5, res, is_long):
 
 M5_ONLY_NOTE = "<p class='note'>(tick panes and footprints skipped: --m5-charts-only)</p>"
 
+# Context panes above the M5 chart (see _build_context_charts).
+CTX_H1_BARS_BEFORE = 150
+CTX_H1_BARS_AFTER = 30
+CTX_D1_DAYS_BEFORE = 90
+CTX_D1_DAYS_AFTER = 10
+_D1_CACHE = None
+
+
+def _display_d1():
+    """Daily bars aggregated from the TradingView continuous H1 export (never
+    from .scid), one bar per ES trading day. A session runs 15:00 PT (prior
+    calendar day) to 14:00 PT, so shifting an H1 bar's PT time forward 9h
+    lands every bar of a session on that session's closing PT date. Each bar's
+    `time` is noon PT of that date so the browser's PT date label reads the
+    trading date. Cached -- the H1 series is static."""
+    global _D1_CACHE
+    if _D1_CACHE is None:
+        h1 = R._display_h1()
+        pt = h1.index.tz_convert("America/Los_Angeles")
+        day = (pt + pd.Timedelta(hours=9)).normalize().tz_localize(None)
+        g = h1.groupby(day)
+        d1 = pd.DataFrame({"open": g["open"].first(), "high": g["high"].max(),
+                           "low": g["low"].min(), "close": g["close"].last()})
+        d1.index = pd.DatetimeIndex(
+            [pd.Timestamp(f"{d.date()} 12:00", tz="America/Los_Angeles") for d in d1.index]
+        ).tz_convert("UTC")
+        _D1_CACHE = d1
+    return _D1_CACHE
+
+
+def _d1_bar_time(ts):
+    """The D1 bar `time` (noon PT of the trading date, see _display_d1) of the
+    session containing instant `ts`."""
+    pt = pd.Timestamp(ts).tz_convert("America/Los_Angeles") + pd.Timedelta(hours=9)
+    return pd.Timestamp(f"{pt.date()} 12:00", tz="America/Los_Angeles").tz_convert("UTC")
+
+
+def _build_context_chart(bars, label, entry_t, exit_t, lo, hi, levels, is_long,
+                         date_only=False, anchor=None):
+    """One plain candle pane (no LXPB levels) over bars[lo:hi], with the
+    trade's own entry/stop/target/level lines and entry/exit markers. `levels`
+    is a list of (price, color, lineStyle, title). Returns None when the bars
+    do not cover the entry. `anchor` maps an instant to the bar time that
+    contains it (D1 needs it; H1 snaps to the last bar at or before)."""
+    if bars is None or bars.empty or entry_t < bars.index[0] or entry_t > bars.index[-1] + pd.Timedelta(days=1):
+        return None
+    win = bars.loc[lo:hi]
+    if win.empty:
+        return None
+    candles = [{"time": R._to_epoch_utc(t), "open": float(r.open), "high": float(r.high),
+                "low": float(r.low), "close": float(r.close)} for t, r in win.iterrows()]
+    times = [c["time"] for c in candles]
+
+    def snap(ts):
+        if anchor is not None:
+            ts = anchor(ts)
+        pos = bisect.bisect_right(times, int(pd.Timestamp(ts).timestamp())) - 1
+        return times[max(pos, 0)]
+
+    markers = [{"time": snap(entry_t), "position": "belowBar" if is_long else "aboveBar",
+                "color": R.ENTRY_COLOR, "shape": "circle", "text": "entry"}]
+    if exit_t is not None:
+        markers.append({"time": snap(exit_t), "position": "aboveBar" if is_long else "belowBar",
+                        "color": "#fbbf24", "shape": "square", "text": "exit"})
+    markers.sort(key=lambda m: m["time"])
+    lines = [{"price": p, "color": c, "lineWidth": 1, "lineStyle": s, "title": t}
+             for p, c, s, t in levels]
+    return {"title": f"{label}  |  {R._to_pt_str(win.index[0])} → {R._to_pt_str(win.index[-1])}",
+            "candles": candles, "markers": markers, "priceLines": lines, "rays": [],
+            "precision": 2, "dateOnly": date_only}
+
+
+def _build_context_charts(res, filled):
+    """{'h1': ..., 'd1': ...} panes for the row. Both come from the
+    TradingView H1 export (D1 aggregated from it), on the same back-adjusted
+    scale as the M5 pane. Filled trades get entry/stop/target lines and an
+    exit marker; unfilled rows get only the level and the M5 retest instant."""
+    is_long = res["is_long"] if "is_long" in res else res["level_type"] == "LHPB"
+    if filled:
+        entry_t = pd.Timestamp(res["touch_time_alt"]).tz_convert("UTC")
+        exit_t = res["resolved"].get("exit_time")
+        fill, stop_pts, tgt_pts = res["fill_price"], res["stop_pts"], res["target_pts"]
+        levels = [(res["own_price"], R.LEVEL_COLOR, 0, f"level {res['own_price']:.2f}"),
+                  (fill, R.ENTRY_COLOR, 0, f"entry {fill:.2f}"),
+                  (fill - stop_pts if is_long else fill + stop_pts,
+                   SR.EXIT_LOSS_COLOR, 2, "stop"),
+                  (fill + tgt_pts if is_long else fill - tgt_pts,
+                   SR.EXIT_WIN_COLOR, 2, "target")]
+    else:
+        entry_t = pd.Timestamp(res["row"]["retest_time"])
+        entry_t = entry_t.tz_localize("UTC") if entry_t.tzinfo is None else entry_t.tz_convert("UTC")
+        exit_t = None
+        levels = [(res["own_price"], R.LEVEL_COLOR, 0, f"level {res['own_price']:.2f}")]
+    if exit_t is not None:
+        exit_t = pd.Timestamp(exit_t)
+        exit_t = exit_t.tz_localize("UTC") if exit_t.tzinfo is None else exit_t.tz_convert("UTC")
+    end_t = exit_t if exit_t is not None else entry_t
+
+    h1 = R._display_h1()
+    h1_chart = _build_context_chart(
+        h1, "H1", entry_t, exit_t,
+        entry_t - pd.Timedelta(hours=CTX_H1_BARS_BEFORE),
+        end_t + pd.Timedelta(hours=CTX_H1_BARS_AFTER), levels, is_long)
+    d1_chart = _build_context_chart(
+        _display_d1(), "D1 (session 15:00 PT prior day → 14:00 PT, labelled by close date)",
+        entry_t, exit_t,
+        entry_t - pd.Timedelta(days=CTX_D1_DAYS_BEFORE),
+        end_t + pd.Timedelta(days=CTX_D1_DAYS_AFTER), levels, is_long, date_only=True, anchor=_d1_bar_time)
+    return {"h1": h1_chart, "d1": d1_chart}
+
 
 def build_chart_stack_for_row(res, m5_only=False):
-    """M5 + 1s-trio + 1min + footprint chart stack for a filled, in-R trade
-    -- no H1 pane exists in this strategy. Reuses
+    """D1 + H1 context panes (_build_context_charts) + M5 + 1s-trio + 1min +
+    footprint chart stack for a filled, in-R trade. Reuses
     render_ss_confl_finetune_report.build_execution_charts verbatim (it
     never assumed an H1-anchored row) and render_stop_target_report.
     build_m5_chart with this strategy's own 5-minute P1 bar width.
@@ -1826,11 +1936,12 @@ def build_chart_stack_for_row(res, m5_only=False):
         _annotate_swerve(chart_m5, res, res["is_long"])
         _rayify_trade_lines(chart_m5, res, row_for_chart)
         _add_mode_views(chart_m5, res, res["is_long"])
+    ctx = _build_context_charts(res, filled=True)
     if m5_only:
-        return {"m5": chart_m5, "trio": None, "oneMin": None}, {"narrow": M5_ONLY_NOTE,
-                                                                "wide": M5_ONLY_NOTE}
+        return {**ctx, "m5": chart_m5, "trio": None, "oneMin": None}, {"narrow": M5_ONLY_NOTE,
+                                                                        "wide": M5_ONLY_NOTE}
     execution_charts, fp = SF.build_execution_charts({**res, "row": row_for_chart})
-    return {"m5": chart_m5, **execution_charts}, fp
+    return {**ctx, "m5": chart_m5, **execution_charts}, fp
 
 
 def _build_unfilled_chart_stack(res, args):
@@ -1881,9 +1992,10 @@ def _build_unfilled_chart_stack(res, args):
                               f"{_fail_reason_label(res.get('fail_reason'))} "
                               f"(no stop/target -- never computed)")
 
+    ctx = _build_context_charts(res, filled=False)
     if getattr(args, "m5_charts_only", False):
-        return {"m5": chart_m5, "trio": None, "oneMin": None}, {"narrow": M5_ONLY_NOTE,
-                                                                "wide": M5_ONLY_NOTE}
+        return {**ctx, "m5": chart_m5, "trio": None, "oneMin": None}, {"narrow": M5_ONLY_NOTE,
+                                                                        "wide": M5_ONLY_NOTE}
     fill_window = SF.build_fill_window_chart(
         window_start, alt_price, level_type, args.max_alt_fill_hours,
         res.get("fail_reason"))
@@ -1893,7 +2005,7 @@ def _build_unfilled_chart_stack(res, args):
         # strategy has no H1 leg at all; window_start IS the M5 retest).
         fill_window["title"] = fill_window["title"].replace(
             "refined H1 retest", "M5 retest")
-    chart_stack = {"m5": chart_m5, "trio": None, "oneMin": fill_window}
+    chart_stack = {**ctx, "m5": chart_m5, "trio": None, "oneMin": fill_window}
     note = "<p class='note'>(no trade -- no tick-level touch to build a footprint from)</p>"
     fp = {"narrow": note, "wide": note}
     return chart_stack, fp
@@ -2785,6 +2897,10 @@ def _render_row(idx, res, chart_stacks, fps):
 </tr>
 <tr class="chart-row hidden" data-idx="{idx}" id="chart-row-{idx}">
   <td colspan="{N_COLS}"><div class="chart-stack">
+    <div class="chart-row-2col">
+      <div class="chart-cell chart-h1"><div class="chart-title" id="td1-{idx}"></div><div class="chart-ph" id="cd1-{idx}"></div></div>
+      <div class="chart-cell chart-h1"><div class="chart-title" id="th1-{idx}"></div><div class="chart-ph" id="ch1-{idx}"></div></div>
+    </div>
     <div class="chart-row-2col chart-row-solo">
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-{idx}"></div><div class="chart-ph" id="cm5-{idx}"></div></div>
     </div>
@@ -2913,6 +3029,10 @@ def _render_row(idx, res, chart_stacks, fps):
 </tr>
 <tr class="chart-row hidden" data-idx="{idx}" id="chart-row-{idx}">
   <td colspan="{N_COLS}"><div class="chart-stack">
+    <div class="chart-row-2col">
+      <div class="chart-cell chart-h1"><div class="chart-title" id="td1-{idx}"></div><div class="chart-ph" id="cd1-{idx}"></div></div>
+      <div class="chart-cell chart-h1"><div class="chart-title" id="th1-{idx}"></div><div class="chart-ph" id="ch1-{idx}"></div></div>
+    </div>
     <div class="chart-row-2col chart-row-solo">
       <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-{idx}"></div><div class="chart-ph" id="cm5-{idx}"></div></div>
     </div>
@@ -3509,6 +3629,16 @@ th.sortable-th:hover { text-decoration:underline; }
 """
 JS = SR.JS + """
 <script>
+// D1 pane above the M5 chart (H1 reuses the shared _renderH1 / th1- / ch1- ids).
+const _renderStackBase = _renderStack;
+_renderStack = function(i) {
+  _renderStackBase(i);
+  const cd = CHARTS[i];
+  if (!cd) return;
+  if (cd.d1) _renderPane('cd1-' + i, 'td1-' + i, cd.d1);
+  else { const t = document.getElementById('td1-' + i); if (t) t.textContent = 'D1  |  (no bars covering this trade)'; }
+  if (!cd.h1) { const t = document.getElementById('th1-' + i); if (t) t.textContent = 'H1  |  (no bars covering this trade)'; }
+};
 // ---------------------------------------------------------------------
 // Dynamic filters -- see _apply_globex_open_filter's own docstring in
 // render_m5_confl2_report.py for the full authoring convention (this is
