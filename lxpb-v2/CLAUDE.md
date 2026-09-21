@@ -184,3 +184,29 @@ Example: H1 20 Dec 2024 05:00 PT (spike = the 04:00 PT hammer; 1.76x, 48% body).
   that ties it to a level must say which pairing (above) picks the spike.
 - It is NOT the "thrust candle" of `ss_m5_confl2` / `trade_management.py`,
   which just means a level's P1 breakout candle, with no shape test at all.
+- ONE deliberate local extension exists, and only one: `h1_bias.py`'s
+  "bias-thrust", for the H1-bias expiry rule alone. It differs in exactly two
+  ways -- it adds a single further row (`EXTRA_THRUST_TIER`, >= 0.60x range
+  with a >= 75% body), and it lets the reference candle be an SFP as well as
+  a hammer/shooting star, so an SFP bias expires the same way. Both are
+  local: `patterns_pure/` is untouched and nothing outside that module sees
+  either. The rows are read from `SPIKE_THRUST_TIERS`, never rewritten, and
+  `h1_bias._assert_matches_patterns_pure` checks on every load that the
+  generalised code reproduces `find_spike_thrust` exactly on patterns-pure's
+  own rows and reference candles. Adding another such extension is a strategy
+  change: the user decides it.
+
+# H1 directional bias (`h1_bias.py`)
+
+A bias is plain H1 candle context, NOT a level: a hammer is bullish, a
+shooting star bearish (patterns-pure, read on the candle alone -- neither
+LHPB/LLPB pairing above applies, since no level is involved), and an "sfp" is
+patterns-pure's `find_sfp` -- a candle that sweeps an H1 swing low and closes
+back above it (bullish) or sweeps a swing high and closes back below it
+(bearish). `find_sfp` owns which swing that is: the most recent fractal pivot
+that is both confirmed AND still UNTESTED, so a swing already traded through
+is spent and yields no further SFP. Like every other pattern in the repo it
+lives in `patterns_pure/` and is never restated at a call site.
+Every bias is short-lived and `h1_bias.py` owns the expiries.
+Its only consumer is `ss_m5_confl2`'s Bias column and its `anti_bias` dynamic
+filter -- a review aid, never a strategy input.

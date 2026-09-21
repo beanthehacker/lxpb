@@ -138,6 +138,27 @@ the target are ALL M5 LXPB structure:
          a live numeric filter too, to compare a tight +/-10s read against
          a wider +/-30s one without a regen.
 
+       * ANTI-BIAS (h1_bias.py, informational). The Bias column lists every
+         H1 directional bias still LIVE at this trade's own P2 (retest) --
+         plain candle context, no level involved: a hammer (bullish) or a
+         shooting star (bearish) by patterns-pure, and an "sfp"
+         (patterns-pure's find_sfp), a candle that sweeps an H1 swing low and
+         closes back above it (bullish) or sweeps a swing high and closes
+         back below it (bearish) -- where the swing swept has to be both
+         confirmed and still untested, so one swing yields at most one sfp.
+         Each one shows as `<pattern>@<H1 candles back>`
+         (`hammer@-1`), counted from the H1 candle the retest sits in --
+         which is still forming, so only already-closed candles can carry a
+         bias. Every bias is short-lived and h1_bias.py owns exactly how
+         long: all four die when the very next candle thrusts through them,
+         or when a later candle takes out the bias candle's own low (bullish)
+         / high (bearish), or on age -- 3 closed candles for a hammer/star, 4
+         for an sfp, the only thing that differs between them).
+         A trade whose own direction FADES at least one live bias -- a short
+         under a live bullish bias, a long under a live bearish one -- is
+         tagged `anti_bias`. Like `volume-spike` this is purely a Dynamic
+         filter chip, NOT excluded from the headline stats by default.
+
        * END OF DAY (trade_management.py rule 3). No position is carried
          overnight: an open trade is flattened at market before 12:45 PT
          (outcome `eod_flat`), and a fill that would have landed at or after
@@ -232,6 +253,7 @@ import trade_management as TM                     # noqa: E402
 import m5_structure as MS                         # noqa: E402
 import liquidity as LQ                            # noqa: E402
 import volume_spike as VS                         # noqa: E402
+import h1_bias as HB                              # noqa: E402
 
 SS_CONFL_MIN_DEFAULT = 1
 M5_CONFLUENCE_N_POINTS_DEFAULT = 10.0  # same-side M5 confluence radius: selection + entry refinement
@@ -2388,7 +2410,35 @@ def _apply_h1_spike_confluence(results):
     return results
 
 
-N_COLS = 31  # keep in sync with `head` below and every colspan in this section
+def _apply_h1_bias(results):
+    """Mutates and returns `results` in place. Same dynamic-filter convention
+    as _apply_globex_open_filter (see that function's docstring).
+
+    For EVERY result -- filled or not, since the bias is read off the H1
+    candles before the retest and so exists whether or not the entry ever
+    filled -- stores res['h1_bias']: every H1 bias still live at this
+    trade's own P2 (retest) instant, nearest candle first (h1_bias.py, which
+    owns the whole definition: which candles make a bias, how long each one
+    lasts and what kills it early). A trade whose own direction FADES at
+    least one of them (a short under a live bullish bias, a long under a
+    live bearish one) also gets the row tag 'anti_bias'.
+
+    The bias is anchored on the RETEST instant, not the fill: the H1 candle
+    the retest sits in is offset 0 and is still forming, so only candles that
+    had already CLOSED by then can be a bias. Purely a review aid -- this
+    strategy is M5-only (see the module docstring) and nothing here changes
+    which trades it takes; 'anti_bias' ships UNCHECKED, so the default view
+    still includes these trades."""
+    h1_bars = R._display_h1()
+    for res in results:
+        biases = HB.biases_at(pd.Timestamp(res["row"]["retest_time"]), h1_bars)
+        res["h1_bias"] = biases
+        if HB.fades(biases, res["is_long"]):
+            res.setdefault("dyn_tags", []).append("anti_bias")
+    return results
+
+
+N_COLS = 32  # keep in sync with `head` below and every colspan in this section
 
 # MES position sizing / commissions. R stays a fixed $1,000 and the stop is not
 # widened for costs: contracts = floor(R_DOLLARS / (stop pts x MES_POINT_VALUE)),
@@ -2531,6 +2581,7 @@ def render(args):
     results = _apply_globex_open_filter(results)
     results = _apply_h1_p0_confluence(results)
     results = _apply_h1_spike_confluence(results)
+    results = _apply_h1_bias(results)
     tag_counts = {}
     for r in results:
         if not r["filled"]:
@@ -2673,15 +2724,16 @@ def _attr_json(obj):
 
 def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
     """Badge HTML for the ROW-level dynamic-filter tags (globex_eth_open,
-    low_liquidity, swerved, swerve_blocked, crest_refined, volume-spike) --
-    the ones that
+    low_liquidity, swerved, swerve_blocked, crest_refined, spike_confl,
+    anti_bias, volume-spike) -- the ones that
     don't depend on which target rule is active, so they render once and
     never get rewritten by applyTargetModes() (unlike _mode_tag_badges'
     r_below_min/eod_flat). Lives in the Tags column (see _render_row).
 
-    Shared by both the filled and unfilled row paths: swerve_blocked and
-    crest_refined can land on either (swerve/crest_refine are decided
-    before the fill-window search even runs), while globex_eth_open and
+    Shared by both the filled and unfilled row paths: swerve_blocked,
+    crest_refined and anti_bias can land on either (swerve/crest_refine are
+    decided before the fill-window search even runs, and the bias is read off
+    the H1 candles before the retest), while globex_eth_open and
     low_liquidity only ever tag a FILLED result (their own apply_* filters
     skip unfilled rows), so those two branches are simply never reached
     when dyn_tags came from an unfilled row's tags alone."""
@@ -2735,6 +2787,16 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
                 f'&plusmn;{SPIKE_CONFL_RADIUS_PTS:g}pt of the refined entry '
                 f'{res["alt_price"]:.2f}: {detail}. Purely informational; use the Only radio to '
                 f'isolate these trades.">SPIKE CONFL</span>')
+    if "anti_bias" in dyn_tags:
+        faded = HB.fades(res.get("h1_bias") or [], level_type == "LHPB")
+        detail = "; ".join(_bias_detail(b) for b in faded)
+        out += (f'<span class="dyn-tag-badge anti-bias-tag-badge" title="Dynamic filter '
+                f'‘anti_bias’: this {"long" if level_type == "LHPB" else "short"} is fading '
+                f'{len(faded)} live {"bearish" if level_type == "LHPB" else "bullish"} H1 '
+                f'bias{"es" if len(faded) != 1 else ""} -- {detail}. '
+                f'See the Bias column for every live bias on this row. '
+                f'Purely informational; not excluded from the headline stats by default.">'
+                f'ANTI-BIAS</span>')
     if "volume-spike" in dyn_tags:
         side_word = "bid" if level_type == "LHPB" else "ask"
         vs = res.get("volume_spike") or {}
@@ -2764,6 +2826,41 @@ def _h1_confl_cell(confl):
         + (" (already retested by fill)" if c["dead_by_fill"] else "")
         for c in confl)
     return str(len(confl)), title
+
+
+_BIAS_KIND_WORDS = {"hammer": "hammer", "star": "shooting star",
+                    "sfp": "swing-failure sweep"}
+
+
+def _bias_detail(b):
+    """One live H1 bias, spelled out for a tooltip."""
+    extreme = "low" if b["side"] == "bull" else "high"
+    ordinal = {1: "1st", 2: "2nd", 3: "3rd"}.get(-b["offset"], f'{-b["offset"]}th')
+    swept = ""
+    if b["kind"] == "sfp" and b["swing_price"] is not None:
+        swept = (f', sweeping the untested swing {extreme} {b["swing_price"]:.2f} '
+                 f'set at {R._to_pt_str(b["swing_time"])}')
+    return (f'{b["label"]}: {_BIAS_KIND_WORDS[b["kind"]]} on the H1 candle at '
+            f'{R._to_pt_str(b["time"])} ({extreme} {b["price"]:.2f}){swept}, '
+            f'{"bullish" if b["side"] == "bull" else "bearish"}; '
+            f'lives {b["max_age"]} closed H1 candle(s), this is its {ordinal}')
+
+
+def _bias_cell(res):
+    """(cell_html, title) for the 'Bias' column from res['h1_bias'] (see
+    _apply_h1_bias) -- the live bullish biases then the live bearish ones,
+    each as its own '<kind>@<offset>' metadata string, nearest H1 candle
+    first. '-' with no tooltip when the row carries none."""
+    biases = res.get("h1_bias") or []
+    if not biases:
+        return "-", ""
+    bull, bear = HB.summarize(biases)
+    out = ""
+    if bull:
+        out += f'<span class="bias-bull">&#9650; {" ".join(bull)}</span>'
+    if bear:
+        out += f'<span class="bias-bear">&#9660; {" ".join(bear)}</span>'
+    return out, "; ".join(_bias_detail(b) for b in biases)
 
 
 def _render_row(idx, res, chart_stacks, fps):
@@ -2817,6 +2914,9 @@ def _render_row(idx, res, chart_stacks, fps):
             own_cell = f'<span class="cluster-tag"{entry_title}>{res["own_price"]:.2f}\u2020</span>'
         else:
             own_cell = f'{res["own_price"]:.2f}'
+        # Same on both row paths: the bias is read off the H1 candles before
+        # the retest, so an unfilled row has one just as a filled one does.
+        bias_cell, bias_title = _bias_cell(res)
 
         if not res["filled"]:
             # No trade, for whatever reason -- still a row the user wants to
@@ -2839,6 +2939,12 @@ def _render_row(idx, res, chart_stacks, fps):
             # swerve_blocked/crest_refined can land on an unfilled row,
             # globex_eth_open/low_liquidity never do).
             base_tags = list(res.get("dyn_tags") or [])
+            # Shipped as data-dyn-tags on the unfilled row too, so Exclude /
+            # Only act on these rows exactly as they do on a filled one. They
+            # are never counted either way -- recomputeDynStats() drops every
+            # .unfilled-row from the stats before it reads any tag -- this is
+            # only about whether a tagged no-trade row stays visible.
+            base_tags_attr = " ".join(base_tags)
             tags_cell = (f'<span class="row-badges">'
                         f'{_row_tag_badges(res, base_tags, level_type, entry_touch_str)}</span>')
             alt_cell = (f'{res["alt_price"]:.2f}'
@@ -2862,6 +2968,7 @@ def _render_row(idx, res, chart_stacks, fps):
 
             row_html = f"""
 <tr class="lvl-row unfilled-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
+    data-dyn-tags="{base_tags_attr}" data-base-tags="{base_tags_attr}"
     data-daygap="{daygap_attr}" data-h1gap="{h1gap_attr}" data-mingap="{mingap_attr}"
     data-vspikeoffs="{vspikeoffs_attr}"
     data-er-by-k="{er_by_k_attr}" data-p1-ratio-by-window="{p1_ratio_by_window_attr}"
@@ -2878,6 +2985,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
   <td class="h1-confl-cell">-</td>
+  <td class="bias-cell" title="{bias_title}">{bias_cell}</td>
   <td>{alt_cell}</td>
   <td class="left">{entry_touch_str}</td>
   <td>{stop_cell}</td>
@@ -3010,6 +3118,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
   <td class="h1-confl-cell" title="{h1_confl_title}">{h1_confl_cell}</td>
+  <td class="bias-cell" title="{bias_title}">{bias_cell}</td>
   <td>{res['alt_price']:.2f}<span class="gap-slot">{act['gap']}</span><span class="{src_cls}">{res['alt_source']}{improved_flag}</span>{chase_flag}</td>
   <td class="left">{entry_touch_str}</td>
   <td title="{stop_title}">{res['stop_price']:.2f}<span class="src-tag m5">{stop_source}</span></td>
@@ -3359,6 +3468,15 @@ other row -- overrides every Exclude box. Click again to turn off.">
 other row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="spike_confl"> only</label>
     </div>
+    <div class="chip-stack">
+      <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="anti_bias">
+        Exclude anti-bias trades</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged anti_bias (the trade's own
+direction fades at least one H1 bias that was still live at its retest -- a short under a live
+bullish bias, a long under a live bearish one; see the Bias column), hiding every
+other row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="anti_bias"> only</label>
+    </div>
   </div>
   <div class="filter-row">
     <span class="filter-label" title="How many seconds before(-)/after(+) the fill the CLOSEST
@@ -3443,7 +3561,7 @@ the box is checked.">Trade management</span>
     head = (f"<th class=\"left\">Trade Id</th>"
             f"<th class=\"left\" title=\"Every dynamic-filter tag this row carries, in one "
             f"place: globex_eth_open, low_liquidity, swerved/swerve_blocked, crest_refined, "
-            f"volume-spike "
+            f"spike_confl, anti_bias, volume-spike "
             f"(row-level, constant across target rules) plus r_below_min/eod_flat (the "
             f"ACTIVE target rule's own -- these swap along with Target/R/Outcome when you "
             f"toggle a Target rules checkbox above). Hover a badge for its own detail; the "
@@ -3494,6 +3612,25 @@ the box is checked.">Trade management</span>
             f"strategy is M5-only (no H1 input); purely a review aid. Shows the COUNT of "
             f"qualifying H1 P0s (0 if none); hover for each one's own price/kind/formation "
             f"time.\">H1 P0 confl (&plusmn;{H1_CONFL_RADIUS_PTS:g}pt)</th>"
+            f"<th class=\"left\" title=\"Every H1 directional bias still LIVE at this trade's "
+            f"own P2 (retest), as its own '&lt;pattern&gt;@&lt;H1 candles back&gt;' tag -- "
+            f"bullish ones (&#9650;) first, then bearish (&#9660;), nearest candle first. "
+            f"A bias is plain candle context, not a level: a hammer (bullish) or shooting "
+            f"star (bearish) by patterns-pure, and an sfp (patterns-pure's find_sfp) -- a "
+            f"candle that sweeps an H1 swing low and closes back above it (bullish), or "
+            f"sweeps a swing high and closes back below it (bearish). The swing swept must "
+            f"be the most recent {HB.SWING_K}-bar fractal pivot that is BOTH confirmed and "
+            f"still UNTESTED -- no bar since it formed has reached it. A swing traded "
+            f"through once is spent, so one swing yields at most one sfp. "
+            f"Offset 0 is the H1 candle the retest itself sits in; it is still forming, so "
+            f"only already-CLOSED candles can carry a bias and '@-1' is the last closed one. "
+            f"All four die the same ways: the very next candle thrusts it through, or a "
+            f"later candle trades one tick past its own low (bullish) / high (bearish), or "
+            f"it goes stale -- after {HB.HAMMER_BIAS_MAX_AGE} closed candles for a "
+            f"hammer/star, {HB.SFP_BIAS_MAX_AGE} for an sfp, the only difference between "
+            f"them. "
+            f"A trade fading one of these is tagged anti_bias. This strategy is M5-only "
+            f"(no H1 input); purely a review aid. Hover for each bias's own detail.\">Bias</th>"
             f"<th>Entry</th>"
             f"<th class=\"left\">Entry (touch) time</th>"
             f"<th title=\"If the entry level's own P0 was a spike candle (hammer for LHPB / "
@@ -3579,6 +3716,12 @@ tr.lvl-row.type-lhpb td.type-cell, tr.lvl-row.type-llpb td.type-cell {
 .cluster-tag { border-bottom:1px dotted var(--text-dim); cursor:help; }
 td.merged-h1-levels { max-width:220px; white-space:normal; }
 td.h1-confl-cell { max-width:220px; white-space:normal; cursor:help; }
+td.bias-cell { max-width:150px; white-space:normal; cursor:help; }
+/* Bullish / bearish groups inside the Bias cell (see _bias_cell). Stacked,
+   so a row carrying both reads as two lines rather than one run-on string. */
+.bias-bull, .bias-bear { display:block; font-size:0.86em; white-space:nowrap; }
+.bias-bull { color:#6ee7b7; }
+.bias-bear { color:#fda4af; }
 td.tags-cell { max-width:200px; white-space:normal; }
 /* Dynamic filters (see _apply_globex_open_filter's docstring): a row tagged
    res['dyn_tags'] gets data-dyn-tags plus this badge; the matching
@@ -3618,6 +3761,7 @@ tr.lvl-row.no-target-row td { color:var(--text-faint); font-style:italic; }
 .swerve-tag-badge { background:#1e3a2f; color:#86efac; }
 .vol-spike-tag-badge { background:#3f2d0e; color:#fdba74; }
 .spike-confl-tag-badge { background:#0e3a2f; color:#6ee7b7; }
+.anti-bias-tag-badge { background:#3a1030; color:#f0abfc; }
 /* Notes box: this report is reviewed with long, written-out notes per trade,
    so it ships far larger than the shared 160x34 default in
    render_stop_target_report.CSS (left alone, for every other report) and
@@ -4019,7 +4163,7 @@ recomputeDynStats();
 // text, so R / PnL / MAE / MFE / Max DD sort by whatever the ticked target
 // rules and management toggle currently show. Empty / '-' cells always sink
 // to the bottom. A trade's chart row travels with its trade row.
-const SORT_COLS = [0, 4, 5, 6, 7, 8, 11, 16, 20, 23, 24, 25];  // Trade Id, P1->P2 (d/H1/min), Pre-P1 ER, P1 range ratio, H1 P0 confl, R, PnL, MAE, MFE, Max DD
+const SORT_COLS = [0, 4, 5, 6, 7, 8, 11, 17, 21, 24, 25, 26];  // Trade Id, P1->P2 (d/H1/min), Pre-P1 ER, P1 range ratio, H1 P0 confl, R, PnL, MAE, MFE, Max DD
 const SUPERS = ['¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹', '¹⁰'];
 let sortSpec = [];
 (function () {

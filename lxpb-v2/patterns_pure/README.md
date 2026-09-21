@@ -12,7 +12,8 @@ self-contained and does not depend on that external folder being present.
 | `find_shooting_star.py` | spike detection for **LHPB** formation bars (feature **c**); `../../lxpb.py`'s `is_spike` for **LLPB** |
 | `find_hammer.py` | spike detection for **LLPB** formation bars (feature **c**); `../../lxpb.py`'s `is_spike` for **LHPB** |
 | `find_candle_utils` → `candle_utils.py` | `has_large_upper_wick` / `has_large_lower_wick` (feature **d**) |
-| `find_spike_thrust.py` | `find_spike_thrust()` — the **spike-thrust** candle definition (see "Spike candles" in `../CLAUDE.md`); not yet used by any report |
+| `find_spike_thrust.py` | `find_spike_thrust()` — the **spike-thrust** candle definition (see "Spike candles" in `../CLAUDE.md`); `../h1_bias.py`'s bias-thrust builds on it |
+| `find_sfp.py` | `find_sfp()` — the **SFP** (swing failure) definition: a candle that sweeps a confirmed, still-**untested** fractal swing and closes back on the near side of it. Used by `../h1_bias.py` |
 | `find_three_drive_failure.py` | `find_three_drive_failure()` — the **3DF** (Three-Drive Failure) structure: three consecutive swing lows/highs, each further out than the last and each one taken straight back; not yet used by any report |
 
 `find_hammer.py` / `find_shooting_star.py` are the **only** hammer /
@@ -49,7 +50,7 @@ detector's flag alongside as `is_spike_lxpb`, so the two are never confused.
 ## Refreshing
 
 ```powershell
-Copy-Item D:\daily-analysis\patterns-pure\{find_ATR,find_swings,find_hammer,find_shooting_star,find_spike_thrust,find_three_drive_failure,candle_utils}.py `
+Copy-Item D:\daily-analysis\patterns-pure\{find_ATR,find_swings,find_hammer,find_shooting_star,find_spike_thrust,find_sfp,find_three_drive_failure,candle_utils}.py `
           D:\lxpb\lxpb-v2\patterns_pure\ -Force
 ```
 
