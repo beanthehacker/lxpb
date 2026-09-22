@@ -1,5 +1,23 @@
 @AGENTS.md
 
+# Sessions: always work in a separate worktree
+
+**Every new session starts by entering its own git worktree**, before any
+file is edited, any script is run that writes output, or any branch is
+switched. Use the `EnterWorktree` tool (or start the session with
+`claude --worktree`). Do this even for a small task; if the session already
+is in a worktree, stay in it.
+
+- Never edit, commit or regen reports directly in the main checkout
+  (`E:\lxpb\lxpb-v2`), so parallel sessions cannot trample each other's
+  files, caches or report output.
+- Read-only questions that touch no files need no worktree.
+- Merge back to `main` only when the user asks.
+- A worktree has no `acheron` / `scidReader` / `.scid` junctions, and
+  gitignored caches and exports are absent too. Link or copy what the task
+  needs from the main checkout (see the lxpb-v2 env setup memory) rather
+  than regenerating or re-exporting.
+
 # Data convention: TradingView continuous series only
 
 **H1 and M5 bars come from TradingView's own continuous ES1! exports and from
