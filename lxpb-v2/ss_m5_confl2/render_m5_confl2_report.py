@@ -2509,7 +2509,7 @@ def _apply_h1_bias(results):
     return results
 
 
-N_COLS = 32  # keep in sync with `head` below and every colspan in this section
+N_COLS = 33  # keep in sync with `head` below and every colspan in this section
 
 # MES position sizing / commissions. R stays a fixed $1,000 and the stop is not
 # widened for costs: contracts = floor(R_DOLLARS / (stop pts x MES_POINT_VALUE)),
@@ -3102,6 +3102,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
   <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb"></td>
   <td class="replayed-cell" onclick="event.stopPropagation();"><input type="checkbox" class="replayed-cb"></td>
+  <td class="done-cell" onclick="event.stopPropagation();"><input type="checkbox" class="done-cb"></td>
   <td class="left" onclick="event.stopPropagation();"><textarea class="trade-note" placeholder="notes..."></textarea></td>
   <td class="expand-cell"><button class="expand-btn" data-idx="{idx}"
       onclick="event.stopPropagation();toggleChart({idx})">▶</button></td>
@@ -3240,6 +3241,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
   <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb"></td>
   <td class="replayed-cell" onclick="event.stopPropagation();"><input type="checkbox" class="replayed-cb"></td>
+  <td class="done-cell" onclick="event.stopPropagation();"><input type="checkbox" class="done-cb"></td>
   <td class="left" onclick="event.stopPropagation();"><textarea class="trade-note" placeholder="notes..."></textarea></td>
   <td class="expand-cell"><button class="expand-btn" data-idx="{idx}"
       onclick="event.stopPropagation();toggleChart({idx})">\u25b6</button></td>
@@ -3771,6 +3773,8 @@ the box is checked.">Trade management</span>
             f"Reported only; R and PnL are gross of it\">Comm.</th>"
             f"<th>MAE (win)</th><th>MFE (loss)</th><th>Max DD</th>"
             f"<th>Reviewed</th><th>Valid</th><th>Replayed</th>"
+            f"<th title=\"Done with this trade's feedback -- purely a review aid, "
+            f"dims the row, no effect on stats or filters\">Done</th>"
             f"<th class=\"left\">Notes</th><th class=\"expand-th\">\u25b6</th>")
 
     storage_key = f"lxpb_m5_confl{args.ss_confl_min}_review_v1{storage_suffix}"
@@ -3935,6 +3939,11 @@ tr.lvl-row.no-target-row td { color:var(--text-faint); font-style:italic; }
 textarea.trade-note { width:360px; height:150px; resize:both; }
 th.sortable-th { cursor:pointer; user-select:none; }
 th.sortable-th:hover { text-decoration:underline; }
+/* Done checkbox: purely "I'm finished with this trade's feedback" -- dims
+   the whole row so reviewed trades visually recede, independent of the
+   Reviewed/Valid/Replayed workflow (own doneStore, see JS below). */
+tr.lvl-row.is-done { opacity:0.35; }
+tr.lvl-row.is-done:hover { opacity:0.6; }
 </style>
 """
 JS = SR.JS + """
@@ -4412,6 +4421,31 @@ let sortSpec = [];
     });
   });
 })();
+
+// ---------------------------------------------------------------------
+// Done checkbox -- separate from the Reviewed/Valid/Replayed review
+// workflow above: it only means "I'm finished looking at this trade's
+// feedback" and dims the row, so it gets its own store (same report key,
+// suffixed) rather than folding into reviewRowState, which would force
+// every OTHER report sharing that shared widget to carry this field too.
+// No filter, no summary count -- just persistence and the grey-out.
+// ---------------------------------------------------------------------
+const doneStore = new RowStore(REVIEW_STORAGE_KEY + '_done');
+async function initDone() {
+  await doneStore.init();
+  document.querySelectorAll('#lvl-table tbody tr.lvl-row').forEach(tr => {
+    const cb = tr.querySelector('.done-cb');
+    if (!cb) return;
+    const state = doneStore.get(tr.dataset.key);
+    cb.checked = !!state.done;
+    tr.classList.toggle('is-done', !!state.done);
+    cb.addEventListener('change', () => {
+      doneStore.set(tr.dataset.key, { done: cb.checked });
+      tr.classList.toggle('is-done', cb.checked);
+    });
+  });
+}
+initDone();
 </script>
 """
 
