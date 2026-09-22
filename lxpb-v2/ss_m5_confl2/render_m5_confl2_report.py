@@ -160,6 +160,19 @@ the target are ALL M5 LXPB structure:
          tagged `fading_bias`. Like `volume-spike` this is purely a Dynamic
          filter chip, NOT excluded from the headline stats by default.
 
+       * NEWS PULL (`--news-pull-window`, on by default). The level's first
+         tick-level touch (the retest itself, from
+         `render_ss_confl_finetune_report.find_alt_fill`) is the ONE retest
+         event this scan can find -- there is no earlier resting order it
+         could belong to. If that touch lands in the recurring daily
+         [05:29:55, 05:30:40) Pacific blackout -- around the 05:30 PT/
+         08:30 ET instant most scheduled US econ releases (CPI/NFP/PPI/
+         retail sales/...) print, when a real resting order would be pulled
+         -- the retest happened while orders were pulled, so this is no
+         trade at all (tag `news_pull_blocked`, a hard rule like end-of-day,
+         not a Dynamic filter chip). It is never re-armed for a later touch:
+         there is nothing to re-arm.
+
        * END OF DAY (trade_management.py rule 3). No position is carried
          overnight: an open trade is flattened at market before 12:45 PT
          (outcome `eod_flat`), and a fill that would have landed at or after
@@ -1297,6 +1310,17 @@ def process_cluster(cluster, args):
             pegged=args.pegged_entry, peg_step=args.peg_step, peg_cap=args.peg_cap)
     if touch_time_alt is None:
         result["fail_reason"] = "unfilled_within_window"
+        return result
+    # News-pull blackout: touch_time_alt is the level's FIRST tick-level
+    # touch -- the retest itself, not just an order's fill -- so a touch
+    # landing in the recurring daily 05:29:55-05:30:40 PT window (around the
+    # 05:30 PT/08:30 ET scheduled econ release) means the retest happened
+    # while orders were pulled. There is no later touch to fall back on: the
+    # one retest this scan finds already happened in the dead window, so
+    # this is no trade at all (see SF.find_alt_fill's own docstring).
+    if args.news_pull_window and SF._in_news_pull_window(touch_time_alt):
+        result["fail_reason"] = "news_pull_blocked"
+        result["touch_time_alt"] = touch_time_alt
         return result
     # End-of-day flat, entry half (trade_management.py rule 3): a resting
     # order is CANCELLED at the cutoff, so a fill that would have landed
@@ -2559,6 +2583,7 @@ def _fail_reason_label(reason):
     return {
         "unfilled_within_window": "UNFILLED (entry never reached)",
         "eod_entry_blocked": "NO TRADE (entry blocked -- end of day)",
+        "news_pull_blocked": "NO TRADE (retest during news-pull blackout)",
         "no_target": "NO TRADE (no target under any rule)",
         "no_tick_data_after_fill": "NO DATA after fill",
         "no_m5_stop": "NO TRADE (no qualifying M5 breakout-candle stop)",
@@ -4555,6 +4580,15 @@ if __name__ == "__main__":
     parser.add_argument("--peg-target-cap", type=float, default=PEG_CAP_DEFAULT,
                         help=f"Max total chase distance in points from the target for "
                              f"--peg-target (default {PEG_CAP_DEFAULT}, same as --peg-cap).")
+    parser.add_argument("--news-pull-window", action=argparse.BooleanOptionalAction, default=True,
+                        help="A retest whose first tick-level touch (SF.find_alt_fill) lands in "
+                             f"the recurring daily [{SF.NEWS_PULL_START_PT}, "
+                             f"{SF.NEWS_PULL_END_PT}) Pacific blackout (05:29:55-05:30:40 PT, "
+                             "around the 05:30 PT/08:30 ET scheduled econ release) is no trade at "
+                             "all -- a real resting order would have been pulled for that window, "
+                             "and there is no later touch to fall back on. ON by default; tag "
+                             "news_pull_blocked, a hard rule like --eod-flat, not a Dynamic "
+                             "filter.")
     parser.add_argument("--start", default=DEFAULT_START)
     parser.add_argument("--end", default=DEFAULT_END)
     parser.add_argument("--max-rows", type=int, default=None,

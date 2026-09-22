@@ -166,6 +166,26 @@ PEG_CAP_DEFAULT = 1.0                   # max total chase distance from the fine
                                         # limit for the rest of the fill window
 HORIZON_HOURS = A.HORIZON_BARS  # 72h forward window, same as the rest of the repo
 
+# News-release order pull: resting orders are cancelled for a fixed window
+# around 05:30 PT (08:30 ET), the release instant for most scheduled US
+# econ data (CPI/NFP/PPI/retail sales/...), and re-armed at the SAME price
+# once the window closes -- see find_alt_fill's own docstring.
+NEWS_PULL_START_PT = pd.Timedelta(hours=5, minutes=29, seconds=55)
+NEWS_PULL_END_PT = pd.Timedelta(hours=5, minutes=30, seconds=40)
+_PT = "America/Los_Angeles"
+
+
+def _in_news_pull_window(ts):
+    """True if `ts` (tz-aware) falls in the recurring daily
+    [NEWS_PULL_START_PT, NEWS_PULL_END_PT) Pacific blackout: the level's
+    first tick-level touch (the retest itself) landing here means the
+    retest happened while orders were pulled, so it is no trade at all --
+    see find_alt_fill's own docstring for why this is never re-armed."""
+    pt = pd.Timestamp(ts).tz_convert(_PT)
+    tod = pd.Timedelta(hours=pt.hour, minutes=pt.minute, seconds=pt.second,
+                       microseconds=pt.microsecond, nanoseconds=pt.nanosecond)
+    return NEWS_PULL_START_PT <= tod < NEWS_PULL_END_PT
+
 pd.set_option("display.width", 160)
 pd.set_option("display.max_columns", 20)
 
@@ -584,6 +604,13 @@ def find_alt_fill(window_start, alt_price, is_long, level_type, max_hours,
     Passive limits require a correct-side trade at/through their price.
     Pegged replacements may instead execute against the opposite quote;
     see _scan_alt_fill. No fill is (None, None), never a fabricated touch.
+
+    This is the level's FIRST tick-level touch in the window -- i.e. the
+    retest itself, not merely an order's fill -- so a caller that wants to
+    treat a touch landing in the news-pull blackout (_in_news_pull_window)
+    as no-trade must do so on the returned touch time; there is no
+    meaningful "keep waiting for a later touch" here, since the first touch
+    IS the one and only retest event this scan can find.
     """
     if is_long != (level_type == "LHPB"):
         raise ValueError("Entry direction does not match the LXPB level type")
