@@ -139,7 +139,8 @@ the target are ALL M5 LXPB structure:
          a wider +/-30s one without a regen.
 
        * FADING-BIAS (h1_bias.py, informational). The Bias column lists every
-         H1 directional bias still LIVE at this trade's own P2 (retest) --
+         H1 directional bias still LIVE at this trade's ENTRY (its fill; the
+         P2 retest for a row that never filled) --
          plain candle context, no level involved: a hammer (bullish) or a
          shooting star (bearish) by patterns-pure, and an "sfp"
          (patterns-pure's find_sfp), a candle that sweeps an H1 swing low and
@@ -147,7 +148,7 @@ the target are ALL M5 LXPB structure:
          back below it (bearish) -- where the swing swept has to be both
          confirmed and still untested, so one swing yields at most one sfp.
          Each one shows as `<pattern>@<H1 candles back>`
-         (`hammer@-1`), counted from the H1 candle the retest sits in --
+         (`hammer@-1`), counted from the H1 candle the entry sits in --
          which is still forming, so only already-closed candles can carry a
          bias. Every bias is short-lived and h1_bias.py owns exactly how
          long: all four die when the very next candle thrusts through them,
@@ -2463,17 +2464,20 @@ def _apply_h1_bias(results):
     as _apply_globex_open_filter (see that function's docstring).
 
     For EVERY result -- filled or not, since the bias is read off the H1
-    candles before the retest and so exists whether or not the entry ever
-    filled -- stores res['h1_bias']: every H1 bias still live at this
-    trade's own P2 (retest) instant, nearest candle first (h1_bias.py, which
+    candles before the entry and so exists whether or not it ever filled --
+    stores res['h1_bias']: every H1 bias still live at this trade's own
+    ENTRY instant (the fill; the P2 retest for a row that never filled),
+    nearest candle first (h1_bias.py, which
     owns the whole definition: which candles make a bias, how long each one
     lasts and what kills it early). A trade whose own direction FADES at
     least one of them (a short under a live bullish bias, a long under a
     live bearish one) also gets the row tag 'fading_bias'.
 
-    The bias is anchored on the RETEST instant, not the fill: the H1 candle
-    the retest sits in is offset 0 and is still forming, so only candles that
-    had already CLOSED by then can be a bias. Purely a review aid -- this
+    The bias is anchored on the FILL for a filled trade (the retest only for
+    a row that never filled): the H1 candle the fill sits in is offset 0 and
+    is still forming, so only candles that had already CLOSED by then can be a
+    bias. A fill hours after its retest therefore ages the bias by the
+    candles that closed in between. Purely a review aid -- this
     strategy is M5-only (see the module docstring) and nothing here changes
     which trades it takes; 'fading_bias' ships UNCHECKED, so the default view
     still includes these trades.
@@ -2485,10 +2489,12 @@ def _apply_h1_bias(results):
     res['bias_served'] carries the detail. Also UNCHECKED by default."""
     h1_bars = R._display_h1()
     for res in results:
-        biases = HB.biases_at(pd.Timestamp(res["row"]["retest_time"]), h1_bars)
         if res["filled"]:
-            biases = HB.expire_swept(biases, res["row"]["retest_time"],
-                                     res["touch_time_alt"], float(res["fill_price"]), h1_bars)
+            at = pd.Timestamp(res["touch_time_alt"])
+            biases = HB.biases_at(at, h1_bars)
+            biases = HB.expire_swept(biases, at, at, float(res["fill_price"]), h1_bars)
+        else:
+            biases = HB.biases_at(pd.Timestamp(res["row"]["retest_time"]), h1_bars)
         res["h1_bias"] = biases
         if HB.fades(biases, res["is_long"]):
             res.setdefault("dyn_tags", []).append("fading_bias")
@@ -3698,7 +3704,7 @@ the box is checked.">Trade management</span>
             f"qualifying H1 P0s (0 if none); hover for each one's own price/kind/formation "
             f"time.\">H1 P0 confl (&plusmn;{H1_CONFL_RADIUS_PTS:g}pt)</th>"
             f"<th class=\"left\" title=\"Every H1 directional bias still LIVE at this trade's "
-            f"own P2 (retest), as its own '&lt;pattern&gt;@&lt;H1 candles back&gt;' tag -- "
+            f"own entry (its fill; the P2 retest for a row that never filled), as its own '&lt;pattern&gt;@&lt;H1 candles back&gt;' tag -- "
             f"bullish ones (&#9650;) first, then bearish (&#9660;), nearest candle first. "
             f"A bias is plain candle context, not a level: a hammer (bullish) or shooting "
             f"star (bearish) by patterns-pure, and an sfp (patterns-pure's find_sfp) -- a "
