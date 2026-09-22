@@ -355,13 +355,16 @@ def fades(biases, is_long):
 
 
 # BIAS SERVED -- a hammer / shooting-star bias whose promised move is already
-# largely made by the time a trade enters against it. Two tests, both needed:
+# largely made by the time a trade enters against it. Two tests, both needed,
+# and TIED TOGETHER (`served_advance_needed`):
 #   * the thrust candle (the H1 candle right after the spike) is the one in
 #     play, and its range SO FAR is at least SERVED_THRUST_RANGE of the
-#     spike candle's range;
-#   * the entry price sits at least SERVED_ADVANCE of the spike's range past
-#     the spike's HEAD in the bias direction. The head is the end of the
-#     candle its small body sits at: a hammer's high, a shooting star's low.
+#     spike candle's range -- a hard floor, never traded away;
+#   * the entry price sits far enough past the spike's HEAD in the bias
+#     direction, measured as a share of the spike's range: SERVED_ADVANCE
+#     normally, less when the thrust is unusually big (below). The head is
+#     the end of the candle its small body sits at: a hammer's high, a
+#     shooting star's low.
 # Two cases, for hammer / star biases only (an sfp is never served):
 #   * spike at offset -1: the thrust candle is the forming one, so its range
 #     is measured SO FAR, from M5 bars closed at the fill;
@@ -370,14 +373,32 @@ def fades(biases, is_long):
 # Nothing here changes `biases_at`.
 SERVED_THRUST_RANGE = 0.65
 SERVED_ADVANCE = 0.50
+# Thrust beyond SERVED_THRUST_RANGE earns relief on the advance test at this
+# rate -- half a point of advance per point of extra thrust -- down to
+# SERVED_ADVANCE_FLOOR and no further (full relief from 0.81x thrust on). A
+# big thrust candle means the spike's move was made forcefully, so an entry a
+# whisker short of half the spike's range past the head has still watched
+# that move happen. The trade is one-way on purpose: extra advance NEVER buys
+# back a weak thrust, since with no thrust there is no served move at all.
+SERVED_THRUST_CREDIT = 0.5
+SERVED_ADVANCE_FLOOR = 0.42
+
+
+def served_advance_needed(thrust):
+    """The advance (share of the spike's range past its head) that a thrust
+    of this size demands before the bias counts as served: SERVED_ADVANCE at
+    the thrust floor, easing to SERVED_ADVANCE_FLOOR as the thrust grows."""
+    relief = SERVED_THRUST_CREDIT * max(0.0, thrust - SERVED_THRUST_RANGE)
+    return max(SERVED_ADVANCE_FLOOR, SERVED_ADVANCE - relief)
 
 
 def served(biases, is_long, fill_time, fill_price, bars=None, m5=None):
     """The FADED hammer / star biases (see `fades`) that are already served
     at this entry, each as a copy of the bias dict plus 'spike_range',
     'head', 'advance' (share of the spike's range the entry is past the
-    head) and 'thrust_range' (share of the spike's range the forming thrust
-    candle has covered by the fill). Empty means not served.
+    head), 'thrust_range' (share of the spike's range the forming thrust
+    candle has covered by the fill) and 'advance_needed' (the advance that
+    thrust demanded -- `served_advance_needed`). Empty means not served.
 
     The thrust candle's range so far uses only M5 bars already CLOSED at the
     fill plus the fill price itself, so nothing after the fill is peeked at."""
@@ -409,7 +430,9 @@ def served(biases, is_long, fill_time, fill_price, bars=None, m5=None):
         else:
             hi, lo = float(bars["high"].iloc[pos + 1]), float(bars["low"].iloc[pos + 1])
         thrust = (hi - lo) / rng
-        if advance >= SERVED_ADVANCE and thrust >= SERVED_THRUST_RANGE:
+        needed = served_advance_needed(thrust)
+        if thrust >= SERVED_THRUST_RANGE and advance >= needed:
             out.append({**b, "spike_range": rng, "head": head,
-                        "advance": advance, "thrust_range": thrust})
+                        "advance": advance, "thrust_range": thrust,
+                        "advance_needed": needed})
     return out

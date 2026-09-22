@@ -2483,10 +2483,11 @@ def _apply_h1_bias(results):
     still includes these trades.
 
     A FILLED fading_bias trade whose faded hammer / shooting-star bias is
-    already SERVED at the fill (h1_bias.served: the forming thrust candle has
-    covered >= 65% of the spike's range and the entry sits >= 50% of that
-    range past the spike's head) additionally gets 'bias_served', and
-    res['bias_served'] carries the detail. Also UNCHECKED by default."""
+    already SERVED at the fill additionally gets 'bias_served', and
+    res['bias_served'] carries the detail. h1_bias.served owns that test --
+    the forming thrust candle's share of the spike's range and how far past
+    the spike's head the entry sits, the two tied together so a bigger thrust
+    accepts a slightly nearer entry. Also UNCHECKED by default."""
     h1_bars = R._display_h1()
     for res in results:
         if res["filled"]:
@@ -2869,13 +2870,17 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
     if "bias_served" in dyn_tags:
         detail = "; ".join(
             f'{b["label"]}: spike range {b["spike_range"]:.2f}pt, head {b["head"]:.2f}, entry '
-            f'{b["advance"]*100:.0f}% of that range past the head, thrust candle '
+            f'{b["advance"]*100:.0f}% of that range past the head '
+            f'(needed {b.get("advance_needed", HB.SERVED_ADVANCE)*100:.0f}%), thrust candle '
             f'{b["thrust_range"]*100:.0f}% of it so far' for b in res.get("bias_served") or [])
         out += (f'<span class="dyn-tag-badge bias-served-tag-badge" title="Dynamic filter '
                 f'‘bias_served’: this fading-bias trade enters after the faded bias has largely '
                 f'played out -- the thrust candle has covered at least '
-                f'{HB.SERVED_THRUST_RANGE:.0%} of the spike candle&#39;s range and the entry is at '
-                f'least {HB.SERVED_ADVANCE:.0%} of it past the spike&#39;s head ({detail}). '
+                f'{HB.SERVED_THRUST_RANGE:.0%} of the spike candle&#39;s range and the entry is '
+                f'far enough past the spike&#39;s head: {HB.SERVED_ADVANCE:.0%} of that range '
+                f'normally, eased by half a point per point of thrust above '
+                f'{HB.SERVED_THRUST_RANGE:.0%} and never below '
+                f'{HB.SERVED_ADVANCE_FLOOR:.0%} ({detail}). '
                 f'Purely informational; not excluded from the headline stats by default.">'
                 f'BIAS SERVED</span>')
     if "volume-spike" in dyn_tags:
@@ -3556,7 +3561,8 @@ other row -- overrides every Exclude box. Click again to turn off.">
     <div class="chip-stack">
       <label class="chip" title="One filter for the H1 bias tags. fading-bias: the trade fades a live H1
 bias. bias-served: an fading-bias trade whose faded hammer / shooting-star bias is already served at
-the entry (thrust candle >= 65% of the spike's range, entry >= 50% of it past the spike's head), so
+the entry (thrust candle >= 65% of the spike's range, entry >= 50% of it past the spike's head --
+eased by half a point per point of thrust over 65%, never below 42%), so
 every bias-served trade is also fading-bias. See the Bias column.">
         Bias
         <select id="f-bias" class="f-bias">
