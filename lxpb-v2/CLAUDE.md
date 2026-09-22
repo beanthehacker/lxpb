@@ -208,5 +208,5 @@ that is both confirmed AND still UNTESTED, so a swing already traded through
 is spent and yields no further SFP. Like every other pattern in the repo it
 lives in `patterns_pure/` and is never restated at a call site.
 Every bias is short-lived and `h1_bias.py` owns the expiries.
-Its only consumer is `ss_m5_confl2`'s Bias column and its `anti_bias` dynamic
+Its only consumer is `ss_m5_confl2`'s Bias column and its `fading_bias` dynamic
 filter -- a review aid, never a strategy input.

@@ -138,7 +138,7 @@ the target are ALL M5 LXPB structure:
          a live numeric filter too, to compare a tight +/-10s read against
          a wider +/-30s one without a regen.
 
-       * ANTI-BIAS (h1_bias.py, informational). The Bias column lists every
+       * FADING-BIAS (h1_bias.py, informational). The Bias column lists every
          H1 directional bias still LIVE at this trade's own P2 (retest) --
          plain candle context, no level involved: a hammer (bullish) or a
          shooting star (bearish) by patterns-pure, and an "sfp"
@@ -156,7 +156,7 @@ the target are ALL M5 LXPB structure:
          for an sfp, the only thing that differs between them).
          A trade whose own direction FADES at least one live bias -- a short
          under a live bullish bias, a long under a live bearish one -- is
-         tagged `anti_bias`. Like `volume-spike` this is purely a Dynamic
+         tagged `fading_bias`. Like `volume-spike` this is purely a Dynamic
          filter chip, NOT excluded from the headline stats by default.
 
        * END OF DAY (trade_management.py rule 3). No position is carried
@@ -2421,20 +2421,35 @@ def _apply_h1_bias(results):
     owns the whole definition: which candles make a bias, how long each one
     lasts and what kills it early). A trade whose own direction FADES at
     least one of them (a short under a live bullish bias, a long under a
-    live bearish one) also gets the row tag 'anti_bias'.
+    live bearish one) also gets the row tag 'fading_bias'.
 
     The bias is anchored on the RETEST instant, not the fill: the H1 candle
     the retest sits in is offset 0 and is still forming, so only candles that
     had already CLOSED by then can be a bias. Purely a review aid -- this
     strategy is M5-only (see the module docstring) and nothing here changes
-    which trades it takes; 'anti_bias' ships UNCHECKED, so the default view
-    still includes these trades."""
+    which trades it takes; 'fading_bias' ships UNCHECKED, so the default view
+    still includes these trades.
+
+    A FILLED fading_bias trade whose faded hammer / shooting-star bias is
+    already SERVED at the fill (h1_bias.served: the forming thrust candle has
+    covered >= 65% of the spike's range and the entry sits >= 50% of that
+    range past the spike's head) additionally gets 'bias_served', and
+    res['bias_served'] carries the detail. Also UNCHECKED by default."""
     h1_bars = R._display_h1()
     for res in results:
         biases = HB.biases_at(pd.Timestamp(res["row"]["retest_time"]), h1_bars)
+        if res["filled"]:
+            biases = HB.expire_swept(biases, res["row"]["retest_time"],
+                                     res["touch_time_alt"], float(res["fill_price"]), h1_bars)
         res["h1_bias"] = biases
         if HB.fades(biases, res["is_long"]):
-            res.setdefault("dyn_tags", []).append("anti_bias")
+            res.setdefault("dyn_tags", []).append("fading_bias")
+            if res["filled"]:
+                sv = HB.served(biases, res["is_long"], res["touch_time_alt"],
+                               float(res["fill_price"]), h1_bars)
+                res["bias_served"] = sv
+                if sv:
+                    res["dyn_tags"].append("bias_served")
     return results
 
 
@@ -2725,13 +2740,13 @@ def _attr_json(obj):
 def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
     """Badge HTML for the ROW-level dynamic-filter tags (globex_eth_open,
     low_liquidity, swerved, swerve_blocked, crest_refined, spike_confl,
-    anti_bias, volume-spike) -- the ones that
+    fading_bias, volume-spike) -- the ones that
     don't depend on which target rule is active, so they render once and
     never get rewritten by applyTargetModes() (unlike _mode_tag_badges'
     r_below_min/eod_flat). Lives in the Tags column (see _render_row).
 
     Shared by both the filled and unfilled row paths: swerve_blocked,
-    crest_refined and anti_bias can land on either (swerve/crest_refine are
+    crest_refined and fading_bias can land on either (swerve/crest_refine are
     decided before the fill-window search even runs, and the bias is read off
     the H1 candles before the retest), while globex_eth_open and
     low_liquidity only ever tag a FILLED result (their own apply_* filters
@@ -2787,16 +2802,28 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
                 f'&plusmn;{SPIKE_CONFL_RADIUS_PTS:g}pt of the refined entry '
                 f'{res["alt_price"]:.2f}: {detail}. Purely informational; use the Only radio to '
                 f'isolate these trades.">SPIKE CONFL</span>')
-    if "anti_bias" in dyn_tags:
+    if "fading_bias" in dyn_tags:
         faded = HB.fades(res.get("h1_bias") or [], level_type == "LHPB")
         detail = "; ".join(_bias_detail(b) for b in faded)
-        out += (f'<span class="dyn-tag-badge anti-bias-tag-badge" title="Dynamic filter '
-                f'‘anti_bias’: this {"long" if level_type == "LHPB" else "short"} is fading '
+        out += (f'<span class="dyn-tag-badge fading-bias-tag-badge" title="Dynamic filter '
+                f'‘fading_bias’: this {"long" if level_type == "LHPB" else "short"} is fading '
                 f'{len(faded)} live {"bearish" if level_type == "LHPB" else "bullish"} H1 '
                 f'bias{"es" if len(faded) != 1 else ""} -- {detail}. '
                 f'See the Bias column for every live bias on this row. '
                 f'Purely informational; not excluded from the headline stats by default.">'
-                f'ANTI-BIAS</span>')
+                f'FADING-BIAS</span>')
+    if "bias_served" in dyn_tags:
+        detail = "; ".join(
+            f'{b["label"]}: spike range {b["spike_range"]:.2f}pt, head {b["head"]:.2f}, entry '
+            f'{b["advance"]*100:.0f}% of that range past the head, thrust candle '
+            f'{b["thrust_range"]*100:.0f}% of it so far' for b in res.get("bias_served") or [])
+        out += (f'<span class="dyn-tag-badge bias-served-tag-badge" title="Dynamic filter '
+                f'‘bias_served’: this fading-bias trade enters after the faded bias has largely '
+                f'played out -- the thrust candle has covered at least '
+                f'{HB.SERVED_THRUST_RANGE:.0%} of the spike candle&#39;s range and the entry is at '
+                f'least {HB.SERVED_ADVANCE:.0%} of it past the spike&#39;s head ({detail}). '
+                f'Purely informational; not excluded from the headline stats by default.">'
+                f'BIAS SERVED</span>')
     if "volume-spike" in dyn_tags:
         side_word = "bid" if level_type == "LHPB" else "ask"
         vs = res.get("volume_spike") or {}
@@ -3469,13 +3496,19 @@ other row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="spike_confl"> only</label>
     </div>
     <div class="chip-stack">
-      <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="anti_bias">
-        Exclude anti-bias trades</label>
-      <label class="chip chip-iso" title="Only: show ONLY rows tagged anti_bias (the trade's own
-direction fades at least one H1 bias that was still live at its retest -- a short under a live
-bullish bias, a long under a live bearish one; see the Bias column), hiding every
-other row -- overrides every Exclude box. Click again to turn off.">
-        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="anti_bias"> only</label>
+      <label class="chip" title="One filter for the H1 bias tags. fading-bias: the trade fades a live H1
+bias. bias-served: an fading-bias trade whose faded hammer / shooting-star bias is already served at
+the entry (thrust candle >= 65% of the spike's range, entry >= 50% of it past the spike's head), so
+every bias-served trade is also fading-bias. See the Bias column.">
+        Bias
+        <select id="f-bias" class="f-bias">
+          <option value="">Any (no bias filter)</option>
+          <option value="anti">Only fading-bias (incl. bias-served)</option>
+          <option value="anti-not-served">Only fading-bias, NOT bias-served</option>
+          <option value="served">Only bias-served</option>
+          <option value="no-anti">Exclude fading-bias (incl. bias-served)</option>
+          <option value="no-served">Exclude bias-served only</option>
+        </select></label>
     </div>
   </div>
   <div class="filter-row">
@@ -3561,7 +3594,7 @@ the box is checked.">Trade management</span>
     head = (f"<th class=\"left\">Trade Id</th>"
             f"<th class=\"left\" title=\"Every dynamic-filter tag this row carries, in one "
             f"place: globex_eth_open, low_liquidity, swerved/swerve_blocked, crest_refined, "
-            f"spike_confl, anti_bias, volume-spike "
+            f"spike_confl, fading_bias, bias_served, volume-spike "
             f"(row-level, constant across target rules) plus r_below_min/eod_flat (the "
             f"ACTIVE target rule's own -- these swap along with Target/R/Outcome when you "
             f"toggle a Target rules checkbox above). Hover a badge for its own detail; the "
@@ -3629,7 +3662,7 @@ the box is checked.">Trade management</span>
             f"it goes stale -- after {HB.HAMMER_BIAS_MAX_AGE} closed candles for a "
             f"hammer/star, {HB.SFP_BIAS_MAX_AGE} for an sfp, the only difference between "
             f"them. "
-            f"A trade fading one of these is tagged anti_bias. This strategy is M5-only "
+            f"A trade fading one of these is tagged fading_bias. This strategy is M5-only "
             f"(no H1 input); purely a review aid. Hover for each bias's own detail.\">Bias</th>"
             f"<th>Entry</th>"
             f"<th class=\"left\">Entry (touch) time</th>"
@@ -3761,7 +3794,8 @@ tr.lvl-row.no-target-row td { color:var(--text-faint); font-style:italic; }
 .swerve-tag-badge { background:#1e3a2f; color:#86efac; }
 .vol-spike-tag-badge { background:#3f2d0e; color:#fdba74; }
 .spike-confl-tag-badge { background:#0e3a2f; color:#6ee7b7; }
-.anti-bias-tag-badge { background:#3a1030; color:#f0abfc; }
+.fading-bias-tag-badge { background:#3a1030; color:#f0abfc; }
+.bias-served-tag-badge { background:#2a1a3a; color:#c4b5fd; }
 /* Notes box: this report is reviewed with long, written-out notes per trade,
    so it ships far larger than the shared 160x34 default in
    render_stop_target_report.CSS (left alone, for every other report) and
@@ -3811,6 +3845,21 @@ _renderStack = function(i) {
 // ---------------------------------------------------------------------
 function activeDynExcludeTags() {
   return Array.from(document.querySelectorAll('.f-dyn-exclude:checked')).map(cb => cb.dataset.tag);
+}
+// The single Bias filter (select#f-bias) replaces the separate fading_bias /
+// bias_served Exclude + Only pairs: one choice over the two tags. bias_served
+// rows always carry fading_bias too.
+function biasFilterOk(tags) {
+  const sel = document.getElementById('f-bias');
+  const anti = tags.includes('fading_bias'), served = tags.includes('bias_served');
+  switch (sel ? sel.value : '') {
+    case 'anti': return anti;
+    case 'anti-not-served': return anti && !served;
+    case 'served': return served;
+    case 'no-anti': return !anti;
+    case 'no-served': return !served;
+    default: return true;
+  }
 }
 function activeDynIsolateTags() {
   return Array.from(document.querySelectorAll('.f-dyn-isolate:checked')).map(cb => cb.dataset.tag);
@@ -4032,7 +4081,8 @@ function recomputeDynStats() {
     // a static number (the tagged row's own peak-second offset, absolute
     // value) set once at render time, never rewritten by a live control.
     const vspikeoffsHidden = !numFilterOk(tr, 'vspikeoffs');
-    const hidden = rrHidden || daygapHidden || h1gapHidden || mingapHidden || erHidden || p1ratioHidden || vspikeoffsHidden || (isolateTags.length > 0
+    const biasHidden = !biasFilterOk(tags);
+    const hidden = biasHidden || rrHidden || daygapHidden || h1gapHidden || mingapHidden || erHidden || p1ratioHidden || vspikeoffsHidden || (isolateTags.length > 0
       ? !tags.some(t => isolateTags.includes(t))
       : (excludeTags.length > 0 && tags.some(t => excludeTags.includes(t))));
     tr.classList.toggle('dyn-hidden', hidden);
@@ -4094,6 +4144,7 @@ function recomputeDynStats() {
   // ticked -- re-run it so that pass doesn't go stale either.
   applyReviewFilters();
 }
+document.getElementById('f-bias').addEventListener('change', recomputeDynStats);
 document.querySelectorAll('.f-dyn-exclude, .f-target-mode, .f-outcome').forEach(cb => cb.addEventListener('change', recomputeDynStats));
 // The f-dyn-isolate radios share one name, so the browser already enforces
 // "at most one checked" -- but a native radio can't uncheck itself by being

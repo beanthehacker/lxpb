@@ -16,7 +16,9 @@ changes which trades that strategy takes.
 FOUR PATTERNS, TWO PER SIDE
 ---------------------------
 BULLISH
-  * `hammer`  -- the H1 candle is a patterns-pure hammer.
+  * `hammer`  -- the H1 candle is a patterns-pure hammer that also sweeps the
+                 previous candle's low (its own low is below it); a shooting
+                 star likewise has to trade above the previous candle's high.
   * `sfp`     -- the H1 candle SWEEPS a swing LOW (its own low goes below it)
                  and CLOSES back above it: a swing failure at the low.
 BEARISH
@@ -204,6 +206,16 @@ def _series_masks(bars):
     is_hammer = bars.index.isin(R._pp_find_hammer(bars, atr=0.0).index)
     is_star = bars.index.isin(R._pp_find_shooting_star(bars, atr=0.0).index)
     _assert_matches_patterns_pure(bars, is_hammer, is_star)
+    # A bias candle must also SWEEP the candle right before it: a hammer's low
+    # trades below the previous candle's low, a shooting star's high above the
+    # previous candle's high. Layered on top of patterns-pure's own verdict
+    # (checked raw, above); no threshold of its own is restated. The first bar
+    # has no previous candle, so it never qualifies.
+    low, high = bars["low"].to_numpy(float), bars["high"].to_numpy(float)
+    sweeps_low = np.concatenate([[False], low[1:] < low[:-1]])
+    sweeps_high = np.concatenate([[False], high[1:] > high[:-1]])
+    is_hammer = is_hammer & sweeps_low
+    is_star = is_star & sweeps_high
     sfp_low, sfp_high, swept = _sfp_masks(bars)
     # ONE bullish reference mask covering both bullish bias candles (and one
     # bearish). A thrust is judged against the reference candle's own range
@@ -302,6 +314,31 @@ def biases_at(ts, bars=None):
     return out
 
 
+def expire_swept(biases, retest_ts, fill_time, fill_price, bars=None, m5=None):
+    """`biases` (as `biases_at(retest_ts)` returned them) minus any that price
+    has already broken by the time a trade FILLED. Expiry (b) in the module
+    docstring only looks at closed H1 candles, so a fill that trades through
+    the bias candle's own extreme inside the still-forming candle -- or in a
+    later one, when the fill lands after the retest's candle -- slips past it.
+    Here every M5 bar closed at the fill, from the open of the retest's
+    candle on, plus the fill price itself, is checked the same way: a bullish
+    bias dies once price trades a tick under its low, a bearish one a tick
+    over its high. Nothing after the fill is peeked at."""
+    if not biases:
+        return biases
+    bars = R._display_h1() if bars is None else bars
+    m5 = R._display_m5() if m5 is None else m5
+    retest_ts, fill_time = MS._as_utc(retest_ts), MS._as_utc(fill_time)
+    a = _anchor(bars, retest_ts)
+    start = retest_ts if a is None or a >= len(bars) else min(retest_ts, bars.index[a])
+    seen = m5.loc[(m5.index >= start) & (m5.index + pd.Timedelta(minutes=5) <= fill_time)]
+    lo = min([float(seen["low"].min())] * len(seen) + [fill_price])
+    hi = max([float(seen["high"].max())] * len(seen) + [fill_price])
+    return [b for b in biases
+            if not ((b["side"] == "bull" and lo <= b["price"] - TICK_SIZE) or
+                    (b["side"] == "bear" and hi >= b["price"] + TICK_SIZE))]
+
+
 def summarize(biases):
     """(bull_labels, bear_labels) as two plain lists of '<kind>@<offset>'
     metadata strings, nearest candle first."""
@@ -312,6 +349,67 @@ def summarize(biases):
 def fades(biases, is_long):
     """The live biases this trade's own direction FADES: the bearish ones for
     a long, the bullish ones for a short. Non-empty means the trade is
-    anti-bias."""
+    fading-bias."""
     against = "bear" if is_long else "bull"
     return [b for b in biases if b["side"] == against]
+
+
+# BIAS SERVED -- a hammer / shooting-star bias whose promised move is already
+# largely made by the time a trade enters against it. Two tests, both needed:
+#   * the thrust candle (the H1 candle right after the spike) is the one in
+#     play, and its range SO FAR is at least SERVED_THRUST_RANGE of the
+#     spike candle's range;
+#   * the entry price sits at least SERVED_ADVANCE of the spike's range past
+#     the spike's HEAD in the bias direction. The head is the end of the
+#     candle its small body sits at: a hammer's high, a shooting star's low.
+# Two cases, for hammer / star biases only (an sfp is never served):
+#   * spike at offset -1: the thrust candle is the forming one, so its range
+#     is measured SO FAR, from M5 bars closed at the fill;
+#   * spike at offset -2 or older: the thrust candle has already closed, so
+#     its whole H1 range counts.
+# Nothing here changes `biases_at`.
+SERVED_THRUST_RANGE = 0.65
+SERVED_ADVANCE = 0.50
+
+
+def served(biases, is_long, fill_time, fill_price, bars=None, m5=None):
+    """The FADED hammer / star biases (see `fades`) that are already served
+    at this entry, each as a copy of the bias dict plus 'spike_range',
+    'head', 'advance' (share of the spike's range the entry is past the
+    head) and 'thrust_range' (share of the spike's range the forming thrust
+    candle has covered by the fill). Empty means not served.
+
+    The thrust candle's range so far uses only M5 bars already CLOSED at the
+    fill plus the fill price itself, so nothing after the fill is peeked at."""
+    bars = R._display_h1() if bars is None else bars
+    m5 = R._display_m5() if m5 is None else m5
+    fill_time = MS._as_utc(fill_time)
+    out = []
+    for b in fades(biases, is_long):
+        if b["kind"] not in ("hammer", "star"):
+            continue
+        pos = bars.index.get_loc(MS._as_utc(b["time"]))
+        if pos + 1 >= len(bars):
+            continue
+        t_open = bars.index[pos + 1]
+        forming = t_open <= fill_time < t_open + pd.Timedelta(hours=1)
+        if not forming and b["offset"] == -1:
+            continue
+        spike_high, spike_low = float(bars["high"].iloc[pos]), float(bars["low"].iloc[pos])
+        rng = spike_high - spike_low
+        if rng <= 0:
+            continue
+        bull = b["side"] == "bull"
+        head = spike_high if bull else spike_low
+        advance = ((fill_price - head) if bull else (head - fill_price)) / rng
+        if forming:
+            seen = m5.loc[(m5.index >= t_open) & (m5.index + pd.Timedelta(minutes=5) <= fill_time)]
+            hi = max([float(seen["high"].max())] * len(seen) + [fill_price])
+            lo = min([float(seen["low"].min())] * len(seen) + [fill_price])
+        else:
+            hi, lo = float(bars["high"].iloc[pos + 1]), float(bars["low"].iloc[pos + 1])
+        thrust = (hi - lo) / rng
+        if advance >= SERVED_ADVANCE and thrust >= SERVED_THRUST_RANGE:
+            out.append({**b, "spike_range": rng, "head": head,
+                        "advance": advance, "thrust_range": thrust})
+    return out
