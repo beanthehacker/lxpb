@@ -1,8 +1,13 @@
 import pandas as pd
 
+# A hammer must close at or above the previous bar's low, give or take this share
+# of the hammer's OWN range (so a close a hair under the previous low still counts).
+PREV_BAR_BUFFER = 0.05
+
 def find_hammer(data: pd.DataFrame, atr: float) -> pd.DataFrame:
   """
   The Hammer candlestick is a bullish reversal pattern with a small body and long lower shadow.
+  It closes at or above the previous bar's low minus PREV_BAR_BUFFER x its own range.
   """
   # If data is empty, return an empty dataframe
   if data.empty:
@@ -17,7 +22,7 @@ def find_hammer(data: pd.DataFrame, atr: float) -> pd.DataFrame:
     (body_size <= total_length * 0.35) &
     (upper_wick <= total_length * 0.25) &
     (lower_wick > total_length * 0.5) &
-    (data["close"] >= data["low"].shift(1))
+    (data["close"] >= data["low"].shift(1) - total_length * PREV_BAR_BUFFER)
   ]
   # Untested Logic
   rows = rows.assign(untested = False)

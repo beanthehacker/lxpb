@@ -123,7 +123,10 @@ That definition is:
 
 - body <= 35% of the bar's range, long wick > 50%, opposite wick <= 25%, AND
 - a hammer closes at or above the PREVIOUS bar's low; a shooting star closes
-  at or below the previous bar's high.
+  at or below the previous bar's high -- each with a 5% buffer, measured in the
+  candidate candle's OWN range (`PREV_BAR_BUFFER`): a hammer may close up to
+  5% of its range below the previous low, a shooting star up to 5% above the
+  previous high. (Before 2026-09-21 the test was exact, no buffer.)
 
 The wider 35% / 25% thresholds and the previous-bar close are both essential.
 A single-bar version, or one with its own thresholds, is wrong even if it

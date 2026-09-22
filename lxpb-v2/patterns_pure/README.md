@@ -54,6 +54,11 @@ Copy-Item D:\daily-analysis\patterns-pure\{find_ATR,find_swings,find_hammer,find
           D:\lxpb\lxpb-v2\patterns_pure\ -Force
 ```
 
+**Deliberate local modification (2026-09-21):** `find_hammer.py` /
+`find_shooting_star.py` carry `PREV_BAR_BUFFER = 0.05` -- the previous-bar close
+test allows 5% of the candidate's own range of slack. The canonical folder must
+carry the same edit, or the Copy-Item above silently reverts it.
+
 A changed `find_hammer.py` / `find_shooting_star.py` changes the level caches'
 rules fingerprint, so every H1/M5 ledger rebuilds on next use.
 
