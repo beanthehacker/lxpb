@@ -1453,7 +1453,11 @@ function _renderH1(i, cd) {
 function _renderM5(i, cd) {
   _renderPane('cm5-' + i, 'tm5-' + i, cd);
 }
-function _renderPane(elId, titleId, cd) {
+// opts.fontSize overrides the chart-wide layout font (axis ticks + this
+// title's OHLC readout share one font-size knob in lightweight-charts);
+// omitted, every existing caller keeps the plain 9px default untouched.
+function _renderPane(elId, titleId, cd, opts) {
+  opts = opts || {};
   const el = document.getElementById(elId);
   const titleEl = document.getElementById(titleId);
   if (!el || !titleEl) return;
@@ -1471,7 +1475,9 @@ function _renderPane(elId, titleId, cd) {
   ohlcEl.className = 'ct-ohlc';
   titleEl.appendChild(baseEl);
   titleEl.appendChild(ohlcEl);
-  const chart = LightweightCharts.createChart(el, Object.assign(_baseOpts(cd.dateOnly ? timeFmtD : timeFmtH1), {
+  const paneOpts = _baseOpts(cd.dateOnly ? timeFmtD : timeFmtH1);
+  if (opts.fontSize) paneOpts.layout.fontSize = opts.fontSize;
+  const chart = LightweightCharts.createChart(el, Object.assign(paneOpts, {
     autoSize: false, width: el.clientWidth || 800, height: el.clientHeight || 320,
   }));
   const series = _addCandles(chart, cd.precision);

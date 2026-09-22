@@ -2765,7 +2765,7 @@ def _mode_payload(res, mode):
         "outcomeCls": outcome_cls,
         "modeTagBadges": _mode_tag_badges(res, mode),
         "mgmtBadge": _mgmt_badge(res, mode),
-        "exit": (R._to_pt_str(resolved["exit_time"])
+        "exit": (_pt_str_stacked(resolved["exit_time"])
                  if resolved.get("exit_time") is not None else "-"),
         "exitPx": (f"{exit_px:.2f}" if resolved.get("outcome") != "no_hit"
                    and exit_px is not None else "-"),
@@ -2950,6 +2950,17 @@ def _bias_cell(res):
     return out, "; ".join(_bias_detail(b) for b in biases)
 
 
+def _pt_str_stacked(ts):
+    """Display-only variant of R._to_pt_str: date on one line, HH:MM:SS PT
+    on the next (see the .time-stacked CSS rule), so the M5 retest / Entry
+    (touch) time / Exit time columns are as wide as the longer of those two
+    lines instead of the whole string. Never use this for row_key or a
+    title= tooltip -- both need the plain one-line string R._to_pt_str
+    already gives."""
+    date, clock = R._to_pt_str(ts).split(" ", 1)
+    return f'{date}<br><span class="time-part">{clock}</span>'
+
+
 def _render_row(idx, res, chart_stacks, fps):
     """Builds (chart_entry_for_json, row_html) for one result row. A FILLED
     row carrying dynamic-filter tags (res['dyn_tags'], e.g. 'globex_eth_open' --
@@ -2963,6 +2974,7 @@ def _render_row(idx, res, chart_stacks, fps):
         level_type = res["level_type"]
         type_cls = "type-lhpb" if res["is_long"] else "type-llpb"
         retest_str = R._to_pt_str(row_d["retest_time"])
+        retest_str_display = _pt_str_stacked(row_d["retest_time"])
         gap_val = res.get("p1_p2_day_gap")
         gap_cell = (f'<span title="P1 (breakout) {R._to_pt_str(row_d["breakout_time"])} '
                    f'&rarr; P2 (retest) {retest_str}, {gap_val} trading day(s) apart '
@@ -3020,6 +3032,8 @@ def _render_row(idx, res, chart_stacks, fps):
             row_key = f"{level_type}_{res['alt_price']:.2f}_{retest_str}".replace(" ", "_")
             touch_time_alt = res.get("touch_time_alt")
             entry_touch_str = R._to_pt_str(touch_time_alt) if touch_time_alt is not None else "-"
+            entry_touch_str_display = (_pt_str_stacked(touch_time_alt)
+                                        if touch_time_alt is not None else "-")
             # No target modes here (never filled, so nothing to swap on a
             # target-rule toggle) -- just whichever row-level tags applied
             # before the fill-window search ran (see _row_tag_badges: e.g.
@@ -3035,7 +3049,9 @@ def _render_row(idx, res, chart_stacks, fps):
             tags_cell = (f'<span class="row-badges">'
                         f'{_row_tag_badges(res, base_tags, level_type, entry_touch_str)}</span>')
             alt_cell = (f'{res["alt_price"]:.2f}'
-                       f'<span class="src-tag {res["alt_source"]}">{res["alt_source"]}</span>')
+                       f'<span class="entry-info">'
+                       f'<span class="src-tag {res["alt_source"]}">{res["alt_source"]}</span>'
+                       f'</span>')
             if res.get("stop_price") is not None:
                 stop_cell = (f'{res["stop_price"]:.2f}'
                             f'<span class="src-tag m5">{res.get("stop_source", "")}</span>')
@@ -3063,7 +3079,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="left">{res['i']}</td>
   <td class="tags-cell">{tags_cell}</td>
   <td class="left type-cell">{level_type}</td>
-  <td class="left">{retest_str}</td>
+  <td class="left time-stacked retest-cell">{retest_str_display}</td>
   <td class="daygap-cell">{gap_cell}</td>
   <td class="h1gap-cell">{h1gap_cell}</td>
   <td class="mingap-cell">{mingap_cell}</td>
@@ -3073,13 +3089,13 @@ def _render_row(idx, res, chart_stacks, fps):
   <td>{own_cell}</td>
   <td class="h1-confl-cell">-</td>
   <td class="bias-cell" title="{bias_title}">{bias_cell}</td>
-  <td>{alt_cell}</td>
-  <td class="left">{entry_touch_str}</td>
-  <td>{stop_cell}</td>
+  <td class="entry-cell">{alt_cell}</td>
+  <td class="left time-stacked entry-touch-cell">{entry_touch_str_display}</td>
+  <td class="stop-cell">{stop_cell}</td>
   <td class="tgt-cell">-</td>
   <td class="rr-cell">-</td>
   <td class="outcome-cell"><span class="outcome-label">{_fail_reason_label(reason)}{rr_note}</span></td>
-  <td class="left exit-cell">-</td><td class="exitpx-cell">-</td>
+  <td class="left time-stacked exit-cell">-</td><td class="exitpx-cell">-</td>
   <td class="pnl-cell">-</td>
   <td class="contracts-cell">-</td><td class="comm-cell">-</td>
   <td class="mae-cell">-</td><td class="mfe-cell">-</td><td class="gb-cell">-</td>
@@ -3097,7 +3113,7 @@ def _render_row(idx, res, chart_stacks, fps):
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-{idx}"></div><div class="chart-ph" id="ch1-{idx}"></div></div>
     </div>
     <div class="chart-row-2col chart-row-solo">
-      <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-{idx}"></div><div class="chart-ph" id="cm5-{idx}"></div></div>
+      <div class="chart-cell chart-h1 m5-pane"><div class="chart-title" id="tm5-{idx}"></div><div class="chart-ph" id="cm5-{idx}"></div></div>
     </div>
     <div class="chart-row-2col">
       <div class="chart-col-1s">
@@ -3122,6 +3138,7 @@ def _render_row(idx, res, chart_stacks, fps):
         active_mode = res["active_mode"]
         act = payloads[active_mode]
         entry_touch_str = R._to_pt_str(res["touch_time_alt"])
+        entry_touch_str_display = _pt_str_stacked(res["touch_time_alt"])
         src_cls = f"src-tag {res['alt_source']}"
         improved_flag = " &uarr;" if res["improved"] else ""
         stop_level = res["stop_m5_level"]
@@ -3200,7 +3217,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="left">{res['i']}</td>
   <td class="tags-cell">{tags_cell}</td>
   <td class="left type-cell">{level_type}</td>
-  <td class="left">{retest_str}</td>
+  <td class="left time-stacked retest-cell">{retest_str_display}</td>
   <td class="daygap-cell">{gap_cell}</td>
   <td class="h1gap-cell">{h1gap_cell}</td>
   <td class="mingap-cell">{mingap_cell}</td>
@@ -3210,13 +3227,13 @@ def _render_row(idx, res, chart_stacks, fps):
   <td>{own_cell}</td>
   <td class="h1-confl-cell" title="{h1_confl_title}">{h1_confl_cell}</td>
   <td class="bias-cell" title="{bias_title}">{bias_cell}</td>
-  <td>{res['alt_price']:.2f}<span class="gap-slot">{act['gap']}</span><span class="{src_cls}">{res['alt_source']}{improved_flag}</span>{chase_flag}</td>
-  <td class="left">{entry_touch_str}</td>
-  <td title="{stop_title}">{res['stop_price']:.2f}<span class="src-tag m5">{stop_source}</span></td>
+  <td class="entry-cell">{res['alt_price']:.2f}<span class="entry-info"><span class="gap-slot">{act['gap']}</span><span class="{src_cls}">{res['alt_source']}{improved_flag}</span>{chase_flag}</span></td>
+  <td class="left time-stacked entry-touch-cell">{entry_touch_str_display}</td>
+  <td class="stop-cell" title="{stop_title}">{res['stop_price']:.2f}<span class="src-tag m5">{stop_source}</span></td>
   <td class="tgt-cell" title="{act['tgtTitle']}">{act['tgt']}</td>
   <td class="rr-cell">{act['rr']}</td>
   <td class="outcome-cell {act['outcomeCls']}"><span class="outcome-label">{act['outcomeLabel']}</span><span class="mgmt-badge">{act['mgmtBadge']}</span></td>
-  <td class="left exit-cell">{act['exit']}</td><td class="exitpx-cell">{act['exitPx']}</td>
+  <td class="left time-stacked exit-cell">{act['exit']}</td><td class="exitpx-cell">{act['exitPx']}</td>
   <td class="pnl-cell {act['pnlCls']}">{act['pnl']}</td>
   <td class="contracts-cell" title="{mes_title}">{mes_contracts_html}</td><td class="comm-cell" title="{mes_title}">{mes_comm_text}</td>
   <td class="mae-cell bad">{act['mae']}</td><td class="mfe-cell good">{act['mfe']}</td><td class="gb-cell">{act['gb']}</td>
@@ -3234,7 +3251,7 @@ def _render_row(idx, res, chart_stacks, fps):
       <div class="chart-cell chart-h1"><div class="chart-title" id="th1-{idx}"></div><div class="chart-ph" id="ch1-{idx}"></div></div>
     </div>
     <div class="chart-row-2col chart-row-solo">
-      <div class="chart-cell chart-h1"><div class="chart-title" id="tm5-{idx}"></div><div class="chart-ph" id="cm5-{idx}"></div></div>
+      <div class="chart-cell chart-h1 m5-pane"><div class="chart-title" id="tm5-{idx}"></div><div class="chart-ph" id="cm5-{idx}"></div></div>
     </div>
     <div class="chart-row-2col">
       <div class="chart-col-1s">
@@ -3813,7 +3830,10 @@ tr.lvl-row.type-lhpb td.type-cell, tr.lvl-row.type-llpb td.type-cell {
 }
 .cluster-tag { border-bottom:1px dotted var(--text-dim); cursor:help; }
 td.merged-h1-levels { max-width:220px; white-space:normal; }
-td.h1-confl-cell { max-width:220px; white-space:normal; cursor:help; }
+/* H1 P0 confl only ever shows a bare count (0, 1, 2...); the detail lives in
+   its hover tooltip, so the cell itself is pinned thin regardless of its
+   own long header label (see the header-wrap rule below). */
+td.h1-confl-cell { max-width:50px; white-space:nowrap; cursor:help; }
 td.bias-cell { max-width:150px; white-space:normal; cursor:help; }
 /* Bullish / bearish groups inside the Bias cell (see _bias_cell). Stacked,
    so a row carrying both reads as two lines rather than one run-on string. */
@@ -3821,6 +3841,53 @@ td.bias-cell { max-width:150px; white-space:normal; cursor:help; }
 .bias-bull { color:#6ee7b7; }
 .bias-bear { color:#fda4af; }
 td.tags-cell { max-width:200px; white-space:normal; }
+/* Outcome can carry a full sentence (e.g. "NO TRADE (no target under any
+   rule)") instead of just WIN/LOSS, so let it wrap rather than force the
+   column to that sentence's own width. */
+td.outcome-cell { max-width:130px; white-space:normal; }
+/* Columns that only ever hold a short number/count but carry a much longer,
+   multi-word header label (day/H1/minute gaps, ratios, the H1 confluence
+   count, excursion columns): wrap the HEADER instead, so the column stays
+   pinned to the data's own width rather than the label's. Data cells are
+   untouched -- still single-line, sized to their own (short) content. */
+#lvl-table thead th:nth-child(1),   /* Trade Id */
+#lvl-table thead th:nth-child(5),   /* P1->P2 (d) */
+#lvl-table thead th:nth-child(6),   /* P1->P2 (H1) */
+#lvl-table thead th:nth-child(7),   /* P1->P2 (min) */
+#lvl-table thead th:nth-child(8),   /* Pre-P1 ER */
+#lvl-table thead th:nth-child(9),   /* P1 range ratio */
+#lvl-table thead th:nth-child(12),  /* H1 P0 confl */
+#lvl-table thead th:nth-child(25),  /* MAE (win) */
+#lvl-table thead th:nth-child(26),  /* MFE (loss) */
+#lvl-table thead th:nth-child(27) { /* Max DD */
+  white-space:normal; overflow-wrap:break-word; max-width:60px;
+}
+td.daygap-cell, td.h1gap-cell, td.prep1er-cell { max-width:50px; }
+td.mingap-cell, td.p1ratio-cell { max-width:60px; }
+/* M5 retest / Entry (touch) time / Exit time: date and HH:MM:SS PT stack on
+   two lines (see _pt_str_stacked) instead of running the whole
+   "YYYY-MM-DD HH:MM:SS PT" string onto one, so the column is only as wide
+   as the longer of the two (~11 chars) rather than all ~22. */
+td.time-stacked { max-width:78px; white-space:nowrap; line-height:1.3; }
+td.time-stacked .time-part { display:block; }
+/* Stop / Target: the src-tag (m5_p0_spike, m5_opposite_zz, swing_extreme,
+   ...) drops to its own line under the price instead of running inline,
+   so the column is only as wide as the longer of price vs. tag rather
+   than both combined. */
+td.stop-cell, td.tgt-cell {
+  max-width:95px; white-space:normal; overflow-wrap:break-word; line-height:1.3;
+}
+td.stop-cell .src-tag, td.tgt-cell .src-tag {
+  display:block; margin-left:0; margin-top:1px;
+}
+/* Entry: same idea -- the price stays on its own line, everything else
+   (own/chase source tag, the improved-fill arrow, the gap-never-traded
+   flag, the chased/repriced note) drops to a line below it instead of
+   running the whole row inline after the price. */
+td.entry-cell {
+  max-width:150px; white-space:normal; overflow-wrap:break-word; line-height:1.3;
+}
+td.entry-cell .entry-info { display:block; margin-top:1px; }
 /* Dynamic filters (see _apply_globex_open_filter's docstring): a row tagged
    res['dyn_tags'] gets data-dyn-tags plus this badge; the matching
    f-dyn-exclude checkbox hides it via .dyn-hidden (kept separate from the
@@ -3868,6 +3935,31 @@ tr.lvl-row.no-target-row td { color:var(--text-faint); font-style:italic; }
 textarea.trade-note { width:360px; height:150px; resize:both; }
 th.sortable-th { cursor:pointer; user-select:none; }
 th.sortable-th:hover { text-decoration:underline; }
+/* M5 pane's hover OHLC readout: this strategy's M5 pane is full-width
+   (chart-row-solo -- see above, no H1 alongside it), so the shared
+   half-width layout (render_stop_target_report.CSS's chart-title-split,
+   OHLC pinned top-right next to the title) left it far from center. Stack
+   the title into two rows instead: the descriptive text stays small on its
+   own line, the OHLC readout goes big and centered underneath. H1/D1 keep
+   the shared top-right layout untouched (no .m5-pane class on their cells).
+   ct-ohlc's min-height keeps the title bar's height constant whether or not
+   it currently has a reading, so chart-ph's height below (tuned to match)
+   never has to fight a layout shift. ct-ohlc is sized in px, not em: this
+   title bar sits inside #lvl-table (font-size:0.8em) inside a further
+   0.75em on .chart-title itself, so an em value here would render far
+   smaller than intended once nested that deep. */
+.m5-pane .chart-title.chart-title-split {
+  flex-direction:column; align-items:stretch; gap:2px; padding:4px 8px 6px;
+  white-space:normal;
+}
+.m5-pane .chart-title.chart-title-split .ct-base {
+  flex:0 0 auto; text-align:left; white-space:nowrap;
+}
+.m5-pane .chart-title.chart-title-split .ct-ohlc {
+  flex:0 0 auto; font-size:20px; font-weight:600; text-align:center;
+  color:#e5e7eb; white-space:nowrap; min-height:24px; line-height:24px;
+}
+.m5-pane .chart-ph { height:calc(100% - 48px); }
 </style>
 """
 JS = SR.JS + """
@@ -3882,6 +3974,16 @@ _renderStack = function(i) {
   else { const t = document.getElementById('td1-' + i); if (t) t.textContent = 'D1  |  (no bars covering this trade)'; }
   if (!cd.h1) { const t = document.getElementById('th1-' + i); if (t) t.textContent = 'H1  |  (no bars covering this trade)'; }
 };
+// M5 pane: bigger axis-tick font, to go with the bigger centered OHLC
+// readout from the .m5-pane CSS above (lightweight-charts shares one
+// layout.fontSize knob between axis ticks and the title's OHLC text, so
+// this is the only lever needed for both). Redeclaring _renderM5 shadows
+// render_stop_target_report.CSS's plain wrapper for this report only --
+// _renderH1 and the direct D1 _renderPane call above are untouched, so
+// H1/D1 keep the shared small font.
+function _renderM5(i, cd) {
+  _renderPane('cm5-' + i, 'tm5-' + i, cd, { fontSize: 13 });
+}
 // ---------------------------------------------------------------------
 // Dynamic filters -- see _apply_globex_open_filter's own docstring in
 // render_m5_confl2_report.py for the full authoring convention (this is
@@ -4005,7 +4107,7 @@ function applyTargetModes() {
               'outcome-cell');
       const noTgtMtb = tr.querySelector('.tags-cell .mode-tag-badges');
       if (noTgtMtb) noTgtMtb.innerHTML = '';
-      setCell(tr, '.exit-cell', '-', 'left exit-cell');
+      setCell(tr, '.exit-cell', '-', 'left time-stacked exit-cell');
       setCell(tr, '.exitpx-cell', '-', 'exitpx-cell');
       setCell(tr, '.pnl-cell', '-', 'pnl-cell');
       setCell(tr, '.mae-cell', '-', 'mae-cell');
@@ -4036,7 +4138,7 @@ function applyTargetModes() {
     }
     const mtb = tr.querySelector('.tags-cell .mode-tag-badges');
     if (mtb) mtb.innerHTML = p.modeTagBadges;
-    setCell(tr, '.exit-cell', p.exit, 'left exit-cell');
+    setCell(tr, '.exit-cell', p.exit, 'left time-stacked exit-cell');
     setCell(tr, '.exitpx-cell', p.exitPx, 'exitpx-cell');
     setCell(tr, '.pnl-cell', p.pnl, 'pnl-cell ' + (p.pnlCls || ''));
     setCell(tr, '.mae-cell', p.mae, 'mae-cell bad');
