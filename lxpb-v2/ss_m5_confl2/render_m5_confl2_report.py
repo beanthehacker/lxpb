@@ -3935,31 +3935,6 @@ tr.lvl-row.no-target-row td { color:var(--text-faint); font-style:italic; }
 textarea.trade-note { width:360px; height:150px; resize:both; }
 th.sortable-th { cursor:pointer; user-select:none; }
 th.sortable-th:hover { text-decoration:underline; }
-/* M5 pane's hover OHLC readout: this strategy's M5 pane is full-width
-   (chart-row-solo -- see above, no H1 alongside it), so the shared
-   half-width layout (render_stop_target_report.CSS's chart-title-split,
-   OHLC pinned top-right next to the title) left it far from center. Stack
-   the title into two rows instead: the descriptive text stays small on its
-   own line, the OHLC readout goes big and centered underneath. H1/D1 keep
-   the shared top-right layout untouched (no .m5-pane class on their cells).
-   ct-ohlc's min-height keeps the title bar's height constant whether or not
-   it currently has a reading, so chart-ph's height below (tuned to match)
-   never has to fight a layout shift. ct-ohlc is sized in px, not em: this
-   title bar sits inside #lvl-table (font-size:0.8em) inside a further
-   0.75em on .chart-title itself, so an em value here would render far
-   smaller than intended once nested that deep. */
-.m5-pane .chart-title.chart-title-split {
-  flex-direction:column; align-items:stretch; gap:2px; padding:4px 8px 6px;
-  white-space:normal;
-}
-.m5-pane .chart-title.chart-title-split .ct-base {
-  flex:0 0 auto; text-align:left; white-space:nowrap;
-}
-.m5-pane .chart-title.chart-title-split .ct-ohlc {
-  flex:0 0 auto; font-size:20px; font-weight:600; text-align:center;
-  color:#e5e7eb; white-space:nowrap; min-height:24px; line-height:24px;
-}
-.m5-pane .chart-ph { height:calc(100% - 48px); }
 </style>
 """
 JS = SR.JS + """

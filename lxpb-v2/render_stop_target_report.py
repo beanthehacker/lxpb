@@ -1381,16 +1381,51 @@ select.f-num-op, input.f-num-val { background:var(--surface2); color:var(--text)
     border:1px solid var(--border); border-radius:4px; font-size:0.85em; padding:3px 5px; }
 input.f-num-val { width:4.5em; }
 """ + EXCURSION_CSS + "\n" + TABS_CSS + """
-/* Half-width H1/M5 panes: keep the hover OHLC readout pinned right and
-   fully visible, letting the descriptive part ellipsis instead. */
-.chart-title.chart-title-split { display:flex; align-items:baseline; gap:10px; }
-.chart-title-split .ct-base { flex:1 1 auto; min-width:0; overflow:hidden;
+/* Chart title bar: a short timeframe label (H1/M5/D1/1s/1min) on the left,
+   the hover OHLC readout centered across the FULL bar width regardless of
+   the label's own width -- a 3-column grid with a mirrored empty 3rd
+   column, rather than flex, is what makes that centering independent of
+   how wide the left label happens to be. align-items:center (not
+   baseline) matters here for a reason that isn't obvious from a static
+   look at this rule: an EMPTY ct-ohlc's baseline sits at its box's bottom
+   edge, but once a hover fills it with text the baseline moves to sit
+   under the text -- with align-items:baseline that difference visibly
+   shifts the whole row on every hover. Center alignment doesn't care
+   about text baseline, so it holds still either way. min-height/line-height
+   are relative (em), so they scale automatically with ct-ohlc's own
+   font-size below, and reserve the readout's own row height whether or
+   not it currently has text -- without it, the title bar grows the
+   instant a hover fills ct-ohlc in.
+   ct-ohlc's font-size is a fixed 16px, not em, across every pane type
+   (D1/H1/M5/1s/1min) -- it used to be the plain inherited ~10px default
+   everywhere except the M5 pane, which had its own bigger override; now
+   every pane matches that size, so the override moved here and font-size
+   no longer varies by nesting depth (px is absolute regardless of how
+   deep a pane's title bar happens to be nested in a given report, unlike
+   em). chart-ph's height is bumped for the same reason: this taller
+   title bar (16px * 1.3 line-height reserved for ct-ohlc, plus the
+   title's own 5px/5px padding) no longer fits the old 24px-tall default,
+   which would leave every pane too tall for its cell, clipping the axis
+   at the bottom. */
+.chart-title.chart-title-split { display:grid; grid-template-columns:1fr auto 1fr;
+                                 align-items:center; gap:10px; }
+.chart-title-split .ct-base { grid-column:1; justify-self:start; min-width:0; overflow:hidden;
                               text-overflow:ellipsis; white-space:nowrap; }
-.chart-title-split .ct-ohlc { flex:0 0 auto; white-space:nowrap; color:#e5e7eb; }
+.chart-title-split .ct-ohlc { grid-column:2; justify-self:center; white-space:nowrap;
+                              font-size:16px; font-weight:600; color:#e5e7eb;
+                              min-height:1.3em; line-height:1.3em; }
 /* Hover tooltip for the M5 level rays. Positioned inside the chart body (not
    the title bar) so it can wrap onto several lines and list several
    overlapping rays without ever being clipped or ellipsised. */
 .chart-ph { position:relative; }
+/* Only a split-title pane's chart-ph needs the taller title bar's height
+   subtracted -- Bid/Ask Volume (plain, un-split titles, still the old
+   24px bar) sit right next to a split-title candle pane in the same
+   trio row and must NOT also shrink, or they'd leave a gap under the
+   volume bars. The title carries the .chart-title-split class before
+   the chart underneath it is ever created, so the adjacent-sibling
+   selector reaches only the panes that actually grew. */
+.chart-title-split + .chart-ph { height:calc(100% - 31px); }
 .pane-tip { position:absolute; display:none; z-index:5; pointer-events:none;
             background:rgba(10,14,20,0.94); border:1px solid #38bdf8; border-radius:4px;
             color:#e5e7eb; font-family:'Courier New', monospace; font-size:11px;
@@ -1441,6 +1476,17 @@ function _addCandles(chart, precision) {
     priceFormat: { type:'price', precision: precision, minMove: 0.25 },
   });
 }
+// Every pane's title string still carries the full descriptive text (rays,
+// entry/group info, window range, ...) -- generated server-side and kept
+// that way since other code may still want it -- but the title BAR only
+// ever shows the leading timeframe token (H1/M5/D1/1s/1min/...); the rest
+// is dropped here, at render time, rather than trimmed at every call site
+// that builds a title string. The full text stays reachable as the native
+// title-attribute tooltip (see baseEl.title below).
+function _shortLabel(title) {
+  const m = /^\S+/.exec(title || '');
+  return m ? m[0] : '';
+}
 function _centerLogicalRange(chart, el, nBars) {
   if (!nBars) return;
   const barsVisible = Math.max(1, el.clientWidth / FIXED_BAR_SPACING);
@@ -1462,14 +1508,15 @@ function _renderPane(elId, titleId, cd, opts) {
   const titleEl = document.getElementById(titleId);
   if (!el || !titleEl) return;
   const baseTitle = cd.title;
-  // Split the legend: the descriptive part truncates, the OHLC readout is
-  // pinned right and never clipped. These panes are half-width now, so a
-  // single nowrap+ellipsis line would cut the OHLC off on hover.
+  // Split the legend: only the short timeframe label shows on the left
+  // (the full descriptive text is still there as a native tooltip via
+  // baseEl.title, just not on-screen); the OHLC readout centers across
+  // the whole bar. See _shortLabel and the chart-title-split CSS.
   titleEl.classList.add('chart-title-split');
   titleEl.textContent = '';
   const baseEl = document.createElement('span');
   baseEl.className = 'ct-base';
-  baseEl.textContent = baseTitle;
+  baseEl.textContent = _shortLabel(baseTitle);
   baseEl.title = baseTitle;
   const ohlcEl = document.createElement('span');
   ohlcEl.className = 'ct-ohlc';
@@ -1557,7 +1604,19 @@ function _renderTrio(i, cd) {
   const baseTitleC = cd.title;
   const baseTitleB = 'Bid Volume';
   const baseTitleA = 'Ask Volume';
-  titleElC.textContent = baseTitleC;
+  // The candle pane (C) gets the same short-label + centered-OHLC title
+  // bar as every other pane; Bid/Ask Volume aren't OHLC and keep their
+  // own plain (already-short) labels with the value appended inline.
+  titleElC.classList.add('chart-title-split');
+  titleElC.textContent = '';
+  const baseElC = document.createElement('span');
+  baseElC.className = 'ct-base';
+  baseElC.textContent = _shortLabel(baseTitleC);
+  baseElC.title = baseTitleC;
+  const ohlcElC = document.createElement('span');
+  ohlcElC.className = 'ct-ohlc';
+  titleElC.appendChild(baseElC);
+  titleElC.appendChild(ohlcElC);
   titleElB.textContent = baseTitleB;
   titleElA.textContent = baseTitleA;
 
@@ -1588,9 +1647,9 @@ function _renderTrio(i, cd) {
 
   function updateLegends(time) {
     const c = time != null ? cMap[time] : null;
-    titleElC.textContent = baseTitleC + (c ? ('  |  O ' + c.open.toFixed(prec)
+    ohlcElC.textContent = c ? ('O ' + c.open.toFixed(prec)
       + '  H ' + c.high.toFixed(prec) + '  L ' + c.low.toFixed(prec)
-      + '  C ' + c.close.toFixed(prec)) : '');
+      + '  C ' + c.close.toFixed(prec)) : '';
     const b = time != null ? bMap[time] : null;
     titleElB.textContent = baseTitleB + (b != null ? ('  |  ' + b) : '');
     const a = time != null ? aMap[time] : null;
@@ -1634,7 +1693,16 @@ function _renderOneMin(i, cd) {
   const titleEl = document.getElementById('t1m-' + i);
   if (!el || !titleEl) return;
   const baseTitle = cd.title;
-  titleEl.textContent = baseTitle;
+  titleEl.classList.add('chart-title-split');
+  titleEl.textContent = '';
+  const baseEl = document.createElement('span');
+  baseEl.className = 'ct-base';
+  baseEl.textContent = _shortLabel(baseTitle);
+  baseEl.title = baseTitle;
+  const ohlcEl = document.createElement('span');
+  ohlcEl.className = 'ct-ohlc';
+  titleEl.appendChild(baseEl);
+  titleEl.appendChild(ohlcEl);
   const chart = LightweightCharts.createChart(el, _baseOpts(timeFmtH1));
   const series = _addCandles(chart, cd.precision);
   series.setData(cd.candles);
@@ -1644,10 +1712,10 @@ function _renderOneMin(i, cd) {
   chart.subscribeCrosshairMove((param) => {
     const d = param.seriesData && param.seriesData.get(series);
     if (d && d.open != null) {
-      titleEl.textContent = baseTitle + '  |  O ' + d.open.toFixed(prec)
+      ohlcEl.textContent = 'O ' + d.open.toFixed(prec)
         + '  H ' + d.high.toFixed(prec) + '  L ' + d.low.toFixed(prec)
         + '  C ' + d.close.toFixed(prec);
-    } else { titleEl.textContent = baseTitle; }
+    } else { ohlcEl.textContent = ''; }
   });
   chart.timeScale().fitContent();
 }

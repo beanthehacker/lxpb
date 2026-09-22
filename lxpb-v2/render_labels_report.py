@@ -1845,14 +1845,14 @@ textarea.misc-note { width:140px; height:34px; resize:vertical; background:var(-
 .footprint-placeholder { display:flex; align-items:center; justify-content:center;
                           border-style:dashed; opacity:0.4; }
 .footprint-cell { padding:0; width:100%; }
-.footprint-wrap { max-height:170px; overflow-y:auto; font-family:ui-monospace,monospace; font-size:0.62em; width:100%; }
+.footprint-wrap { max-height:220px; overflow-y:auto; font-family:ui-monospace,monospace; font-size:1em; width:100%; }
 .fp-header { color:var(--text-dim); padding:3px 6px; background:#0a0a0a; border-bottom:1px solid #1f1f1f;
              position:sticky; top:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.fp-row { display:grid; grid-template-columns: 42px 1fr 1fr 44px; align-items:center; border-bottom:1px solid #1a1d24; }
+.fp-row { display:grid; grid-template-columns: 62px 1fr 1fr 64px; align-items:center; border-bottom:1px solid #1a1d24; }
 .fp-row.fp-poc { background:#26210a; }
 .fp-row.fp-entry { outline:1px solid var(--accent); outline-offset:-1px; }
 .fp-delta { display:flex; justify-content:flex-end; align-items:center; gap:2px; padding:0 3px; position:relative; }
-.fp-bar-delta { height:7px; border-radius:1px; }
+.fp-bar-delta { height:10px; border-radius:1px; }
 .fp-delta-neg .fp-bar-delta, .fp-delta-neg .fp-val { color:var(--bear); }
 .fp-delta-neg .fp-bar-delta { background:var(--bear); }
 .fp-delta-pos .fp-bar-delta, .fp-delta-pos .fp-val { color:var(--bull); }
@@ -1860,9 +1860,9 @@ textarea.misc-note { width:140px; height:34px; resize:vertical; background:var(-
 .fp-delta-flat .fp-bar-delta { background:var(--text-dim); }
 .fp-bid { display:flex; justify-content:flex-end; align-items:center; gap:2px; padding:0 3px; position:relative; }
 .fp-ask { display:flex; justify-content:flex-start; align-items:center; gap:2px; padding:0 3px; position:relative; }
-.fp-bar { height:7px; background:#9aa4b2; border-radius:1px; }
+.fp-bar { height:10px; background:#9aa4b2; border-radius:1px; }
 .fp-bar-ask { background:#3b9ee5; }
-.fp-val { color:var(--text); min-width:22px; text-align:right; }
+.fp-val { color:var(--text); min-width:34px; text-align:right; }
 .fp-ask .fp-val { text-align:left; }
 .fp-price { text-align:center; color:#e8eaed; font-weight:600; background:#12141a; padding:0 2px; white-space:nowrap; }
 .note { color:var(--text-dim); font-size:0.85em; margin:6px 0; }
