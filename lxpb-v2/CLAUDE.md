@@ -206,16 +206,23 @@ Example: H1 20 Dec 2024 05:00 PT (spike = the 04:00 PT hammer; 1.76x, 48% body).
 - It is NOT the "thrust candle" of `ss_m5_confl2` / `trade_management.py`,
   which just means a level's P1 breakout candle, with no shape test at all.
 - ONE deliberate local extension exists, and only one: `h1_bias.py`'s
-  "bias-thrust", for the H1-bias expiry rule alone. It differs in exactly two
-  ways -- it adds a single further row (`EXTRA_THRUST_TIER`, >= 0.60x range
-  with a >= 75% body), and it lets the reference candle be an SFP as well as
-  a hammer/shooting star, so an SFP bias expires the same way. Both are
-  local: `patterns_pure/` is untouched and nothing outside that module sees
-  either. The rows are read from `SPIKE_THRUST_TIERS`, never rewritten, and
+  "bias-thrust", for the H1-bias expiry rule and the bias-served tag that
+  shares it. It differs in exactly three ways -- it adds a flat row
+  (`EXTRA_THRUST_TIER`, >= 0.60x range with a >= 75% body); it adds the
+  repo's only SLIDING row (`sliding_thrust_body`: from >= 0.65x range
+  needing a 50% body, easing half a point per point of extra range to a 42%
+  floor reached at 0.81x, one-way, so extra body never buys back missing
+  range); and it lets the reference candle be any bias candle in
+  `h1_bias.BIAS_KINDS` -- an SFP today -- as well as a hammer/shooting star,
+  so every bias expires the same way. All three are local: `patterns_pure/`
+  is untouched and nothing outside that module sees any of them. The
+  canonical rows are read from `SPIKE_THRUST_TIERS`, never rewritten, and
   `h1_bias._assert_matches_patterns_pure` checks on every load that the
-  generalised code reproduces `find_spike_thrust` exactly on patterns-pure's
-  own rows and reference candles. Adding another such extension is a strategy
-  change: the user decides it.
+  generalised code with both local rows OFF reproduces `find_spike_thrust`
+  exactly on patterns-pure's own rows and reference candles. Adding another
+  such extension, or another row, is a strategy change: the user decides it
+  (the sliding row was added 2026-09-21, folding the old bias-served
+  constants into the thrust definition).
 
 # H1 directional bias (`h1_bias.py`)
 

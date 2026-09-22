@@ -66,35 +66,45 @@ inside is still forming, so it is offset 0 and is never a bias, never a
 thrust and never breaks a low -- exactly what a trader watching the clock
 would know at that moment.
 
-BIAS-THRUST -- patterns-pure's spike-thrust, generalised, plus ONE extra row
----------------------------------------------------------------------------
-Two things separate a bias-thrust from patterns-pure's `find_spike_thrust`
+BIAS-THRUST -- patterns-pure's spike-thrust, generalised, plus TWO extra rows
+----------------------------------------------------------------------------
+Three things separate a bias-thrust from patterns-pure's `find_spike_thrust`
 (the spike-thrust definition in CLAUDE.md, the only one allowed in the repo):
 
   * WHICH CANDLE IT FOLLOWS. `find_spike_thrust` only ever fires on the
     candle after a hammer or shooting star. A bias-thrust also fires on the
-    candle after an SFP, measured against THAT candle's range, because an
-    SFP is a bias here and has to be expirable the same way. Everything else
-    is unchanged: it must close in the bias's own direction (up after a
-    bullish reference candle, down after a bearish one) and clear one
-    (range, body) row.
-  * ONE EXTRA ROW, `EXTRA_THRUST_TIER`, that patterns-pure does not have:
-    range >= 0.60x the reference candle's range with a body >= 75% of the
-    thrust's own range.
+    candle after any other bias candle in BIAS_KINDS -- an SFP today --
+    measured against THAT candle's range, because every bias here has to be
+    expirable the same way. Everything else is unchanged: it must close in
+    the bias's own direction (up after a bullish reference candle, down
+    after a bearish one) and clear one (range, body) row.
+  * ONE EXTRA FLAT ROW, `EXTRA_THRUST_TIER`, that patterns-pure does not
+    have: range >= 0.60x the reference candle's range with a body >= 75% of
+    the thrust's own range.
+  * ONE SLIDING ROW, the only row anywhere in the repo whose body
+    requirement is not a constant: from range >= 0.65x needing a 50% body,
+    the body eases by half a point per point of extra range down to 42%,
+    which it reaches at 0.81x and holds from there on
+    (`sliding_thrust_body`). A wider candle made its move more forcefully,
+    so it is allowed a slightly smaller body. It is one-way: extra body
+    never buys back missing range, and under 0.65x this row does not apply
+    at all.
 
-The rows themselves are never written down here -- `_thrust_after` reads
-patterns-pure's own `SPIKE_THRUST_TIERS` and appends the one extra tuple --
-and `_series_masks` ASSERTS on every load that running `_thrust_after` with
-the canonical rows and hammer/star reference candles reproduces
-`find_spike_thrust`'s own output exactly. So patterns-pure stays the
-authority: if its table ever changes, this module follows it or fails loudly.
-None of this is a change to the repo-wide spike-thrust -- nothing outside
-this file sees the generalisation or the extra row, and `patterns_pure/` is
-untouched.
+The canonical rows are never written down here -- `_thrust_after` reads
+patterns-pure's own `SPIKE_THRUST_TIERS` and adds the two local rows on top
+-- and `_series_masks` ASSERTS on every load that running `_thrust_after`
+with the canonical rows alone (both local rows off) and hammer/star
+reference candles reproduces `find_spike_thrust`'s own output exactly. So
+patterns-pure stays the authority: if its table ever changes, this module
+follows it or fails loudly. None of this is a change to the repo-wide
+spike-thrust -- nothing outside this file sees the generalisation or either
+extra row, and `patterns_pure/` is untouched.
 
-Rows are OR'd, so the extra one can only ever ADD candles: the 0.60x..0.75x
-range band with a >= 75% body (too short for patterns-pure's own table), and
-anything at 0.75x or wider whose body lands between 75% and its table's 80%.
+Rows are OR'd, so the two local rows can only ever ADD candles: the flat one
+adds the 0.60x..0.75x band with a >= 75% body, and the sliding one adds
+everything from 0.65x up whose body clears its easing line -- which from
+0.81x on means any candle with a >= 42% body, the widest single loosening of
+the three. Both drive the bias EXPIRY, not just the served tag.
 """
 import os
 import sys
@@ -134,6 +144,58 @@ SFP_BIAS_MAX_AGE = 4        # sfp at a swing low / high
 EXTRA_THRUST_TIER = (0.60, 0.75)
 BIAS_THRUST_TIERS = tuple(SPIKE_THRUST_TIERS) + (EXTRA_THRUST_TIER,)
 
+# The SLIDING row, the second thing this module adds on top of patterns-pure
+# (see the module docstring). Unlike every flat row above it, the body it
+# demands SHRINKS as the thrust gets wider: SLIDING_THRUST_BODY of the
+# thrust's own range at SLIDING_THRUST_FLOOR, easing by
+# SLIDING_THRUST_CREDIT of a point per point of extra width, and never below
+# SLIDING_THRUST_BODY_FLOOR (reached at 0.81x and held from there on). A
+# wider candle made its move more forcefully, so it is allowed a slightly
+# smaller body; a narrow one is not. Nothing under the floor width qualifies
+# on this row at all, however big its body -- extra body never buys back
+# missing width.
+SLIDING_THRUST_FLOOR = 0.65
+SLIDING_THRUST_BODY = 0.50
+SLIDING_THRUST_BODY_FLOOR = 0.42
+SLIDING_THRUST_CREDIT = 0.5
+
+
+def sliding_thrust_body(width):
+    """The body (as a share of the thrust candle's own range) the sliding row
+    demands of a thrust this wide, `width` being its range as a multiple of
+    the reference candle's. Scalar or array."""
+    relief = SLIDING_THRUST_CREDIT * np.maximum(0.0, width - SLIDING_THRUST_FLOOR)
+    return np.maximum(SLIDING_THRUST_BODY_FLOOR, SLIDING_THRUST_BODY - relief)
+
+
+def thrust_row_cleared(width, body_share):
+    """The (width multiple, body share) row a candle clears, or None --
+    `width` its range as a multiple of the reference candle's, `body_share`
+    its body as a share of its own range. The flat rows first, then the
+    sliding one, whose row is reported at the body it actually demanded."""
+    for row in BIAS_THRUST_TIERS:
+        if width >= row[0] and body_share >= row[1]:
+            return row
+    if width >= SLIDING_THRUST_FLOOR:
+        need = float(sliding_thrust_body(width))
+        if body_share >= need:
+            return (SLIDING_THRUST_FLOOR, need)
+    return None
+
+# THE BIAS KINDS -- one row per bias: its name, its side, the key its per-bar
+# candle mask is stored under in `_series_masks`, and how many closed H1
+# candles it survives. Everything else is DERIVED from this table: which
+# candles the thrust expiry is measured after, which extreme a bias hangs on,
+# when it goes stale, and whether an entry serves it. Adding a kind is this
+# row plus its mask in `_series_masks`; nothing else needs to know about it.
+BIAS_KINDS = (
+    ("hammer", "bull", "hammer", HAMMER_BIAS_MAX_AGE),
+    ("star", "bear", "star", HAMMER_BIAS_MAX_AGE),
+    ("sfp", "bull", "sfp_low", SFP_BIAS_MAX_AGE),
+    ("sfp", "bear", "sfp_high", SFP_BIAS_MAX_AGE),
+)
+MAX_BIAS_AGE = max(age for *_, age in BIAS_KINDS)
+
 _BIAS_CACHE = {}
 
 
@@ -141,7 +203,7 @@ _BIAS_CACHE = {}
 # Per-series masks, computed once over the whole H1 series
 # --------------------------------------------------------------------------
 
-def _thrust_after(bars, ref_bull, ref_bear, tiers):
+def _thrust_after(bars, ref_bull, ref_bear, tiers, sliding=False):
     """Boolean (up, down) masks: the candle immediately after a BULLISH
     reference candle (`ref_bull`) that closes up and clears one of `tiers`
     against that reference candle's range, and the mirror after a bearish one.
@@ -149,13 +211,22 @@ def _thrust_after(bars, ref_bull, ref_bear, tiers):
     Exactly patterns-pure's own spike-thrust shape, with the reference candle
     made a parameter (it hardcodes "a hammer or a shooting star") so an SFP
     candle can be expired the same way -- see the module docstring. `tiers` is
-    read from patterns-pure's `SPIKE_THRUST_TIERS`; no row is written here."""
+    read from patterns-pure's `SPIKE_THRUST_TIERS`; no row is written here.
+
+    `sliding` adds this module's own sliding row (`sliding_thrust_body`) on
+    top of `tiers`. It is OFF for the check against patterns-pure, which must
+    see the canonical rows and nothing else."""
     total = (bars["high"] - bars["low"]).to_numpy(float)
     body = (bars["close"] - bars["open"]).abs().to_numpy(float)
     ref_range = np.concatenate([[np.nan], total[:-1]])
     strong = np.zeros(len(bars), dtype=bool)
     for range_mult, body_share in tiers:
         strong |= (total >= ref_range * range_mult) & (body >= total * body_share)
+    if sliding:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            width = np.where(ref_range > 0, total / ref_range, np.nan)
+        strong |= ((width >= SLIDING_THRUST_FLOOR) &
+                   (body >= total * sliding_thrust_body(width)))
     after_bull = np.concatenate([[False], np.asarray(ref_bull)[:-1]])
     after_bear = np.concatenate([[False], np.asarray(ref_bear)[:-1]])
     closes_up = (bars["close"] > bars["open"]).to_numpy()
@@ -217,21 +288,26 @@ def _series_masks(bars):
     is_hammer = is_hammer & sweeps_low
     is_star = is_star & sweeps_high
     sfp_low, sfp_high, swept = _sfp_masks(bars)
-    # ONE bullish reference mask covering both bullish bias candles (and one
-    # bearish). A thrust is judged against the reference candle's own range
-    # and the bias's own direction, both of which are identical for a hammer
-    # and for a bullish SFP sitting on the same candle, so merging them is
-    # not an approximation -- and each expiry check below already knows which
-    # kind of bias it is asking about.
+    out = {"hammer": is_hammer, "star": is_star,
+           "sfp_low": sfp_low, "sfp_high": sfp_high}
+    # ONE bullish reference mask covering EVERY bullish bias candle in
+    # BIAS_KINDS (and one bearish), so a new kind is expired by a thrust the
+    # moment its row is added. A thrust is judged against the reference
+    # candle's own range and the bias's own direction, both of which are
+    # identical for any two biases sitting on the same candle, so merging
+    # them is not an approximation -- and each expiry check below already
+    # knows which kind of bias it is asking about.
+    ref = {"bull": np.zeros(len(bars), dtype=bool),
+           "bear": np.zeros(len(bars), dtype=bool)}
+    for _kind, side, key, _age in BIAS_KINDS:
+        ref[side] = ref[side] | out[key]
     thrust_up, thrust_down = _thrust_after(
-        bars, is_hammer | sfp_low, is_star | sfp_high, BIAS_THRUST_TIERS)
-    out = {
-        "hammer": is_hammer, "star": is_star,
-        "thrust_up": thrust_up, "thrust_down": thrust_down,
-        "sfp_low": sfp_low, "sfp_high": sfp_high, "swept": swept,
+        bars, ref["bull"], ref["bear"], BIAS_THRUST_TIERS, sliding=True)
+    out.update({
+        "thrust_up": thrust_up, "thrust_down": thrust_down, "swept": swept,
         "low": bars["low"].to_numpy(float), "high": bars["high"].to_numpy(float),
-        "times": bars.index,
-    }
+        "open": bars["open"].to_numpy(float), "times": bars.index,
+    })
     _BIAS_CACHE[key] = out
     return out
 
@@ -276,15 +352,12 @@ def biases_at(ts, bars=None):
     if a is None:
         return []
     out = []
-    # The four biases, and the only thing that differs between them: which
-    # candles make one, and how long it lasts. Expiry (a) and (b) are shared
-    # word for word -- a bullish bias hangs on its candle's LOW and dies when
-    # a later candle trades a tick under it, a bearish one on its HIGH.
-    kinds = (("hammer", "bull", m["hammer"], HAMMER_BIAS_MAX_AGE),
-             ("star", "bear", m["star"], HAMMER_BIAS_MAX_AGE),
-             ("sfp", "bull", m["sfp_low"], SFP_BIAS_MAX_AGE),
-             ("sfp", "bear", m["sfp_high"], SFP_BIAS_MAX_AGE))
-    for k in range(1, max(HAMMER_BIAS_MAX_AGE, SFP_BIAS_MAX_AGE) + 1):
+    # Every bias in BIAS_KINDS, and the only thing that differs between them:
+    # which candles make one, and how long it lasts. Expiry (a) and (b) are
+    # shared word for word -- a bullish bias hangs on its candle's LOW and
+    # dies when a later candle trades a tick under it, a bearish one on its
+    # HIGH.
+    for k in range(1, MAX_BIAS_AGE + 1):
         i = a - k
         if i < 0:
             break
@@ -294,8 +367,8 @@ def biases_at(ts, bars=None):
             "bull": bool((m["low"][closed_after] <= m["low"][i] - TICK_SIZE).any()),
             "bear": bool((m["high"][closed_after] >= m["high"][i] + TICK_SIZE).any()),
         }
-        for kind, side, mask, max_age in kinds:
-            if not mask[i] or k > max_age:
+        for kind, side, key, max_age in BIAS_KINDS:
+            if not m[key][i] or k > max_age:
                 continue
             thrust = m["thrust_up"] if side == "bull" else m["thrust_down"]
             if i + 1 < a and thrust[i + 1]:            # (a) carried through
@@ -354,85 +427,85 @@ def fades(biases, is_long):
     return [b for b in biases if b["side"] == against]
 
 
-# BIAS SERVED -- a hammer / shooting-star bias whose promised move is already
-# largely made by the time a trade enters against it. Two tests, both needed,
-# and TIED TOGETHER (`served_advance_needed`):
-#   * the thrust candle (the H1 candle right after the spike) is the one in
-#     play, and its range SO FAR is at least SERVED_THRUST_RANGE of the
-#     spike candle's range -- a hard floor, never traded away;
-#   * the entry price sits far enough past the spike's HEAD in the bias
-#     direction, measured as a share of the spike's range: SERVED_ADVANCE
-#     normally, less when the thrust is unusually big (below). The head is
-#     the end of the candle its small body sits at: a hammer's high, a
-#     shooting star's low.
-# Two cases, for hammer / star biases only (an sfp is never served):
-#   * spike at offset -1: the thrust candle is the forming one, so its range
-#     is measured SO FAR, from M5 bars closed at the fill;
-#   * spike at offset -2 or older: the thrust candle has already closed, so
-#     its whole H1 range counts.
-# Nothing here changes `biases_at`.
-SERVED_THRUST_RANGE = 0.65
-SERVED_ADVANCE = 0.50
-# Thrust beyond SERVED_THRUST_RANGE earns relief on the advance test at this
-# rate -- half a point of advance per point of extra thrust -- down to
-# SERVED_ADVANCE_FLOOR and no further (full relief from 0.81x thrust on). A
-# big thrust candle means the spike's move was made forcefully, so an entry a
-# whisker short of half the spike's range past the head has still watched
-# that move happen. The trade is one-way on purpose: extra advance NEVER buys
-# back a weak thrust, since with no thrust there is no served move at all.
-SERVED_THRUST_CREDIT = 0.5
-SERVED_ADVANCE_FLOOR = 0.42
+# BIAS SERVED -- a bias whose promised move is already being made at the very
+# moment a trade enters against it. ONE test, and it is the BIAS-THRUST test
+# above with nothing added: the candle right after the bias candle -- the
+# candle the ENTRY ITSELF sits in -- already qualifies as that bias's thrust
+# as of the entry.
+#
+# WHY ONLY THAT ONE CANDLE. A bias-thrust on a CLOSED candle expires the bias
+# outright (rule (a) in the module docstring), so once such a candle has
+# closed there is no live bias left to fade and nothing to tag. The only
+# window in which a thrust can be under way and the bias still live is the
+# candle still forming. So served is exactly: the bias is one candle back,
+# and the candle the entry sits in is already on course to be its thrust.
+#
+# POINT-IN-TIME, ALWAYS. That candle has not closed, so it is measured from
+# its own open, every M5 bar that had CLOSED at the entry, and the entry
+# price itself standing in for the close -- nothing after the entry is read.
+# That is also how the entry price enters the test: the body so far runs from
+# the candle's open to the entry price, so an entry that has not travelled
+# with the move cannot produce a thrust-sized body, and one taken against the
+# move (below the open under a bullish bias) fails the direction test the
+# same way a thrust candle closing the wrong way does.
+#
+# EVERY KIND IS ELIGIBLE, present and future: the test reads only the bias
+# candle's range and the bias's side, which BIAS_KINDS supplies for all of
+# them. It has no numbers of its own -- the rows are the bias-thrust's own,
+# flat and sliding alike (`thrust_row_cleared`), exactly as the expiry's are.
 
 
-def served_advance_needed(thrust):
-    """The advance (share of the spike's range past its head) that a thrust
-    of this size demands before the bias counts as served: SERVED_ADVANCE at
-    the thrust floor, easing to SERVED_ADVANCE_FLOOR as the thrust grows."""
-    relief = SERVED_THRUST_CREDIT * max(0.0, thrust - SERVED_THRUST_RANGE)
-    return max(SERVED_ADVANCE_FLOOR, SERVED_ADVANCE - relief)
+def _candle_so_far(m5, t_open, fill_time, fill_price, open_price):
+    """The forming H1 candle's (high, low) AS OF `fill_time`: its own open,
+    every M5 bar that had CLOSED by then, and the fill price standing in for
+    the close. Nothing at or after the fill's own M5 bar close is read."""
+    seen = m5.loc[(m5.index >= t_open) & (m5.index + pd.Timedelta(minutes=5) <= fill_time)]
+    hi = max([float(seen["high"].max())] * len(seen) + [open_price, fill_price])
+    lo = min([float(seen["low"].min())] * len(seen) + [open_price, fill_price])
+    return hi, lo
 
 
 def served(biases, is_long, fill_time, fill_price, bars=None, m5=None):
-    """The FADED hammer / star biases (see `fades`) that are already served
-    at this entry, each as a copy of the bias dict plus 'spike_range',
-    'head', 'advance' (share of the spike's range the entry is past the
-    head), 'thrust_range' (share of the spike's range the forming thrust
-    candle has covered by the fill) and 'advance_needed' (the advance that
-    thrust demanded -- `served_advance_needed`). Empty means not served.
+    """The FADED biases (see `fades`) already SERVED at this entry -- see the
+    comment above -- each as a copy of the bias dict plus:
 
-    The thrust candle's range so far uses only M5 bars already CLOSED at the
-    fill plus the fill price itself, so nothing after the fill is peeked at."""
+      bias_range    the bias candle's own range, in points
+      thrust_range  the forming candle's range so far, as a multiple of it
+      thrust_body   the body so far, as a share of that range so far
+      tier          the (range multiple, body share) row it cleared
+
+    Empty means not served. Only a bias ONE candle back can be served, and
+    only by the candle the entry sits in, judged on what had happened by the
+    entry."""
     bars = R._display_h1() if bars is None else bars
     m5 = R._display_m5() if m5 is None else m5
     fill_time = MS._as_utc(fill_time)
     out = []
     for b in fades(biases, is_long):
-        if b["kind"] not in ("hammer", "star"):
+        if b["offset"] != -1:      # only the candle immediately after it
             continue
         pos = bars.index.get_loc(MS._as_utc(b["time"]))
         if pos + 1 >= len(bars):
             continue
         t_open = bars.index[pos + 1]
-        forming = t_open <= fill_time < t_open + pd.Timedelta(hours=1)
-        if not forming and b["offset"] == -1:
+        if not (t_open <= fill_time < t_open + pd.Timedelta(hours=1)):
+            continue               # the entry is not inside that candle
+        bias_range = float(bars["high"].iloc[pos]) - float(bars["low"].iloc[pos])
+        if bias_range <= 0:
             continue
-        spike_high, spike_low = float(bars["high"].iloc[pos]), float(bars["low"].iloc[pos])
-        rng = spike_high - spike_low
-        if rng <= 0:
+        open_price = float(bars["open"].iloc[pos + 1])
+        hi, lo = _candle_so_far(m5, t_open, fill_time, fill_price, open_price)
+        total = hi - lo
+        # Signed in the bias's own direction, so a candle going the other way
+        # is negative and clears no row -- the same direction test the expiry
+        # makes on a closed candle's close.
+        body = (fill_price - open_price) if b["side"] == "bull" else (open_price - fill_price)
+        if total <= 0 or body <= 0:
             continue
-        bull = b["side"] == "bull"
-        head = spike_high if bull else spike_low
-        advance = ((fill_price - head) if bull else (head - fill_price)) / rng
-        if forming:
-            seen = m5.loc[(m5.index >= t_open) & (m5.index + pd.Timedelta(minutes=5) <= fill_time)]
-            hi = max([float(seen["high"].max())] * len(seen) + [fill_price])
-            lo = min([float(seen["low"].min())] * len(seen) + [fill_price])
-        else:
-            hi, lo = float(bars["high"].iloc[pos + 1]), float(bars["low"].iloc[pos + 1])
-        thrust = (hi - lo) / rng
-        needed = served_advance_needed(thrust)
-        if thrust >= SERVED_THRUST_RANGE and advance >= needed:
-            out.append({**b, "spike_range": rng, "head": head,
-                        "advance": advance, "thrust_range": thrust,
-                        "advance_needed": needed})
+        tier = thrust_row_cleared(total / bias_range, body / total)
+        if tier is None:
+            continue
+        out.append({**b, "bias_range": bias_range,
+                    "thrust_range": total / bias_range,
+                    "thrust_body": body / total, "tier": tier})
     return out
