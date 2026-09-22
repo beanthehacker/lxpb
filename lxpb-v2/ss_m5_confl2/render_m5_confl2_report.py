@@ -502,6 +502,54 @@ def _dynamic_stop_m5(level_type, alt_price, is_long, entry_level_info,
 
     stop_row is always a pd.Series (like SF.dynamic_stop's own return) so
     callers can .to_dict() either path uniformly."""
+    stop_price, stop_row, stop_source = _dynamic_stop_m5_base(
+        level_type, alt_price, is_long, entry_level_info, m5_ledger, touch_time_alt)
+    if stop_price is not None and abs(stop_price - alt_price) < MIN_STOP_PTS:
+        wide = _wider_stop_p1(m5_ledger, level_type, alt_price, is_long, touch_time_alt)
+        if wide is not None:
+            return wide
+    return stop_price, stop_row, stop_source
+
+
+# A stop closer than this to the fill is too tight to be a real invalidation
+# point; _wider_stop_p1 moves it to an older P1 candle instead.
+MIN_STOP_PTS = 3.0
+WIDER_STOP_LOOKBACK = pd.Timedelta(hours=24)
+
+
+def _wider_stop_p1(m5_ledger, level_type, alt_price, is_long, touch_time_alt):
+    """(stop_price, stop_row, 'm5_wide_p1') for the MOST RECENT completed M5
+    P1 (breakout) candle of a same-type level within +/-DYNAMIC_STOP_RADIUS_PTS
+    of the fill, formed in the last WIDER_STOP_LOOKBACK, whose protective
+    extreme (breakout low for a long, high for a short) puts the stop at
+    least MIN_STOP_PTS beyond the fill; None if there is none. Any fate
+    counts -- like a target or the thrust stop, the candle need not have
+    passed the entry gate or still be live, it only has to be a P1 candle.
+    Detector pairing is irrelevant: no spike test is made here."""
+    if m5_ledger is None or m5_ledger.empty:
+        return None
+    as_of = pd.to_datetime(touch_time_alt, utc=True).floor("5min") - pd.Timedelta(nanoseconds=1)
+    bt = m5_ledger["breakout_time"]
+    cand = m5_ledger[(m5_ledger["type"] == level_type) & (bt <= as_of)
+                     & (bt >= as_of - WIDER_STOP_LOOKBACK)
+                     & ((m5_ledger["price"] - alt_price).abs() <= DYNAMIC_STOP_RADIUS_PTS)]
+    if cand.empty:
+        return None
+    extreme = "breakout_low" if is_long else "breakout_high"
+    tick = R.TICK_SIZE_DEFAULT
+    stops = cand[extreme] + (-tick if is_long else tick)
+    ok = (stops <= alt_price - MIN_STOP_PTS) if is_long else (stops >= alt_price + MIN_STOP_PTS)
+    cand = cand[ok.to_numpy()]
+    if cand.empty:
+        return None
+    latest = cand[cand["breakout_time"] == cand["breakout_time"].max()]
+    best = latest.loc[latest[extreme].idxmin() if is_long else latest[extreme].idxmax()]
+    return float(best[extreme] + (-tick if is_long else tick)), best, "m5_wide_p1"
+
+
+def _dynamic_stop_m5_base(level_type, alt_price, is_long, entry_level_info,
+                          m5_ledger, touch_time_alt):
+    """The stop before the MIN_STOP_PTS widening (see _dynamic_stop_m5)."""
     if entry_level_info is not None and entry_level_info.get("is_spike"):
         all_bars = LC.m5_bars_continuous()
         formation_time = pd.Timestamp(entry_level_info["formation_time"])
@@ -3082,6 +3130,10 @@ def _render_row(idx, res, chart_stacks, fps):
                          f"P1 {R._to_pt_str(stop_level['breakout_time'])}, "
                          f"{extreme} {stop_level[extreme]:.2f}; one tick "
                          f"{'below' if res['is_long'] else 'above'}")
+            if stop_source == "m5_wide_p1":
+                stop_title = (f"Widened: the normal stop was under {MIN_STOP_PTS:g} pts from the "
+                              f"fill, so the stop moved to the most recent older P1 candle that "
+                              f"gives at least that. " + stop_title)
         chase_pts = res.get("chased_pts", 0.0)
         chase_flag = (f'<span class="src-tag chase" title="Pegged/chasing limit: original '
                       f'quote {res["alt_price"]:.2f} did not fill passively; '
