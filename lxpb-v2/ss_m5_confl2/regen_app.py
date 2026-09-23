@@ -24,7 +24,7 @@ OUT_DIR = os.path.join(REPO, "public", "reports", "ss_m5_confl2")
 
 # (label, output file, extra args, also write .html.gz)
 REPORTS = [
-    ("Jul-Aug 2026 (default report)", "jul-aug.html", [], False),
+    ("Jul-Aug 2026 (default report)", "jul-aug.html", [], True),
     ("Full 2025", "2025.html",
      ["--start", "2025-01-01", "--end", "2025-12-31"], True),
     ("Full 2026", "2026.html",
@@ -67,8 +67,8 @@ class App(tk.Tk):
             text="Smoke test first (--max-rows 20, written to a temp file, not the reports)",
         ).pack(side="left")
         ttk.Label(opts, text="   Workers:").pack(side="left")
-        self.workers = tk.IntVar(value=1)
-        ttk.Spinbox(opts, from_=1, to=8, width=3, textvariable=self.workers).pack(side="left")
+        self.workers = tk.IntVar(value=15)
+        ttk.Spinbox(opts, from_=1, to=15, width=3, textvariable=self.workers).pack(side="left")
 
         btns = ttk.Frame(self, padding=8)
         btns.pack(fill="x")

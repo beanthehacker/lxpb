@@ -74,7 +74,7 @@ the target are ALL M5 LXPB structure:
          most recent CONFIRMED zigzag TROUGH for a long (LHPB), CREST for a
          short (LLPB), formed between P1 and P2 (just before the retest); the
          pivot's own price is the target. No pivot there = no target. Only
-         that single pivot is tried; if it is outside the up-to-25pt favourable
+         that single pivot is tried; if it is outside the up-to-50pt favourable
          band the rule finds nothing.
 
      BOTH rules run for every trade, whatever --target-mode says, and each is
@@ -159,6 +159,19 @@ the target are ALL M5 LXPB structure:
          under a live bullish bias, a long under a live bearish one -- is
          tagged `fading_bias`. Like `volume-spike` this is purely a Dynamic
          filter chip, NOT excluded from the headline stats by default.
+
+       * NEWS PULL (`--news-pull-window`, on by default). The level's first
+         tick-level touch (the retest itself, from
+         `render_ss_confl_finetune_report.find_alt_fill`) is the ONE retest
+         event this scan can find -- there is no earlier resting order it
+         could belong to. If that touch lands in the recurring daily
+         [05:29:55, 05:30:40) Pacific blackout -- around the 05:30 PT/
+         08:30 ET instant most scheduled US econ releases (CPI/NFP/PPI/
+         retail sales/...) print, when a real resting order would be pulled
+         -- the retest happened while orders were pulled, so this is no
+         trade at all (tag `news_pull_blocked`, a hard rule like end-of-day,
+         not a Dynamic filter chip). It is never re-armed for a later touch:
+         there is nothing to re-arm.
 
        * END OF DAY (trade_management.py rule 3). No position is carried
          overnight: an open trade is flattened at market before 12:45 PT
@@ -259,7 +272,7 @@ import h1_bias as HB                              # noqa: E402
 SS_CONFL_MIN_DEFAULT = 1
 M5_CONFLUENCE_N_POINTS_DEFAULT = 10.0  # same-side M5 confluence radius: selection + entry refinement
 MIN_DYNAMIC_TARGET_PTS = 0.25   # one tick: no real floor, just strictly favourable (SF is 1)
-MAX_DYNAMIC_TARGET_PTS = 25.0   # own band (SF is 20); every target rule here shares it
+MAX_DYNAMIC_TARGET_PTS = 50.0   # own band (SF is 20); every target rule here shares it
 DYNAMIC_STOP_RADIUS_PTS = SF.DYNAMIC_STOP_RADIUS_PTS
 MAX_ALT_FILL_HOURS_DEFAULT = SF.MAX_ALT_FILL_HOURS_DEFAULT
 MIN_R_DEFAULT = 1.0
@@ -613,7 +626,7 @@ def _dynamic_stop_m5_thrust(m5_ledger, level_type, alt_price, is_long, touch_tim
 # Both rules read the trade's own P1..fill window (see _window_bounds): the
 # swing-extreme rule takes the last confirmed zigzag pivot's own price, the
 # opposite-M5-zigzag-anchor rule takes the farthest untested opposite-type M5
-# P0 formed after that pivot. The same up-to-25pt favourable band bounds both.
+# P0 formed after that pivot. The same up-to-50pt favourable band bounds both.
 # --------------------------------------------------------------------------
 
 TARGET_MODES = ("opposite-m5-zz", "swing-extreme")   # every rule _pick_targets computes
@@ -709,7 +722,7 @@ def _live_m5_target_candidates(m5_ledger, level_type, touch_time, min_breakout_l
     ledger) is resolved exactly as SF._live_m5_before_entry does.
 
     `price`/`max_pts`: every caller immediately throws out anything more
-    than a fixed number of points from the fill (up-to-25pt for a target,
+    than a fixed number of points from the fill (up-to-50pt for a target,
     +/-DYNAMIC_STOP_RADIUS_PTS for a stop) -- pass them here so a
     gated-dropped candidate that could never qualify on distance alone is
     dropped BEFORE its own untouched-since-breakout check runs, not after.
@@ -1297,6 +1310,17 @@ def process_cluster(cluster, args):
             pegged=args.pegged_entry, peg_step=args.peg_step, peg_cap=args.peg_cap)
     if touch_time_alt is None:
         result["fail_reason"] = "unfilled_within_window"
+        return result
+    # News-pull blackout: touch_time_alt is the level's FIRST tick-level
+    # touch -- the retest itself, not just an order's fill -- so a touch
+    # landing in the recurring daily 05:29:55-05:30:40 PT window (around the
+    # 05:30 PT/08:30 ET scheduled econ release) means the retest happened
+    # while orders were pulled. There is no later touch to fall back on: the
+    # one retest this scan finds already happened in the dead window, so
+    # this is no trade at all (see SF.find_alt_fill's own docstring).
+    if args.news_pull_window and SF._in_news_pull_window(touch_time_alt):
+        result["fail_reason"] = "news_pull_blocked"
+        result["touch_time_alt"] = touch_time_alt
         return result
     # End-of-day flat, entry half (trade_management.py rule 3): a resting
     # order is CANCELLED at the cutoff, so a fill that would have landed
@@ -2488,15 +2512,27 @@ def _apply_h1_bias(results):
     of bias: the H1 candle the entry itself sits in -- the one right after
     the bias candle -- already qualifies as that bias's thrust as of the
     entry, judged on the candle's own open, the M5 bars closed by then and
-    the entry price standing in for its close. Also UNCHECKED by default."""
+    the entry price standing in for its close. Also UNCHECKED by default.
+
+    Also carries h1_bias.py's fifth kind, HoH/LoSS retest: bullish when an
+    H1 hammer P0's own high was retested (its H1-ledger death, fate ==
+    retested) within h1_bias.HOH_LOSS_HOUR_TOLERANCE / HOH_LOSS_RADIUS_PTS
+    of this trade's own query instant and price, bearish for a shooting
+    star's low. Queried on the same instant as every other kind above, but
+    at the REFINED entry price -- fill_price when filled, alt_price
+    otherwise -- since it is the one kind that needs a price at all."""
     h1_bars = R._display_h1()
+    h1_ledger = LC.h1_levels(verbose=False)
     for res in results:
         if res["filled"]:
             at = pd.Timestamp(res["touch_time_alt"])
-            biases = HB.biases_at(at, h1_bars)
+            biases = HB.biases_at(at, price=float(res["fill_price"]),
+                                  bars=h1_bars, h1_ledger=h1_ledger)
             biases = HB.expire_swept(biases, at, at, float(res["fill_price"]), h1_bars)
         else:
-            biases = HB.biases_at(pd.Timestamp(res["row"]["retest_time"]), h1_bars)
+            biases = HB.biases_at(pd.Timestamp(res["row"]["retest_time"]),
+                                  price=float(res["alt_price"]),
+                                  bars=h1_bars, h1_ledger=h1_ledger)
         res["h1_bias"] = biases
         if HB.fades(biases, res["is_long"]):
             res.setdefault("dyn_tags", []).append("fading_bias")
@@ -2509,7 +2545,7 @@ def _apply_h1_bias(results):
     return results
 
 
-N_COLS = 32  # keep in sync with `head` below and every colspan in this section
+N_COLS = 33  # keep in sync with `head` below and every colspan in this section
 
 # MES position sizing / commissions. R stays a fixed $1,000 and the stop is not
 # widened for costs: contracts = floor(R_DOLLARS / (stop pts x MES_POINT_VALUE)),
@@ -2559,6 +2595,7 @@ def _fail_reason_label(reason):
     return {
         "unfilled_within_window": "UNFILLED (entry never reached)",
         "eod_entry_blocked": "NO TRADE (entry blocked -- end of day)",
+        "news_pull_blocked": "NO TRADE (retest during news-pull blackout)",
         "no_target": "NO TRADE (no target under any rule)",
         "no_tick_data_after_fill": "NO DATA after fill",
         "no_m5_stop": "NO TRADE (no qualifying M5 breakout-candle stop)",
@@ -2920,7 +2957,17 @@ _BIAS_KIND_WORDS = {"hammer": "hammer", "star": "shooting star",
 
 
 def _bias_detail(b):
-    """One live H1 bias, spelled out for a tooltip."""
+    """One live H1 bias, spelled out for a tooltip. HoH/LoSS retest (see
+    h1_bias.py's "A FIFTH KIND") has no candle-offset countdown, so it gets
+    its own sentence instead of the shared 'lives N candles' one."""
+    if b["kind"] in ("hoh_retest", "loss_retest"):
+        head = "high" if b["kind"] == "hoh_retest" else "low"
+        return (f'{b["label"]}: H1 {"hammer" if b["kind"] == "hoh_retest" else "shooting star"} '
+                f'formed {R._to_pt_str(b["formation_time"])}, {head} {b["price"]:.2f} first '
+                f'retested {R._to_pt_str(b["time"])} -- within '
+                f'{HB.HOH_LOSS_HOUR_TOLERANCE.total_seconds() / 3600:.0f}hr / '
+                f'{HB.HOH_LOSS_RADIUS_PTS:.0f}pt of this trade\'s own query, '
+                f'{"bullish" if b["side"] == "bull" else "bearish"}')
     extreme = "low" if b["side"] == "bull" else "high"
     ordinal = {1: "1st", 2: "2nd", 3: "3rd"}.get(-b["offset"], f'{-b["offset"]}th')
     swept = ""
@@ -3102,6 +3149,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
   <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb"></td>
   <td class="replayed-cell" onclick="event.stopPropagation();"><input type="checkbox" class="replayed-cb"></td>
+  <td class="done-cell" onclick="event.stopPropagation();"><input type="checkbox" class="done-cb"></td>
   <td class="left" onclick="event.stopPropagation();"><textarea class="trade-note" placeholder="notes..."></textarea></td>
   <td class="expand-cell"><button class="expand-btn" data-idx="{idx}"
       onclick="event.stopPropagation();toggleChart({idx})">▶</button></td>
@@ -3240,6 +3288,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
   <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb"></td>
   <td class="replayed-cell" onclick="event.stopPropagation();"><input type="checkbox" class="replayed-cb"></td>
+  <td class="done-cell" onclick="event.stopPropagation();"><input type="checkbox" class="done-cb"></td>
   <td class="left" onclick="event.stopPropagation();"><textarea class="trade-note" placeholder="notes..."></textarea></td>
   <td class="expand-cell"><button class="expand-btn" data-idx="{idx}"
       onclick="event.stopPropagation();toggleChart({idx})">\u25b6</button></td>
@@ -3771,6 +3820,8 @@ the box is checked.">Trade management</span>
             f"Reported only; R and PnL are gross of it\">Comm.</th>"
             f"<th>MAE (win)</th><th>MFE (loss)</th><th>Max DD</th>"
             f"<th>Reviewed</th><th>Valid</th><th>Replayed</th>"
+            f"<th title=\"Done with this trade's feedback -- purely a review aid, "
+            f"dims the row, no effect on stats or filters\">Done</th>"
             f"<th class=\"left\">Notes</th><th class=\"expand-th\">\u25b6</th>")
 
     storage_key = f"lxpb_m5_confl{args.ss_confl_min}_review_v1{storage_suffix}"
@@ -3935,31 +3986,11 @@ tr.lvl-row.no-target-row td { color:var(--text-faint); font-style:italic; }
 textarea.trade-note { width:360px; height:150px; resize:both; }
 th.sortable-th { cursor:pointer; user-select:none; }
 th.sortable-th:hover { text-decoration:underline; }
-/* M5 pane's hover OHLC readout: this strategy's M5 pane is full-width
-   (chart-row-solo -- see above, no H1 alongside it), so the shared
-   half-width layout (render_stop_target_report.CSS's chart-title-split,
-   OHLC pinned top-right next to the title) left it far from center. Stack
-   the title into two rows instead: the descriptive text stays small on its
-   own line, the OHLC readout goes big and centered underneath. H1/D1 keep
-   the shared top-right layout untouched (no .m5-pane class on their cells).
-   ct-ohlc's min-height keeps the title bar's height constant whether or not
-   it currently has a reading, so chart-ph's height below (tuned to match)
-   never has to fight a layout shift. ct-ohlc is sized in px, not em: this
-   title bar sits inside #lvl-table (font-size:0.8em) inside a further
-   0.75em on .chart-title itself, so an em value here would render far
-   smaller than intended once nested that deep. */
-.m5-pane .chart-title.chart-title-split {
-  flex-direction:column; align-items:stretch; gap:2px; padding:4px 8px 6px;
-  white-space:normal;
-}
-.m5-pane .chart-title.chart-title-split .ct-base {
-  flex:0 0 auto; text-align:left; white-space:nowrap;
-}
-.m5-pane .chart-title.chart-title-split .ct-ohlc {
-  flex:0 0 auto; font-size:20px; font-weight:600; text-align:center;
-  color:#e5e7eb; white-space:nowrap; min-height:24px; line-height:24px;
-}
-.m5-pane .chart-ph { height:calc(100% - 48px); }
+/* Done checkbox: purely "I'm finished with this trade's feedback" -- dims
+   the whole row so reviewed trades visually recede, independent of the
+   Reviewed/Valid/Replayed workflow (own doneStore, see JS below). */
+tr.lvl-row.is-done { opacity:0.35; }
+tr.lvl-row.is-done:hover { opacity:0.6; }
 </style>
 """
 JS = SR.JS + """
@@ -4437,6 +4468,31 @@ let sortSpec = [];
     });
   });
 })();
+
+// ---------------------------------------------------------------------
+// Done checkbox -- separate from the Reviewed/Valid/Replayed review
+// workflow above: it only means "I'm finished looking at this trade's
+// feedback" and dims the row, so it gets its own store (same report key,
+// suffixed) rather than folding into reviewRowState, which would force
+// every OTHER report sharing that shared widget to carry this field too.
+// No filter, no summary count -- just persistence and the grey-out.
+// ---------------------------------------------------------------------
+const doneStore = new RowStore(REVIEW_STORAGE_KEY + '_done');
+async function initDone() {
+  await doneStore.init();
+  document.querySelectorAll('#lvl-table tbody tr.lvl-row').forEach(tr => {
+    const cb = tr.querySelector('.done-cb');
+    if (!cb) return;
+    const state = doneStore.get(tr.dataset.key);
+    cb.checked = !!state.done;
+    tr.classList.toggle('is-done', !!state.done);
+    cb.addEventListener('change', () => {
+      doneStore.set(tr.dataset.key, { done: cb.checked });
+      tr.classList.toggle('is-done', cb.checked);
+    });
+  });
+}
+initDone();
 </script>
 """
 
@@ -4580,6 +4636,15 @@ if __name__ == "__main__":
     parser.add_argument("--peg-target-cap", type=float, default=PEG_CAP_DEFAULT,
                         help=f"Max total chase distance in points from the target for "
                              f"--peg-target (default {PEG_CAP_DEFAULT}, same as --peg-cap).")
+    parser.add_argument("--news-pull-window", action=argparse.BooleanOptionalAction, default=True,
+                        help="A retest whose first tick-level touch (SF.find_alt_fill) lands in "
+                             f"the recurring daily [{SF.NEWS_PULL_START_PT}, "
+                             f"{SF.NEWS_PULL_END_PT}) Pacific blackout (05:29:55-05:30:40 PT, "
+                             "around the 05:30 PT/08:30 ET scheduled econ release) is no trade at "
+                             "all -- a real resting order would have been pulled for that window, "
+                             "and there is no later touch to fall back on. ON by default; tag "
+                             "news_pull_blocked, a hard rule like --eod-flat, not a Dynamic "
+                             "filter.")
     parser.add_argument("--start", default=DEFAULT_START)
     parser.add_argument("--end", default=DEFAULT_END)
     parser.add_argument("--max-rows", type=int, default=None,
