@@ -2512,15 +2512,27 @@ def _apply_h1_bias(results):
     of bias: the H1 candle the entry itself sits in -- the one right after
     the bias candle -- already qualifies as that bias's thrust as of the
     entry, judged on the candle's own open, the M5 bars closed by then and
-    the entry price standing in for its close. Also UNCHECKED by default."""
+    the entry price standing in for its close. Also UNCHECKED by default.
+
+    Also carries h1_bias.py's fifth kind, HoH/LoSS retest: bullish when an
+    H1 hammer P0's own high was retested (its H1-ledger death, fate ==
+    retested) within h1_bias.HOH_LOSS_HOUR_TOLERANCE / HOH_LOSS_RADIUS_PTS
+    of this trade's own query instant and price, bearish for a shooting
+    star's low. Queried on the same instant as every other kind above, but
+    at the REFINED entry price -- fill_price when filled, alt_price
+    otherwise -- since it is the one kind that needs a price at all."""
     h1_bars = R._display_h1()
+    h1_ledger = LC.h1_levels(verbose=False)
     for res in results:
         if res["filled"]:
             at = pd.Timestamp(res["touch_time_alt"])
-            biases = HB.biases_at(at, h1_bars)
+            biases = HB.biases_at(at, price=float(res["fill_price"]),
+                                  bars=h1_bars, h1_ledger=h1_ledger)
             biases = HB.expire_swept(biases, at, at, float(res["fill_price"]), h1_bars)
         else:
-            biases = HB.biases_at(pd.Timestamp(res["row"]["retest_time"]), h1_bars)
+            biases = HB.biases_at(pd.Timestamp(res["row"]["retest_time"]),
+                                  price=float(res["alt_price"]),
+                                  bars=h1_bars, h1_ledger=h1_ledger)
         res["h1_bias"] = biases
         if HB.fades(biases, res["is_long"]):
             res.setdefault("dyn_tags", []).append("fading_bias")
@@ -2945,7 +2957,17 @@ _BIAS_KIND_WORDS = {"hammer": "hammer", "star": "shooting star",
 
 
 def _bias_detail(b):
-    """One live H1 bias, spelled out for a tooltip."""
+    """One live H1 bias, spelled out for a tooltip. HoH/LoSS retest (see
+    h1_bias.py's "A FIFTH KIND") has no candle-offset countdown, so it gets
+    its own sentence instead of the shared 'lives N candles' one."""
+    if b["kind"] in ("hoh_retest", "loss_retest"):
+        head = "high" if b["kind"] == "hoh_retest" else "low"
+        return (f'{b["label"]}: H1 {"hammer" if b["kind"] == "hoh_retest" else "shooting star"} '
+                f'formed {R._to_pt_str(b["formation_time"])}, {head} {b["price"]:.2f} first '
+                f'retested {R._to_pt_str(b["time"])} -- within '
+                f'{HB.HOH_LOSS_HOUR_TOLERANCE.total_seconds() / 3600:.0f}hr / '
+                f'{HB.HOH_LOSS_RADIUS_PTS:.0f}pt of this trade\'s own query, '
+                f'{"bullish" if b["side"] == "bull" else "bearish"}')
     extreme = "low" if b["side"] == "bull" else "high"
     ordinal = {1: "1st", 2: "2nd", 3: "3rd"}.get(-b["offset"], f'{-b["offset"]}th')
     swept = ""

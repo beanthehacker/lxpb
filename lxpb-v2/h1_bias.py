@@ -66,6 +66,27 @@ inside is still forming, so it is offset 0 and is never a bias, never a
 thrust and never breaks a low -- exactly what a trader watching the clock
 would know at that moment.
 
+A FIFTH KIND, OUTSIDE BIAS_KINDS: HOH / LOSS RETEST
+----------------------------------------------------
+This one is not a candle pattern at all -- it fires when an H1 SPIKE P0's own
+HEAD gets retested close to a QUERY the caller is asking about (a trade's own
+fill price and instant): a hammer's high (an LHPB, detector pairing) is
+BULLISH "HoH retest" (High of Hammer), a shooting star's low (an LLPB) is
+BEARISH "LoSS retest" (Low of Shooting Star). "Retested" means the level's
+own H1 ledger death (`lxpb_levels_cache`'s fate == retested, i.e. `LC.retests`)
+-- its FIRST retest since its own formation/breakout, not any later touch.
+It fires whenever that death instant falls within HOH_LOSS_HOUR_TOLERANCE of
+the query instant AND the level's price within HOH_LOSS_RADIUS_PTS of the
+query price.
+
+Because it reads one already-closed, already-terminal event through a fixed
+window around the query rather than counting candles forward from a bias
+candle, it needs none of the machinery above: no age, no sweep-expiry, no
+bias-thrust. It is computed fresh on every `biases_at` call from `price`
+(None skips it -- the other four kinds need no price) and is never cached,
+swept (`expire_swept` skips its two kinds) or served (`served` skips them
+too, since neither test says anything about this kind).
+
 BIAS-THRUST -- patterns-pure's spike-thrust, generalised, plus TWO extra rows
 ----------------------------------------------------------------------------
 Three things separate a bias-thrust from patterns-pure's `find_spike_thrust`
@@ -120,6 +141,7 @@ for _p in (_HERE, _REPO_ROOT):
 
 import render_labels_report as R     # noqa: E402  (also puts patterns_pure/ on sys.path)
 import m5_structure as MS            # noqa: E402
+import lxpb_levels_cache as LC       # noqa: E402
 
 from find_spike_thrust import find_spike_thrust, SPIKE_THRUST_TIERS   # noqa: E402
 from find_sfp import find_sfp   # noqa: E402
@@ -195,6 +217,12 @@ BIAS_KINDS = (
     ("sfp", "bear", "sfp_high", SFP_BIAS_MAX_AGE),
 )
 MAX_BIAS_AGE = max(age for *_, age in BIAS_KINDS)
+
+# A FIFTH bias, outside BIAS_KINDS -- see the module docstring addendum
+# above _hoh_loss_biases. +/- band around the query price and instant an H1
+# SPIKE P0's own first retest since formation/breakout must fall inside.
+HOH_LOSS_RADIUS_PTS = 10.0
+HOH_LOSS_HOUR_TOLERANCE = pd.Timedelta(hours=1)
 
 _BIAS_CACHE = {}
 
@@ -329,29 +357,80 @@ def _anchor(bars, ts):
     return p if bars.index[p] + pd.Timedelta(hours=1) > ts else p + 1
 
 
-def biases_at(ts, bars=None):
+def _hoh_loss_biases(ts, price, bars, a, h1_ledger):
+    """The fifth bias kind -- see the module docstring's "A FIFTH KIND"
+    section. `price` is the caller's query price (None -- the caller has
+    none to test -- means this kind never fires). `a` is `ts`'s own anchor
+    position in `bars` (from `_anchor`), used only to report `offset` the
+    same "candles back" way the other four kinds do, for sorting/display;
+    it plays no part in whether this kind fires."""
+    if price is None:
+        return []
+    hits = LC.retests(h1_ledger)
+    hits = hits[hits["is_spike"].astype(bool)]
+    if hits.empty:
+        return []
+    ts = MS._as_utc(ts)
+    hits = hits[(hits["death_time"] - ts).abs() <= HOH_LOSS_HOUR_TOLERANCE]
+    hits = hits[(hits["price"] - float(price)).abs() <= HOH_LOSS_RADIUS_PTS]
+    out = []
+    for _, r in hits.iterrows():
+        is_hammer = r["type"] == "LHPB"
+        try:
+            offset = int(bars.index.get_loc(r["death_time"])) - a
+        except KeyError:
+            offset = 0
+        out.append({"kind": "hoh_retest" if is_hammer else "loss_retest",
+                    "side": "bull" if is_hammer else "bear", "offset": offset,
+                    "time": r["death_time"],
+                    "label": "HoH retest" if is_hammer else "LoSS retest",
+                    "price": float(r["price"]), "max_age": None,
+                    "formation_time": r["formation_time"],
+                    "swing_time": None, "swing_price": None})
+    return out
+
+
+def biases_at(ts, price=None, bars=None, h1_ledger=None):
     """Every H1 bias still LIVE at instant `ts`, nearest candle first.
 
     Each entry is a dict:
-      kind      'hammer' | 'star' | 'sfp'
+      kind      'hammer' | 'star' | 'sfp' | 'hoh_retest' | 'loss_retest'
       side      'bull' | 'bear'
       offset    negative H1 candles from the candle `ts` sits in (-1 = the
-                previous, most recently closed candle)
-      time      that candle's own bar time (tz-aware UTC)
-      label     '<kind>@<offset>', e.g. 'hammer@-1' -- the report's metadata
+                previous, most recently closed candle) for the first three
+                kinds; for the fifth kind (see below) it is informational
+                only -- candles back from `ts` to the retested level's own
+                death candle, not a survival countdown.
+      time      that candle's own bar time (tz-aware UTC); for the fifth
+                kind, the level's own death (retest) instant instead
+      label     '<kind>@<offset>', e.g. 'hammer@-1' for the first three;
+                'HoH retest' / 'LoSS retest' for the fifth (no offset suffix
+                -- it has no survival countdown to place it in)
       price     the candle extreme the bias hangs on (its low for a bullish
-                one, its high for a bearish one)
+                one, its high for a bearish one) for the first three; for
+                the fifth kind, the retested level's own head price (the
+                hammer's high / shooting star's low)
       max_age   how many closed candles it survives in total (see the two
-                MAX_AGE constants), so `offset` == -max_age is its last candle
+                MAX_AGE constants), so `offset` == -max_age is its last
+                candle; None for the fifth kind, which has no such countdown
       swing_time / swing_price
                 SFP only (None otherwise): the untested swing pivot it swept
-    """
+
+    `price` -- the caller's own query price (e.g. a trade's fill price) --
+    is needed ONLY by the fifth kind (HoH/LoSS retest, see the module
+    docstring); omit it and that kind never fires, exactly as before this
+    kind existed. `h1_ledger` lets a caller looping over many queries pass
+    one already-fetched `lxpb_levels_cache.h1_levels()` in rather than
+    re-fetching it (cheap, but not free) on every call; defaults to
+    fetching it itself."""
     bars = R._display_h1() if bars is None else bars
     m = _series_masks(bars)
     a = _anchor(bars, ts)
     if a is None:
         return []
-    out = []
+    out = list(_hoh_loss_biases(
+        ts, price, bars, a,
+        LC.h1_levels(verbose=False) if h1_ledger is None else h1_ledger))
     # Every bias in BIAS_KINDS, and the only thing that differs between them:
     # which candles make one, and how long it lasts. Expiry (a) and (b) are
     # shared word for word -- a bullish bias hangs on its candle's LOW and
@@ -396,7 +475,12 @@ def expire_swept(biases, retest_ts, fill_time, fill_price, bars=None, m5=None):
     Here every M5 bar closed at the fill, from the open of the retest's
     candle on, plus the fill price itself, is checked the same way: a bullish
     bias dies once price trades a tick under its low, a bearish one a tick
-    over its high. Nothing after the fill is peeked at."""
+    over its high. Nothing after the fill is peeked at.
+
+    Skips the fifth kind (hoh_retest/loss_retest, see the module docstring)
+    outright: that kind has no sweep-expiry of its own -- it hangs on an
+    already-closed, already-terminal H1 event, not a still-open extreme
+    price can trade back through."""
     if not biases:
         return biases
     bars = R._display_h1() if bars is None else bars
@@ -408,8 +492,9 @@ def expire_swept(biases, retest_ts, fill_time, fill_price, bars=None, m5=None):
     lo = min([float(seen["low"].min())] * len(seen) + [fill_price])
     hi = max([float(seen["high"].max())] * len(seen) + [fill_price])
     return [b for b in biases
-            if not ((b["side"] == "bull" and lo <= b["price"] - TICK_SIZE) or
-                    (b["side"] == "bear" and hi >= b["price"] + TICK_SIZE))]
+            if b["kind"] in ("hoh_retest", "loss_retest") or
+            not ((b["side"] == "bull" and lo <= b["price"] - TICK_SIZE) or
+                 (b["side"] == "bear" and hi >= b["price"] + TICK_SIZE))]
 
 
 def summarize(biases):
@@ -476,12 +561,16 @@ def served(biases, is_long, fill_time, fill_price, bars=None, m5=None):
 
     Empty means not served. Only a bias ONE candle back can be served, and
     only by the candle the entry sits in, judged on what had happened by the
-    entry."""
+    entry. Skips the fifth kind (hoh_retest/loss_retest): it has no
+    bias-thrust expiry of its own to be served by (see the module
+    docstring), and its 'offset' is informational, not a countdown."""
     bars = R._display_h1() if bars is None else bars
     m5 = R._display_m5() if m5 is None else m5
     fill_time = MS._as_utc(fill_time)
     out = []
     for b in fades(biases, is_long):
+        if b["kind"] in ("hoh_retest", "loss_retest"):
+            continue
         if b["offset"] != -1:      # only the candle immediately after it
             continue
         pos = bars.index.get_loc(MS._as_utc(b["time"]))

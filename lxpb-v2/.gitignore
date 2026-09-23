@@ -8,12 +8,14 @@ __pycache__/
 *.pyc
 *.log
 
-# Reports too large to commit raw (>GitHub's 100MB blob limit) are committed
-# as public/reports/**/*.html.gz instead and inflated by
+# Reports too large to commit raw comfortably (near/over GitHub's 100MB blob
+# limit, or just bulky enough to bloat the repo) are committed as
+# public/reports/**/*.html.gz instead and inflated by
 # scripts/decompress-gz-reports.mjs (runs before dev/build) -- the inflated
 # .html itself is a build artifact, not source, so list each one here.
 public/reports/ss_m5_confl2/2026.html
 public/reports/ss_m5_confl2/2025.html
+public/reports/ss_m5_confl2/jul-aug.html
 .vercel
 .env*
 
