@@ -2278,17 +2278,16 @@ def _apply_globex_open_filter(results):
     <tr>, and the report's JS (see the 'Dynamic filters' block appended to
     JS below _finish_report) lets the user toggle an Exclude checkbox per
     tag, plus an Only (isolate) RADIO stacked under it -- all the Only
-    radios share one <input name>, so the browser itself enforces at most
-    one isolated tag at a time (clicking an already-selected radio unchecks
-    it again, see the click handler in JS) -- IN THE BROWSER to hide/show
+    radios have no shared <input name>, so several tags can be isolated at
+    once (clicking a selected radio unchecks it again, see the click
+    handler in JS) -- IN THE BROWSER to hide/show
     those rows and recompute win rate / avg R / total R / total PnL live,
     with NO Python regen required. This is deliberately generic: to add a
     new dynamic filter, (1) tag qualifying results with one more entry in
     dyn_tags (their own detection logic, wherever that lives), (2) add one
     <div class="chip-stack"> holding one <label class="chip"> checkbox with
     class f-dyn-exclude and one <label class="chip chip-iso"> radio with
-    class f-dyn-isolate (same shared name="f-dyn-isolate-radio" as the
-    others), both data-tag="<your tag>", to the filter panel in
+    class f-dyn-isolate (no name attribute), both data-tag="<your tag>", to the filter panel in
     _finish_report. Nothing else needs to change -- the JS's
     recomputeDynStats() is tag-agnostic.
 
@@ -3577,8 +3576,8 @@ agrees with those numbers.">Outcome</span>
 needed. Checking Exclude hides those rows AND recomputes win rate / avg R / total R / total PnL
 above from only the remaining (not excluded) trades. Picking the Only radio under it instead
 hides every OTHER row (any Only radio picked takes priority over every Exclude box; all the Only
-radios share one group, so picking one clears any other -- click the same radio again to turn it
-back off). To add another dynamic filter: tag qualifying results with an entry in
+radios are independent, so several can be on at once and show rows carrying ANY of them -- click
+a radio again to turn it back off). To add another dynamic filter: tag qualifying results with an entry in
 res['dyn_tags'] (Python side) and add one more chip-stack (Exclude checkbox + Only radio) here
 with class f-dyn-exclude/f-dyn-isolate and data-tag matching that tag -- see
 _apply_globex_open_filter's docstring in render_m5_confl2_report.py for the full
@@ -3588,42 +3587,42 @@ convention.">Dynamic filters</span>
         Exclude Globex/ETH open fills (15:00-15:05 PT)</label>
       <label class="chip chip-iso" title="Only: show ONLY rows tagged globex_eth_open, hiding every
 other row -- overrides every Exclude box. Click again to turn off.">
-        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="globex_eth_open"> only</label>
+        <input type="radio" class="f-dyn-isolate" data-tag="globex_eth_open"> only</label>
     </div>
     <div class="chip-stack">
       <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="low_liquidity">
         Exclude news / thin-book entries</label>
       <label class="chip chip-iso" title="Only: show ONLY rows tagged low_liquidity, hiding every
 other row -- overrides every Exclude box. Click again to turn off.">
-        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="low_liquidity"> only</label>
+        <input type="radio" class="f-dyn-isolate" data-tag="low_liquidity"> only</label>
     </div>
     <div class="chip-stack">
       <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="swerve_blocked">
         Exclude swerve-blocked (not taken)</label>
       <label class="chip chip-iso" title="Only: show ONLY rows tagged swerve_blocked, hiding every
 other row -- overrides every Exclude box. Click again to turn off.">
-        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="swerve_blocked"> only</label>
+        <input type="radio" class="f-dyn-isolate" data-tag="swerve_blocked"> only</label>
     </div>
     <div class="chip-stack">
       <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="eod_flat">
         Exclude end-of-day flats</label>
       <label class="chip chip-iso" title="Only: show ONLY rows tagged eod_flat, hiding every other
 row -- overrides every Exclude box. Click again to turn off.">
-        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="eod_flat"> only</label>
+        <input type="radio" class="f-dyn-isolate" data-tag="eod_flat"> only</label>
     </div>
     <div class="chip-stack">
       <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="volume-spike">
         Exclude volume-spike fills</label>
       <label class="chip chip-iso" title="Only: show ONLY rows tagged volume-spike, hiding every
 other row -- overrides every Exclude box. Click again to turn off.">
-        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="volume-spike"> only</label>
+        <input type="radio" class="f-dyn-isolate" data-tag="volume-spike"> only</label>
     </div>
     <div class="chip-stack">
       <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="spike_confl">
         Exclude H1 spike-confluence trades</label>
       <label class="chip chip-iso" title="Only: show ONLY rows tagged spike_confl (an H1 hammer P0 for LHPB longs / shooting star P0 for LLPB shorts, untested until the retest hour minus 1h, within +/-10pt of the refined entry), hiding every
 other row -- overrides every Exclude box. Click again to turn off.">
-        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="spike_confl"> only</label>
+        <input type="radio" class="f-dyn-isolate" data-tag="spike_confl"> only</label>
     </div>
     <div class="chip-stack">
       <label class="chip" title="One filter for the H1 bias tags. fading-bias: the trade fades a live H1
@@ -4024,11 +4023,11 @@ function _renderM5(i, cd) {
 // more than one). Checking an Exclude box hides every row carrying that
 // tag; picking the f-dyn-isolate RADIO stacked under it instead hides
 // every row NOT carrying that tag (any Isolate radio picked takes
-// priority over every Exclude box). All f-dyn-isolate radios share one
-// name="f-dyn-isolate-radio" group, so the browser itself enforces at
-// most one isolated tag at a time -- see the click handler below, which
-// unchecks the radio again when it's clicked while already selected
-// (native radios can't self-clear). Both act via the SAME .dyn-hidden
+// priority over every Exclude box). The f-dyn-isolate radios have no
+// shared name, so several tags can be isolated at once (a row shows if it
+// carries ANY of them) -- see the click handler below, which unchecks a
+// radio again when it's clicked while already selected (native radios
+// can't self-clear). Both act via the SAME .dyn-hidden
 // class, kept deliberately separate from the review-workflow filters'
 // .hidden class above (applyReviewFilters, in the shared JS) so the two
 // systems never fight over one class; a row is invisible if EITHER is
@@ -4037,7 +4036,7 @@ function _renderM5(i, cd) {
 // another dynamic filter: tag qualifying results with one more entry in
 // res['dyn_tags'] (Python side) and add one more <div class="chip-stack">
 // holding an <input class="f-dyn-exclude" data-tag="..."> checkbox and an
-// <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate"
+// <input type="radio" class="f-dyn-isolate"
 // data-tag="..."> to the filter panel -- recomputeDynStats() below needs
 // no changes for a new tag, it reads whatever tags are present.
 // ---------------------------------------------------------------------
@@ -4344,21 +4343,19 @@ function recomputeDynStats() {
 }
 document.getElementById('f-bias').addEventListener('change', recomputeDynStats);
 document.querySelectorAll('.f-dyn-exclude, .f-target-mode, .f-outcome').forEach(cb => cb.addEventListener('change', recomputeDynStats));
-// The f-dyn-isolate radios share one name, so the browser already enforces
-// "at most one checked" -- but a native radio can't uncheck itself by being
-// clicked again, so track which one was checked before this click and,
-// if it's the SAME one, clear it back to "no isolation" ourselves. This
+// The f-dyn-isolate radios have NO shared name, so each is its own group and
+// several Only tags can be on at once (rows carrying ANY picked tag show).
+// A native radio can't uncheck itself by being clicked again, so remember
+// per radio whether it was on before this click and, if so, clear it. This
 // runs on 'click' rather than 'change' because unchecking programmatically
-// (radio.checked = false) does not fire 'change', so a plain 'change'
-// listener could never observe the turned-off state.
-let lastIsolateRadio = null;
+// (radio.checked = false) does not fire 'change'.
 document.querySelectorAll('.f-dyn-isolate').forEach(rb => {
   rb.addEventListener('click', () => {
-    if (lastIsolateRadio === rb) {
+    if (rb.dataset.wasOn === '1') {
       rb.checked = false;
-      lastIsolateRadio = null;
+      rb.dataset.wasOn = '';
     } else {
-      lastIsolateRadio = rb;
+      rb.dataset.wasOn = '1';
     }
     recomputeDynStats();
   });
