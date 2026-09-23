@@ -179,8 +179,21 @@ class App(tk.Tk):
             self.q.put(("log", line))
         return self.proc.wait()
 
+    def sync_main(self):
+        """Switch to main and fast-forward it to origin/main; False on any failure."""
+        self.q.put(("status", "Syncing main..."))
+        for args in (("checkout", "main"), ("fetch", "origin", "main"),
+                     ("merge", "--ff-only", "origin/main")):
+            if self.git(*args).returncode != 0:
+                self.q.put(("log", "\nSYNC TO LATEST MAIN FAILED -- nothing regenerated.\n"))
+                self.q.put(("status", "Sync failed"))
+                return False
+        return True
+
     def work(self, jobs, smoke, workers):
         try:
+            if not self.sync_main():
+                return
             tmp_dir = os.path.join(HERE, "data", "_regen_smoke")
             if smoke:
                 os.makedirs(tmp_dir, exist_ok=True)
