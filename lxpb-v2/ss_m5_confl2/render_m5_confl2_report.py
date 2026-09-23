@@ -3625,20 +3625,23 @@ other row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" class="f-dyn-isolate" data-tag="spike_confl"> only</label>
     </div>
     <div class="chip-stack">
-      <label class="chip" title="One filter for the H1 bias tags. fading-bias: the trade fades a live H1
-bias. bias-served: a fading-bias trade whose faded bias -- any kind -- is already being served at the
-entry, i.e. the H1 candle the entry sits in, right after the bias candle, already qualifies as that
-bias's thrust as of the entry, on the same size/body rows that expire a bias. So
-every bias-served trade is also fading-bias. See the Bias column.">
-        Bias
-        <select id="f-bias" class="f-bias">
-          <option value="">Any (no bias filter)</option>
-          <option value="anti">Only fading-bias (incl. bias-served)</option>
-          <option value="anti-not-served">Only fading-bias, NOT bias-served</option>
-          <option value="served">Only bias-served</option>
-          <option value="no-anti">Exclude fading-bias (incl. bias-served)</option>
-          <option value="no-served">Exclude bias-served only</option>
-        </select></label>
+      <label class="chip" title="Exclude every trade that fades a live H1 bias (see the Bias column).
+Every bias-served trade is also fading-bias, so this drops the served ones too.">
+        <input type="checkbox" class="f-dyn-exclude" data-tag="fading_bias">
+        Exclude fading-bias trades</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged fading_bias (incl. bias-served), hiding every
+other row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="fading_bias"> only</label>
+    </div>
+    <div class="chip-stack">
+      <label class="chip" title="Exclude every fading-bias trade whose faded bias is already being served at
+the entry, i.e. the H1 candle the entry sits in, right after the bias candle, already qualifies as that
+bias's thrust as of the entry, on the same size/body rows that expire a bias.">
+        <input type="checkbox" class="f-dyn-exclude" data-tag="bias_served">
+        Exclude bias-served trades</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged bias_served, hiding every
+other row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="bias_served"> only</label>
     </div>
   </div>
   <div class="filter-row">
@@ -4043,21 +4046,6 @@ function _renderM5(i, cd) {
 function activeDynExcludeTags() {
   return Array.from(document.querySelectorAll('.f-dyn-exclude:checked')).map(cb => cb.dataset.tag);
 }
-// The single Bias filter (select#f-bias) replaces the separate fading_bias /
-// bias_served Exclude + Only pairs: one choice over the two tags. bias_served
-// rows always carry fading_bias too.
-function biasFilterOk(tags) {
-  const sel = document.getElementById('f-bias');
-  const anti = tags.includes('fading_bias'), served = tags.includes('bias_served');
-  switch (sel ? sel.value : '') {
-    case 'anti': return anti;
-    case 'anti-not-served': return anti && !served;
-    case 'served': return served;
-    case 'no-anti': return !anti;
-    case 'no-served': return !served;
-    default: return true;
-  }
-}
 function activeDynIsolateTags() {
   return Array.from(document.querySelectorAll('.f-dyn-isolate:checked')).map(cb => cb.dataset.tag);
 }
@@ -4278,8 +4266,7 @@ function recomputeDynStats() {
     // a static number (the tagged row's own peak-second offset, absolute
     // value) set once at render time, never rewritten by a live control.
     const vspikeoffsHidden = !numFilterOk(tr, 'vspikeoffs');
-    const biasHidden = !biasFilterOk(tags);
-    const hidden = biasHidden || rrHidden || daygapHidden || h1gapHidden || mingapHidden || erHidden || p1ratioHidden || vspikeoffsHidden || (isolateTags.length > 0
+    const hidden = rrHidden || daygapHidden || h1gapHidden || mingapHidden || erHidden || p1ratioHidden || vspikeoffsHidden || (isolateTags.length > 0
       ? !tags.some(t => isolateTags.includes(t))
       : (excludeTags.length > 0 && tags.some(t => excludeTags.includes(t))));
     tr.classList.toggle('dyn-hidden', hidden);
@@ -4341,7 +4328,6 @@ function recomputeDynStats() {
   // ticked -- re-run it so that pass doesn't go stale either.
   applyReviewFilters();
 }
-document.getElementById('f-bias').addEventListener('change', recomputeDynStats);
 document.querySelectorAll('.f-dyn-exclude, .f-target-mode, .f-outcome').forEach(cb => cb.addEventListener('change', recomputeDynStats));
 // The f-dyn-isolate radios have NO shared name, so each is its own group and
 // several Only tags can be on at once (rows carrying ANY picked tag show).
