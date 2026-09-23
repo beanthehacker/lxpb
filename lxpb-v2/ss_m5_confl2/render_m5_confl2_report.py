@@ -204,6 +204,19 @@ the target are ALL M5 LXPB structure:
          out-of-sample, so widen the filter to any to see the unfiltered
          numbers).
 
+       * SETUP FILTERS (live, all OFF by default; from the 2026-vs-2025
+         feature study). TIGHT BOX (`_pre_p1_box_by_n`): the n M5 candles
+         before the level's own P1 spanned < cutoff x the average M5 candle
+         (default n=6, < 2x). SLOW APPROACH (`_approach_by_k`): price moved
+         <= cutoff x the average M5 candle toward the level from the open of
+         the k-th closed candle before the fill's own candle (default k=3,
+         <= 1x). The two combine with a live and/or picker. QUICK EXIT
+         (`_quick_exit_path`): still in the trade N seconds after the fill
+         with a best bounce below X points -> exit at market there, less
+         slippage (default 30s, 0.75pt, 0.25pt); changes results rather than
+         hiding rows. Every row ships its readings for every n / k / second,
+         so the browser only indexes arrays.
+
        * CREST REFINE (`_crest_refine_entry`, opt-in via `--crest-refine`,
          OFF by default). Runs AFTER the swerve rule, on whatever entry is
          currently planned. Scores how many standard deviations faster than
@@ -1198,6 +1211,111 @@ def _pre_p1_er_by_k(breakout_time, max_k=PRE_P1_ER_MAX_K):
 
 
 # --------------------------------------------------------------------------
+# Setup filters: tight box, slow approach, quick exit
+# --------------------------------------------------------------------------
+# Three live browser filters found by the 2026-vs-2025 feature study. Like the
+# Pre-P1 structure and P1 range ratio filters, each row ships its readings for
+# EVERY window / bar count / second, so the controls only index arrays
+# client-side and never restate a formula.
+SETUP_AVG_RANGE_WINDOW = M5_AVG_RANGE_WINDOW   # 20: the "average M5 candle" both ratios divide by
+BOX_MAX_N = 24                 # longest pre-P1 box (M5 bars) the live control may pick
+BOX_N_DEFAULT = 6              # 30 minutes
+BOX_MAX_RATIO_DEFAULT = 2.0
+APPR_MAX_K = 12                # furthest-back M5 bar the approach control may start from
+APPR_K_DEFAULT = 3
+APPR_MAX_RATIO_DEFAULT = 1.0
+QX_MAX_SECONDS = 120           # the quick-exit check may be placed anywhere in the first 2 minutes
+QX_SECONDS_DEFAULT = 30
+QX_MIN_BOUNCE_DEFAULT = 0.75
+QX_SLIPPAGE_DEFAULT = 0.25     # one tick against us on the market exit
+
+
+def _pre_p1_box_by_n(breakout_time, max_n=BOX_MAX_N):
+    """TIGHT BOX. The high-to-low range of the n M5 candles immediately BEFORE
+    this level's own P1 (breakout) candle, divided by the average M5 candle
+    range over the SETUP_AVG_RANGE_WINDOW candles before P1 -- for every
+    n = 2..max_n. Low = price was coiling in a small box right before it broke
+    out; high = the breakout was one more leg of a move already under way.
+    Indexed [0] -> n=2; None where the series doesn't reach back far enough."""
+    breakout_time = pd.to_datetime(breakout_time, utc=True)
+    pos = _m5_bar_position_table().get(breakout_time)
+    w = SETUP_AVG_RANGE_WINDOW
+    if pos is None or pos < w:
+        return [None] * (max_n - 1)
+    bars = LC.m5_bars_continuous()
+    hi = bars["high"].to_numpy(float)
+    lo = bars["low"].to_numpy(float)
+    avg = (hi[pos - w:pos] - lo[pos - w:pos]).mean()
+    if not avg > 0:
+        return [None] * (max_n - 1)
+    return [float((hi[pos - n:pos].max() - lo[pos - n:pos].min()) / avg) if n <= pos else None
+            for n in range(2, max_n + 1)]
+
+
+def _approach_by_k(touch_time, fill_price, is_long, max_k=APPR_MAX_K):
+    """SLOW APPROACH. How far price travelled TOWARD the level on the way into
+    the fill: from the open of the k-th fully CLOSED M5 candle before the one
+    the fill lands in, to the fill price, in the direction that brings price
+    onto the level (down into a long, up into a short), divided by the average
+    M5 candle range over the SETUP_AVG_RANGE_WINDOW closed candles before the
+    fill -- for every k = 1..max_k. Everything it reads is known at the fill.
+    Negative = price came from the far side. Indexed [0] -> k=1."""
+    if touch_time is None or fill_price is None:
+        return [None] * max_k
+    bars = LC.m5_bars_continuous()
+    fill_bar = pd.Timestamp(touch_time).tz_convert("UTC").floor("5min")
+    pos = int(bars.index.searchsorted(fill_bar))   # first bar at/after the fill's own bar
+    w = SETUP_AVG_RANGE_WINDOW
+    if pos < max(w, max_k):
+        return [None] * max_k
+    opens = bars["open"].to_numpy(float)
+    rng = bars["high"].to_numpy(float)[pos - w:pos] - bars["low"].to_numpy(float)[pos - w:pos]
+    avg = rng.mean()
+    if not avg > 0:
+        return [None] * max_k
+    d = 1.0 if is_long else -1.0
+    return [float((opens[pos - k] - fill_price) * d / avg) for k in range(1, max_k + 1)]
+
+
+def _quick_exit_path(touch_time, fill_price, is_long, max_seconds=QX_MAX_SECONDS):
+    """QUICK EXIT inputs: for each second s = 0..max_seconds after the fill,
+    the BEST bounce so far (points in the trade's favour, never below 0) and
+    where price stood at the end of that second (points in favour, negative =
+    against). Real ticks, mapped onto the continuous scale. The browser rule
+    reads these at whatever second / minimum bounce is picked: still in the
+    trade at that second and the best bounce is below the minimum -> exit at
+    market there. None when no ticks cover the window."""
+    t0 = pd.Timestamp(touch_time).tz_convert("UTC")
+    ticks = R._ticks_for_window(t0, t0 + pd.Timedelta(seconds=max_seconds + 1))
+    if ticks is None or ticks.empty:
+        return None
+    offset, _sym = R._offset_for_ts(t0)
+    px = ticks["Close"].to_numpy(float) + offset
+    fav = (px - fill_price) if is_long else (fill_price - px)
+    sec = ((ticks.index - t0).total_seconds().to_numpy() // 1).astype(int)
+    best, pos = [], []
+    b, c, j, n = 0.0, 0.0, 0, len(fav)
+    for s in range(max_seconds + 1):
+        while j < n and sec[j] <= s:
+            b = max(b, fav[j])
+            c = fav[j]
+            j += 1
+        best.append(round(b, 2))
+        pos.append(round(c, 2))
+    return {"b": best, "c": pos}
+
+
+def _secs_after(ts, t0):
+    """Seconds from `t0` (tz-aware) to `ts` (naive = UTC), or None."""
+    if ts is None or pd.isna(ts):
+        return None
+    ts = pd.Timestamp(ts)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    return (ts - pd.Timestamp(t0)).total_seconds()
+
+
+# --------------------------------------------------------------------------
 # Per-cluster processing (one cluster = one trade)
 # --------------------------------------------------------------------------
 
@@ -1273,6 +1391,8 @@ def process_cluster(cluster, args):
     # k=2..PRE_P1_ER_MAX_K array; the report's live Pre-P1 structure filter
     # picks k and a cutoff in the browser (no regen).
     result["pre_p1_er_by_k"] = _pre_p1_er_by_k(row_d["breakout_time"])
+    # Tight box: see _pre_p1_box_by_n (live window + cutoff in the browser).
+    result["pre_p1_box_by_n"] = _pre_p1_box_by_n(row_d["breakout_time"])
 
     # P1->P2 gap: how many Globex/ETH reopen-to-reopen trading days
     # (TM.trading_day_label) separate this level's own breakout (P1) from
@@ -1403,6 +1523,9 @@ def process_cluster(cluster, args):
                        for mode, (t_price, t_info) in targets.items()}
     result["active_mode"] = active
     result.update({"filled": True, "touch_time_alt": touch_time_alt})
+    # Slow approach and quick exit both read the fill itself (see their helpers).
+    result["approach_by_k"] = _approach_by_k(touch_time_alt, fill_price, is_long)
+    result["qx_path"] = _quick_exit_path(touch_time_alt, fill_price, is_long)
     _apply_mode(result, active)
     return result
 
@@ -2544,7 +2667,7 @@ def _apply_h1_bias(results):
     return results
 
 
-N_COLS = 33  # keep in sync with `head` below and every colspan in this section
+N_COLS = 36  # keep in sync with `head` below and every colspan in this section
 
 # MES position sizing / commissions. R stays a fixed $1,000 and the stop is not
 # widened for costs: contracts = floor(R_DOLLARS / (stop pts x MES_POINT_VALUE)),
@@ -2820,7 +2943,15 @@ def _mode_payload(res, mode):
         "mgmtOutcome": mgmt.get("outcome") or "",
         "mgmtFired": "1" if mgmt.get("fired") else "0",
         "tags": " ".join(m["dyn_tags"]),
+        # Seconds from the fill to this rule's exit (baseline / managed): the
+        # quick-exit check only acts on a trade still open at its second.
+        "exitSec": _fmt_secs(_secs_after(resolved.get("exit_time"), res["touch_time_alt"])),
+        "mgmtExitSec": _fmt_secs(_secs_after(mgmt.get("exit_time"), res["touch_time_alt"])),
     }
+
+
+def _fmt_secs(v):
+    return "" if v is None else f"{v:.3f}"
 
 
 def _attr_json(obj):
@@ -3052,6 +3183,14 @@ def _render_row(idx, res, chart_stacks, fps):
         p1_ratio_by_window_attr = _attr_json(p1_ratio_by_window)
         p1_ratio_default = res.get("p1_range_ratio")
         p1ratio_cell = f"{p1_ratio_default:.2f}x" if p1_ratio_default is not None else "-"
+        box_by_n = res.get("pre_p1_box_by_n") or []
+        box_by_n_attr = _attr_json(box_by_n)
+        box_default = box_by_n[BOX_N_DEFAULT - 2] if len(box_by_n) >= BOX_N_DEFAULT - 1 else None
+        box_cell = f"{box_default:.2f}x" if box_default is not None else "-"
+        appr_by_k = res.get("approach_by_k") or []
+        appr_by_k_attr = _attr_json(appr_by_k)
+        appr_default = appr_by_k[APPR_K_DEFAULT - 1] if len(appr_by_k) >= APPR_K_DEFAULT else None
+        appr_cell = f"{appr_default:.2f}x" if appr_default is not None else "-"
         members_str = ", ".join(f"{p:.2f}" for p in res["cluster_members"])
         if res.get("cluster_size", 1) > 1:
             entry_title = (f' title="{res["cluster_size"]} mutually-confluent M5 levels '
@@ -3121,6 +3260,7 @@ def _render_row(idx, res, chart_stacks, fps):
     data-daygap="{daygap_attr}" data-h1gap="{h1gap_attr}" data-mingap="{mingap_attr}"
     data-vspikeoffs="{vspikeoffs_attr}"
     data-er-by-k="{er_by_k_attr}" data-p1-ratio-by-window="{p1_ratio_by_window_attr}"
+    data-box-by-n="{box_by_n_attr}" data-appr-by-k="{appr_by_k_attr}"
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td>
   <td class="tags-cell">{tags_cell}</td>
@@ -3131,6 +3271,8 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="mingap-cell">{mingap_cell}</td>
   <td class="prep1er-cell">{prep1er_cell}</td>
   <td class="p1ratio-cell">{p1ratio_cell}</td>
+  <td class="box-cell">{box_cell}</td>
+  <td class="appr-cell">{appr_cell}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
   <td class="h1-confl-cell">-</td>
@@ -3141,6 +3283,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="tgt-cell">-</td>
   <td class="rr-cell">-</td>
   <td class="outcome-cell"><span class="outcome-label">{_fail_reason_label(reason)}{rr_note}</span></td>
+  <td class="qx-cell">-</td>
   <td class="left time-stacked exit-cell">-</td><td class="exitpx-cell">-</td>
   <td class="pnl-cell">-</td>
   <td class="contracts-cell">-</td><td class="comm-cell">-</td>
@@ -3236,6 +3379,7 @@ def _render_row(idx, res, chart_stacks, fps):
         tags_cell = (f'<span class="row-badges">{row_badges}</span>'
                     f'<span class="mode-tag-badges">{act["modeTagBadges"]}</span>')
         modes_attr = _attr_json(payloads)
+        qx_attr = _attr_json(res["qx_path"]) if res.get("qx_path") else ""
         h1_confl_cell, h1_confl_title = _h1_confl_cell(res.get("h1_p0_confl"))
         mes_attrs, mes_contracts_html, mes_comm_text, mes_title = _mes_cells(res["stop_pts"])
 
@@ -3260,6 +3404,9 @@ def _render_row(idx, res, chart_stacks, fps):
     data-mgmt-r="{act['mgmtR']}" data-mgmt-pnl-pts="{act['mgmtPnl']}"
     data-mgmt-outcome="{act['mgmtOutcome']}" data-mgmt-fired="{act['mgmtFired']}"
     data-mode="{active_mode}" data-modes="{modes_attr}" {mes_attrs}
+    data-box-by-n="{box_by_n_attr}" data-appr-by-k="{appr_by_k_attr}"
+    data-qx="{qx_attr}" data-risk="{res['stop_pts']:.6f}"
+    data-exit-sec="{act['exitSec']}" data-mgmt-exit-sec="{act['mgmtExitSec']}"
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td>
   <td class="tags-cell">{tags_cell}</td>
@@ -3270,6 +3417,8 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="mingap-cell">{mingap_cell}</td>
   <td class="prep1er-cell">{prep1er_cell}</td>
   <td class="p1ratio-cell">{p1ratio_cell}</td>
+  <td class="box-cell">{box_cell}</td>
+  <td class="appr-cell">{appr_cell}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
   <td class="h1-confl-cell" title="{h1_confl_title}">{h1_confl_cell}</td>
@@ -3280,6 +3429,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="tgt-cell" title="{act['tgtTitle']}">{act['tgt']}</td>
   <td class="rr-cell">{act['rr']}</td>
   <td class="outcome-cell {act['outcomeCls']}"><span class="outcome-label">{act['outcomeLabel']}</span><span class="mgmt-badge">{act['mgmtBadge']}</span></td>
+  <td class="qx-cell">-</td>
   <td class="left time-stacked exit-cell">{act['exit']}</td><td class="exitpx-cell">{act['exitPx']}</td>
   <td class="pnl-cell {act['pnlCls']}">{act['pnl']}</td>
   <td class="contracts-cell" title="{mes_title}">{mes_contracts_html}</td><td class="comm-cell" title="{mes_title}">{mes_comm_text}</td>
@@ -3690,6 +3840,55 @@ keep only the thin, unconvincing breakouts instead.">P1 range ratio</span>
     <input type="number" class="f-num-val" data-target="p1ratio" value="__WIDE_RATIO__" min="0.1" max="3" step="0.1">
   </div>
   <div class="filter-row">
+    <span class="filter-label" title="TIGHT BOX (off until ticked; live, no regen). Keeps a trade
+only when the n M5 candles right before its level's P1 breakout spanned less than the cutoff
+times the average M5 candle (average over the __AVG_W__ candles before P1) -- the Pre-P1 box
+column. Price coiling in a small box right before the breakout. A row with no reading fails it.
+With Slow approach ticked too, the and/or picker on that row decides how the two combine.">Tight box</span>
+    <label class="chip"><input type="checkbox" class="f-setup" id="f-box-on"> on</label>
+    <span class="filter-sublabel">n=</span>
+    <input type="number" class="f-setup-val" id="f-box-n" value="__BOX_N__" min="2" max="__BOX_MAX_N__" step="1">
+    <span class="filter-sublabel">candles, box &lt;</span>
+    <input type="number" class="f-setup-val" id="f-box-max" value="__BOX_MAX__" min="0" step="0.1">
+    <span class="filter-sublabel">&times; avg candle</span>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label" title="SLOW APPROACH (off until ticked; live, no regen). Keeps a
+trade only when price travelled no more than the cutoff times the average M5 candle toward the
+level, from the open of the k-th closed M5 candle before the fill's own candle to the fill
+(average over the __AVG_W__ closed candles before the fill) -- the Approach column. A row with
+no reading fails it. With Tight box ticked too: 'or' keeps a trade passing either (the feature
+study's best combination), 'and' only one passing both.">Slow approach</span>
+    <label class="chip"><input type="checkbox" class="f-setup" id="f-appr-on"> on</label>
+    <span class="filter-sublabel">k=</span>
+    <input type="number" class="f-setup-val" id="f-appr-k" value="__APPR_K__" min="1" max="__APPR_MAX_K__" step="1">
+    <span class="filter-sublabel">candles back, move &le;</span>
+    <input type="number" class="f-setup-val" id="f-appr-max" value="__APPR_MAX__" step="0.1">
+    <span class="filter-sublabel">&times; avg candle</span>
+    <span class="filter-sublabel">&nbsp;&nbsp;with Tight box:</span>
+    <select id="f-setup-join" class="f-setup-val">
+      <option value="or" selected>or</option>
+      <option value="and">and</option>
+    </select>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label" title="QUICK EXIT (off until ticked; live, no regen). Does not hide
+rows -- it changes their result. If the trade is still open that many seconds after the fill
+(its own exit, under the target rule and trade-management state currently ticked, comes later)
+and the best bounce in its favour so far is below the minimum, it exits at market at that
+second, less the slippage. The Quick exit column always shows the R it would get under these
+settings ('-' when it would not fire); ticking the box swaps those results into the summary
+stats and the Outcome filter (a quick exit counts as a loss in the win rate).">Quick exit</span>
+    <label class="chip"><input type="checkbox" class="f-setup" id="f-qx-on"> on</label>
+    <span class="filter-sublabel">at</span>
+    <input type="number" class="f-setup-val" id="f-qx-sec" value="__QX_SEC__" min="1" max="__QX_MAX_SEC__" step="1">
+    <span class="filter-sublabel">s after fill, if best bounce &lt;</span>
+    <input type="number" class="f-setup-val" id="f-qx-min" value="__QX_MIN__" min="0" step="0.25">
+    <span class="filter-sublabel">pt; slippage</span>
+    <input type="number" class="f-setup-val" id="f-qx-slip" value="__QX_SLIP__" min="0" step="0.25">
+    <span class="filter-sublabel">pt</span>
+  </div>
+  <div class="filter-row">
     <span class="filter-label" title="Which TARGET RULE(S) each trade exits on -- live, in the
 browser, with no Python regen. Every trade ships with EVERY rule's brackets and outcomes
 precomputed, so unticking a rule re-resolves each row against whichever others are still on:
@@ -3760,6 +3959,17 @@ the box is checked.">Trade management</span>
             f"out-ranged the recent tape. The window w (default "
             f"{M5_RANGE_RATIO_WINDOW_DEFAULT}) and the filter cutoff below are both live in "
             f"the P1 range ratio filter above -- no regen needed.\">P1 range ratio</th>"
+            f"<th title=\"TIGHT BOX: the high-to-low range of the n M5 candles just "
+            f"before this level's own P1 (breakout) candle, divided by the average M5 candle "
+            f"range over the {SETUP_AVG_RANGE_WINDOW} candles before P1. Low = price was coiling "
+            f"in a small box right before the breakout. n (default {BOX_N_DEFAULT}) and the "
+            f"cutoff are live in the Setup filters row above.\">Pre-P1 box</th>"
+            f"<th title=\"SLOW APPROACH: how far price travelled toward the level from the "
+            f"open of the k-th closed M5 candle before the fill's own candle to the fill, divided "
+            f"by the average M5 candle range over the {SETUP_AVG_RANGE_WINDOW} closed candles "
+            f"before the fill. Low = price drifted onto the level; high = it raced into it. "
+            f"Negative = it came from the far side. k (default {APPR_K_DEFAULT}) and the cutoff "
+            f"are live in the Setup filters row above.\">Approach</th>"
             f"<th class=\"left\" title=\"Distinct M5 prices merged into this trade, "
             f"extreme-first: highest for LLPB, lowest for LHPB. "
             f"Single-level trades show their own M5 price.\">Merged M5 levels</th>"
@@ -3811,7 +4021,13 @@ the box is checked.">Trade management</span>
             f"of whether the trade goes on to win or lose. Below {args.min_r:g} the trade is "
             f"still taken and shown, tagged r_below_min and excluded from the headline stats "
             f"by default\">R</th>"
-            f"<th>Outcome</th><th class=\"left\">Exit time</th><th>Exit px</th>"
+            f"<th>Outcome</th>"
+            f"<th title=\"QUICK EXIT under the settings in the Setup filters row: the R this "
+            f"trade would have exited at had the quick-exit check fired (still in the trade at "
+            f"that second, and the best bounce so far below the minimum), '-' when it would not "
+            f"fire. Shown whether or not the Quick exit box is ticked; ticking it swaps these "
+            f"into the summary stats.\">Quick exit</th>"
+            f"<th class=\"left\">Exit time</th><th>Exit px</th>"
             f"<th title=\"Realized profit/loss in points (signed): +target pts on a win, "
             f"-stop pts on a loss\">PnL</th>"
             f"<th title=\"MES contracts for 1R = ${R_DOLLARS:,.0f}: floor(${R_DOLLARS:,.0f} / "
@@ -3842,6 +4058,17 @@ the box is checked.">Trade management</span>
    .replace("__PRE_P1_ER_MAX__", f"{PRE_P1_ER_MAX_DEFAULT:g}")
    .replace("__WEAKP1_WINDOW__", f"{M5_RANGE_RATIO_WINDOW_DEFAULT:g}")
    .replace("__WEAKP1_MAX_WINDOW__", f"{M5_RANGE_RATIO_MAX_WINDOW:g}")
+   .replace("__BOX_N__", f"{BOX_N_DEFAULT:g}")
+   .replace("__AVG_W__", f"{SETUP_AVG_RANGE_WINDOW:g}")
+   .replace("__BOX_MAX_N__", f"{BOX_MAX_N:g}")
+   .replace("__BOX_MAX__", f"{BOX_MAX_RATIO_DEFAULT:g}")
+   .replace("__APPR_K__", f"{APPR_K_DEFAULT:g}")
+   .replace("__APPR_MAX_K__", f"{APPR_MAX_K:g}")
+   .replace("__APPR_MAX__", f"{APPR_MAX_RATIO_DEFAULT:g}")
+   .replace("__QX_SEC__", f"{QX_SECONDS_DEFAULT:g}")
+   .replace("__QX_MAX_SEC__", f"{QX_MAX_SECONDS:g}")
+   .replace("__QX_MIN__", f"{QX_MIN_BOUNCE_DEFAULT:g}")
+   .replace("__QX_SLIP__", f"{QX_SLIPPAGE_DEFAULT:g}")
    .replace("__OPPZZ_CHECKED__",
             "checked" if "opposite-m5-zz" in args.default_target_modes else "")
    .replace("__SWING_CHECKED__",
@@ -3909,14 +4136,20 @@ td.outcome-cell { max-width:130px; white-space:normal; }
 #lvl-table thead th:nth-child(7),   /* P1->P2 (min) */
 #lvl-table thead th:nth-child(8),   /* Pre-P1 ER */
 #lvl-table thead th:nth-child(9),   /* P1 range ratio */
-#lvl-table thead th:nth-child(12),  /* H1 P0 confl */
-#lvl-table thead th:nth-child(25),  /* MAE (win) */
-#lvl-table thead th:nth-child(26),  /* MFE (loss) */
-#lvl-table thead th:nth-child(27) { /* Max DD */
+#lvl-table thead th:nth-child(10),  /* Pre-P1 box */
+#lvl-table thead th:nth-child(14),  /* H1 P0 confl */
+#lvl-table thead th:nth-child(22),  /* Quick exit */
+#lvl-table thead th:nth-child(28),  /* MAE (win) */
+#lvl-table thead th:nth-child(29),  /* MFE (loss) */
+#lvl-table thead th:nth-child(30) { /* Max DD */
   white-space:normal; overflow-wrap:break-word; max-width:60px;
 }
 td.daygap-cell, td.h1gap-cell, td.prep1er-cell { max-width:50px; }
 td.mingap-cell, td.p1ratio-cell { max-width:60px; }
+td.box-cell, td.appr-cell, td.qx-cell { max-width:60px; }
+select.f-setup-val, input.f-setup-val { background:var(--surface2); color:var(--text);
+    border:1px solid var(--border); border-radius:4px; font-size:0.85em; padding:3px 5px; }
+input.f-setup-val { width:4.5em; }
 /* M5 retest / Entry (touch) time / Exit time: date and HH:MM:SS PT stack on
    two lines (see _pt_str_stacked) instead of running the whole
    "YYYY-MM-DD HH:MM:SS PT" string onto one, so the column is only as wide
@@ -4115,6 +4348,7 @@ function applyTargetModes() {
       tr.dataset.r = ''; tr.dataset.rr = ''; tr.dataset.pnlPts = ''; tr.dataset.outcome = '';
       tr.dataset.mgmtR = ''; tr.dataset.mgmtPnlPts = ''; tr.dataset.mgmtOutcome = '';
       tr.dataset.mgmtFired = '0';
+      tr.dataset.exitSec = ''; tr.dataset.mgmtExitSec = '';
       setCell(tr, '.tgt-cell', '-', 'tgt-cell');
       const tgt = tr.querySelector('.tgt-cell');
       if (tgt) tgt.title = 'No target under the target rules currently ticked';
@@ -4142,6 +4376,7 @@ function applyTargetModes() {
     tr.dataset.r = p.r; tr.dataset.rr = p.rrVal; tr.dataset.pnlPts = p.pnlPts; tr.dataset.outcome = p.outcome;
     tr.dataset.mgmtR = p.mgmtR; tr.dataset.mgmtPnlPts = p.mgmtPnl;
     tr.dataset.mgmtOutcome = p.mgmtOutcome; tr.dataset.mgmtFired = p.mgmtFired;
+    tr.dataset.exitSec = p.exitSec || ''; tr.dataset.mgmtExitSec = p.mgmtExitSec || '';
     setCell(tr, '.tgt-cell', p.tgt, 'tgt-cell');
     const tgt = tr.querySelector('.tgt-cell');
     if (tgt) tgt.title = p.tgtTitle;
@@ -4218,10 +4453,75 @@ function applyP1RatioWindow() {
     setCell(tr, '.p1ratio-cell', ratio === null ? '-' : ratio.toFixed(2) + 'x', 'p1ratio-cell');
   });
 }
+// ---------------------------------------------------------------------
+// Setup filters -- see _pre_p1_box_by_n / _approach_by_k /
+// _quick_exit_path in render_m5_confl2_report.py. Like the Pre-P1 ER and P1
+// range ratio filters, every row ships its readings for every n / k / second,
+// so these controls only index arrays -- no formula is restated here.
+// ---------------------------------------------------------------------
+function _setupNum(id, dflt) {
+  const el = document.getElementById(id);
+  const v = el ? parseFloat(el.value) : NaN;
+  return Number.isFinite(v) ? v : dflt;
+}
+function _setupOn(id) {
+  const el = document.getElementById(id);
+  return !!(el && el.checked);
+}
+function _pickFromArray(json, i) {
+  if (!json) return null;
+  const arr = JSON.parse(json);
+  const v = arr[i];
+  return (v === null || v === undefined) ? null : v;
+}
+function applySetupReadings() {
+  const n = Math.round(_setupNum('f-box-n', 6));
+  const k = Math.round(_setupNum('f-appr-k', 3));
+  document.querySelectorAll('#lvl-table tbody tr.lvl-row').forEach(tr => {
+    const box = _pickFromArray(tr.dataset.boxByN, n - 2);
+    const appr = _pickFromArray(tr.dataset.apprByK, k - 1);
+    tr.dataset.box = box === null ? '' : String(box);
+    tr.dataset.appr = appr === null ? '' : String(appr);
+    setCell(tr, '.box-cell', box === null ? '-' : box.toFixed(2) + 'x', 'box-cell');
+    setCell(tr, '.appr-cell', appr === null ? '-' : appr.toFixed(2) + 'x', 'appr-cell');
+  });
+}
+// Tight box / slow approach: a ticked filter keeps only rows passing it (a row
+// with no reading fails); both ticked combine with the and/or picker.
+function setupPass(tr) {
+  const boxOn = _setupOn('f-box-on'), apprOn = _setupOn('f-appr-on');
+  if (!boxOn && !apprOn) return true;
+  const box = tr.dataset.box === '' ? NaN : parseFloat(tr.dataset.box);
+  const appr = tr.dataset.appr === '' ? NaN : parseFloat(tr.dataset.appr);
+  const boxOk = Number.isFinite(box) && box < _setupNum('f-box-max', 2);
+  const apprOk = Number.isFinite(appr) && appr <= _setupNum('f-appr-max', 1);
+  if (boxOn && apprOn) {
+    const joinEl = document.getElementById('f-setup-join');
+    return (joinEl && joinEl.value === 'and') ? (boxOk && apprOk) : (boxOk || apprOk);
+  }
+  return boxOn ? boxOk : apprOk;
+}
+// Quick exit: the trade is still open `sec` seconds after the fill (its exit,
+// baseline or managed, comes later) and its best bounce so far is below the
+// minimum -> it exits at market at that second, less the slippage. Returns
+// {r, pnl} when it fires, else null.
+function quickExitResult(tr, useMgmt) {
+  if (!tr.dataset.qx || !tr.dataset.risk) return null;
+  const sec = Math.round(_setupNum('f-qx-sec', 30));
+  const q = JSON.parse(tr.dataset.qx);
+  if (sec < 0 || sec >= q.b.length) return null;
+  const exitSec = parseFloat(useMgmt ? tr.dataset.mgmtExitSec : tr.dataset.exitSec);
+  if (Number.isFinite(exitSec) && exitSec <= sec) return null;
+  if (q.b[sec] >= _setupNum('f-qx-min', 0.75)) return null;
+  const pnl = q.c[sec] - _setupNum('f-qx-slip', 0.25);
+  return { r: pnl / parseFloat(tr.dataset.risk), pnl: pnl };
+}
 function recomputeDynStats() {
   applyTargetModes();
   applyPreP1Er();
   applyP1RatioWindow();
+  applySetupReadings();
+  const qxOn = _setupOn('f-qx-on');
   const excludeTags = activeDynExcludeTags();
   const isolateTags = activeDynIsolateTags();
   const outcomeOn = activeOutcomeBuckets();
@@ -4266,7 +4566,8 @@ function recomputeDynStats() {
     // a static number (the tagged row's own peak-second offset, absolute
     // value) set once at render time, never rewritten by a live control.
     const vspikeoffsHidden = !numFilterOk(tr, 'vspikeoffs');
-    const hidden = rrHidden || daygapHidden || h1gapHidden || mingapHidden || erHidden || p1ratioHidden || vspikeoffsHidden || (isolateTags.length > 0
+    const setupHidden = !setupPass(tr);
+    const hidden = rrHidden || daygapHidden || h1gapHidden || mingapHidden || erHidden || p1ratioHidden || vspikeoffsHidden || setupHidden || (isolateTags.length > 0
       ? !tags.some(t => isolateTags.includes(t))
       : (excludeTags.length > 0 && tags.some(t => excludeTags.includes(t))));
     tr.classList.toggle('dyn-hidden', hidden);
@@ -4281,9 +4582,18 @@ function recomputeDynStats() {
     // safe even without the fired check, but keeping it explicit avoids
     // depending on baseline/managed floats matching bit-for-bit.
     const useRow = useMgmt && tr.dataset.mgmtFired === '1';
-    const rVal = parseFloat(useRow ? tr.dataset.mgmtR : tr.dataset.r);
-    const pnl = parseFloat(useRow ? tr.dataset.mgmtPnlPts : tr.dataset.pnlPts);
-    const outcome = useRow ? tr.dataset.mgmtOutcome : tr.dataset.outcome;
+    let rVal = parseFloat(useRow ? tr.dataset.mgmtR : tr.dataset.r);
+    let pnl = parseFloat(useRow ? tr.dataset.mgmtPnlPts : tr.dataset.pnlPts);
+    let outcome = useRow ? tr.dataset.mgmtOutcome : tr.dataset.outcome;
+    // Quick exit: the column always shows what the check WOULD do under the
+    // current settings; ticking the box swaps it into the stats below.
+    const qx = isNoTradeRow ? null : quickExitResult(tr, useRow);
+    const qxCell = tr.querySelector('.qx-cell');
+    if (qxCell) {
+      qxCell.textContent = qx ? (qx.r >= 0 ? '+' : '') + qx.r.toFixed(2) + 'R' : '-';
+      qxCell.className = 'qx-cell' + (qx ? (qx.r > parseFloat(rVal) ? ' good' : ' bad') : '');
+    }
+    if (qxOn && qx) { rVal = qx.r; pnl = qx.pnl; outcome = 'quick_exit'; }
     // Win/Loss/No trade bucket -- same per-row outcome the stats below
     // fold into win rate, so this filter always agrees with those numbers.
     const bucket = isNoTradeRow ? 'no_trade'
@@ -4385,6 +4695,10 @@ document.querySelectorAll('.f-num-op[data-target="vspikeoffs"], .f-num-val[data-
   .forEach(el => el.addEventListener('input', recomputeDynStats));
 const weakp1WEl = document.getElementById('f-weakp1-window');
 if (weakp1WEl) weakp1WEl.addEventListener('input', recomputeDynStats);
+document.querySelectorAll('.f-setup, .f-setup-val').forEach(el => {
+  el.addEventListener('change', recomputeDynStats);
+  el.addEventListener('input', recomputeDynStats);
+});
 const mgmtToggleCb = document.getElementById('mgmt-thrust-trail');
 if (mgmtToggleCb) mgmtToggleCb.addEventListener('change', recomputeDynStats);
 recomputeDynStats();
@@ -4395,7 +4709,7 @@ recomputeDynStats();
 // text, so R / PnL / MAE / MFE / Max DD sort by whatever the ticked target
 // rules and management toggle currently show. Empty / '-' cells always sink
 // to the bottom. A trade's chart row travels with its trade row.
-const SORT_COLS = [0, 4, 5, 6, 7, 8, 11, 17, 21, 24, 25, 26];  // Trade Id, P1->P2 (d/H1/min), Pre-P1 ER, P1 range ratio, H1 P0 confl, R, PnL, MAE, MFE, Max DD
+const SORT_COLS = [0, 4, 5, 6, 7, 8, 9, 10, 13, 19, 21, 24, 27, 28, 29];  // Trade Id, P1->P2 (d/H1/min), Pre-P1 ER, P1 range ratio, Pre-P1 box, Approach, H1 P0 confl, R, Quick exit, PnL, MAE, MFE, Max DD
 const SUPERS = ['¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹', '¹⁰'];
 let sortSpec = [];
 (function () {
