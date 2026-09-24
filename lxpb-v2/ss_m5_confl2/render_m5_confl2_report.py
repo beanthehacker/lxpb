@@ -2396,7 +2396,7 @@ def process_clusters(clusters, args):
             anchor = SF.cluster_anchor(cluster)
             row_d = anchor["row"]
             tag = f"  [cluster of {len(cluster)}]" if len(cluster) > 1 else ""
-            print(f"  [{i}/{n}] row {anchor['i']} {row_d['type']} "
+            print(f"  [{i}/{n}] trade {i - 1} {row_d['type']} "
                   f"{float(row_d['price']):.2f} retest {R._to_pt_str(row_d['retest_time'])}{tag}",
                   flush=True)
             res = process_cluster(cluster, args)
@@ -3348,7 +3348,7 @@ def _render_row(idx, res, chart_stacks, fps):
     data-box-by-n="{box_by_n_attr}" data-appr-by-k="{appr_by_k_attr}"
     data-fresh="{fresh_attr}" data-sfp="{sfp_attr}"
     onclick="toggleChart({idx})">
-  <td class="left">{res['i']}</td>
+  <td class="left">{idx}</td>
   <td class="tags-cell">{tags_cell}</td>
   <td class="left type-cell">{level_type}</td>
   <td class="left time-stacked retest-cell">{retest_str_display}</td>
@@ -3497,7 +3497,7 @@ def _render_row(idx, res, chart_stacks, fps):
     data-qx="{qx_attr}" data-risk="{res['stop_pts']:.6f}"
     data-exit-sec="{act['exitSec']}" data-mgmt-exit-sec="{act['mgmtExitSec']}"
     onclick="toggleChart({idx})">
-  <td class="left">{res['i']}</td>
+  <td class="left">{idx}</td>
   <td class="tags-cell">{tags_cell}</td>
   <td class="left type-cell">{level_type}</td>
   <td class="left time-stacked retest-cell">{retest_str_display}</td>
