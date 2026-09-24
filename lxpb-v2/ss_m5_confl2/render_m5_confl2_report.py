@@ -337,7 +337,7 @@ PEG_STEP_DEFAULT = SF.PEG_STEP_DEFAULT
 PEG_CAP_DEFAULT = SF.PEG_CAP_DEFAULT
 P1_BAR_WIDTH = pd.Timedelta(minutes=5)  # this strategy's own P1 is an M5 bar, not H1
 CANDIDATE_COLOR = "#7dd3fc"  # light blue -- every C1..Cn marker (dot + label), chosen or not;
-                             # plain-P0s are distinguished by their " (plain)" text suffix, not color
+                             # plain-P0s are distinguished by their " pl." text suffix, not color
 
 # Matches analyze_breakout_exits.DEFAULT_START/END -- the same Jul-Aug 2026
 # span the base (non-full-year) ss_confl2 H1 report uses.
@@ -1821,7 +1821,7 @@ def _annotate_candidates(chart_m5, row_for_chart, is_long, group, cluster_member
         new_markers.append({
             "time": t, "position": "belowBar" if is_long else "aboveBar",
             "color": CANDIDATE_COLOR, "shape": "circle",
-            "text": f"C{n}" + (" (plain)" if plain else ""),
+            "text": f"C{n}" + (" pl." if plain else ""),
         })
     chart_m5["markers"].extend(new_markers)
     chart_m5["markers"].sort(key=lambda m: m["time"])
