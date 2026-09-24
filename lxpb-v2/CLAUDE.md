@@ -59,6 +59,33 @@ series and `m5_levels()` once over `m5_bars_continuous()` (which is
 `_display_m5()`). One ledger per timeframe, spanning every rollover; neither
 takes a contract or `seg_idx`. Any new timeframe follows the same shape.
 
+# P0 kinds: spike-P0, swing-P0, plain-P0
+
+**Every level price closes through is a P0**, and `../lxpb.py` tracks every
+one of them to its retest. Its `p0_kind`, fixed at the breakout, says which
+rule it met; there is no "valid P0" any more, only these names:
+
+- **spike-P0** -- the formation candle is a spike, detector pairing (below).
+- **swing-P0** -- a swing high/low AND consolidating at breakout (efficiency
+  ratio < `ER_CONSOLIDATION_MAX`). A raw swing in a trending run is not one.
+- **spike+swing-P0** -- both; it counts as either kind.
+- **plain-P0** -- neither.
+
+Before 2026-09-24 plain-P0s were dropped at their breakout (the old
+"candidate gate", fate `gated_dropped`). Levels never interact, so keeping
+them changed nothing about any other level. Every existing consumer still
+reads the old population, and says so at the call site:
+
+- `detect_lxpb_h1(bars, p0_kinds=...)` -- required: `ALL_P0_KINDS` or
+  `SPIKE_OR_SWING_P0_KINDS`.
+- `h1_levels(plain_p0=...)` / `m5_levels(plain_p0=...)` -- required:
+  `PLAIN_P0_TRACKED` (full ledger) or `PLAIN_P0_UNTRACKED` (plain-P0s end at
+  their own breakout, exactly the old ledger; they stay in, since P1 sibling
+  counts, confluence and targets always counted them).
+
+Letting a consumer see tracked plain-P0s is a strategy change: the user
+decides it, one consumer at a time.
+
 ## `.scid` is for ticks, and the mapping is one-way
 
 Per-contract `.scid` files remain the right source for second- and
@@ -181,7 +208,7 @@ mixing them up silently flips which P0s count as spikes:
 
 | Pairing | LHPB (level = bar's high) | LLPB (level = bar's low) | Where |
 |---|---|---|---|
-| Detector | hammer | shooting star | `../lxpb.py`'s `is_spike`, which drives its candidate gate. So also the H1/M5 level caches and every reader of their `is_spike`: `ss_m5_confl2` (spike-P0 stop, H1 P0 kind), `trade_management.py`, `../retest-vol-scalp`. Also `../lxpb-spike` (own helper, same pairing). |
+| Detector | hammer | shooting star | `../lxpb.py`'s `is_spike`, which decides which P0s are spike-P0s. So also the H1/M5 level caches and every reader of their `is_spike`: `ss_m5_confl2` (spike-P0 stop, H1 P0 kind), `trade_management.py`, `../retest-vol-scalp`. Also `../lxpb-spike` (own helper, same pairing). |
 | Rejection | shooting star | hammer | `render_labels_report.is_spike_pp` (both copies) and its P0 Spike hint, `analyze_retest_cluster_selection.py`, `analyze_retest_features.py`, `../lxpb-spike-atr`. |
 
 - Anything that reads a level's cached `is_spike` is on the detector pairing,
@@ -190,7 +217,7 @@ mixing them up silently flips which P0s count as spikes:
   uses, in its docstring.
 - Never switch a place from one pairing to the other, or merge them, without
   the user deciding it. It is a strategy change: for the detector it changes
-  which levels pass the gate, so every ledger and report changes.
+  which P0s are spike-P0s, so every ledger and report changes.
 - Full table with file paths: `patterns_pure/README.md`.
 
 ## Spike-thrust candle

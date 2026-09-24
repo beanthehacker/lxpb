@@ -1355,7 +1355,7 @@ def render(data_path, output_path, title, n_ticks, tick_size, start=None, end=No
            limit=300, order="desc", pad_seconds=PAD_SECONDS_DEFAULT,
            one_min_pad_minutes=ONE_MIN_PAD_MINUTES_DEFAULT, include_footprint=True):
     h1_df = es_h1_display.load() if data_path is None else L.load_ohlc_data(data_path)
-    _touch_lv0, touch_lv1_df, retests_df = L.detect_lxpb_h1(h1_df)
+    _touch_lv0, touch_lv1_df, retests_df = L.detect_lxpb_h1(h1_df, p0_kinds=L.SPIKE_OR_SWING_P0_KINDS)
 
     if start:
         retests_df = retests_df[retests_df["retest_time"] >= pd.Timestamp(start)]

@@ -88,7 +88,7 @@ def load_strong_breakout_rows(start=None, end=None, limit=_DEFAULT, h1_df=None):
     limit = DEFAULT_LIMIT if limit is _DEFAULT else limit
     if h1_df is None:
         h1_df = L.load_ohlc_data(DATA_PATH)
-    _touch_lv0, touch_lv1_df, retests_df = L.detect_lxpb_h1(h1_df)
+    _touch_lv0, touch_lv1_df, retests_df = L.detect_lxpb_h1(h1_df, p0_kinds=L.SPIKE_OR_SWING_P0_KINDS)
     retests_df, _n_gap = R.filter_gap_rows(h1_df, retests_df)
     retests_df = retests_df[(retests_df["retest_time"] >= pd.Timestamp(start)) &
                              (retests_df["retest_time"] <= pd.Timestamp(end))]

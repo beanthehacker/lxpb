@@ -172,7 +172,7 @@ def load_retests(data_path=DEFAULT_DATA, symbol=DEFAULT_SYMBOL,
     look-ahead free."""
     h1_df = L.load_ohlc_data(data_path)
     h1_df.attrs["symbol"] = symbol
-    _touch_lv0, touch_lv1_df, retests_df = L.detect_lxpb_h1(h1_df)
+    _touch_lv0, touch_lv1_df, retests_df = L.detect_lxpb_h1(h1_df, p0_kinds=L.SPIKE_OR_SWING_P0_KINDS)
     all_broken = R.build_all_broken_out(retests_df, touch_lv1_df)
 
     n_gap = 0

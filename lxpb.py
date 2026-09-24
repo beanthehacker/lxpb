@@ -31,8 +31,8 @@ MIN_BARS_BEFORE_RETEST = 1  # bar-count gap, not clock time -- see advance_one_b
                             # docstring for why: a fixed hour count silently meant
                             # "skip ~1 bar" on H1 but "skip ~12 bars" on M5.
 
-# Candidate gate, rule 4 (consolidation vs trend -- see advance_one_bar's own
-# docstring): Kaufman's Efficiency Ratio over a small window of bar closes
+# Swing-P0 consolidation test (see advance_one_bar's own docstring):
+# Kaufman's Efficiency Ratio over a small window of bar closes
 # straddling the candidate's own formation bar. ER = |net change| / (sum of
 # |close-to-close| changes) -- near 1.0 for an uninterrupted directional
 # push (no give-back), near 0.0 for a choppy, range-bound consolidation.
@@ -43,6 +43,36 @@ MIN_BARS_BEFORE_RETEST = 1  # bar-count gap, not clock time -- see advance_one_b
 ER_BARS_BEFORE = 2
 ER_BARS_AFTER = 2
 ER_CONSOLIDATION_MAX = 0.5  # ER below this counts as "consolidating enough"
+
+# P0 kinds. EVERY level that price closes through (a P1 breakout) is a P0 and
+# is tracked to its retest; the kind, stamped at that breakout, says which
+# formation rule it met (see advance_one_bar's own docstring):
+#   spike-P0        its own formation candle is a spike (hammer for an LHPB,
+#                   shooting star for an LLPB -- the detector pairing below)
+#   swing-P0        a swing high/low (beats the bars either side) whose
+#                   neighbourhood is CONSOLIDATING at breakout (ER below
+#                   ER_CONSOLIDATION_MAX). A swing in a trending run is not one.
+#   spike+swing-P0  meets both rules
+#   plain-P0        meets neither
+# Before 2026-09-24 plain-P0s were dropped at their breakout (the old
+# "candidate gate"); code that wants only the old population filters to
+# SPIKE_OR_SWING_P0_KINDS -- which must be said at the call site.
+P0_SPIKE = "spike-P0"
+P0_SWING = "swing-P0"
+P0_SPIKE_SWING = "spike+swing-P0"
+P0_PLAIN = "plain-P0"
+ALL_P0_KINDS = frozenset({P0_SPIKE, P0_SWING, P0_SPIKE_SWING, P0_PLAIN})
+SPIKE_OR_SWING_P0_KINDS = frozenset({P0_SPIKE, P0_SWING, P0_SPIKE_SWING})
+
+
+def p0_kind(is_spike, is_swing, er):
+    """The P0 kind of a level breaking out now (see P0_* above). `er` is its
+    efficiency ratio at breakout; None (too few closes to score) counts as
+    consolidating, as it always has."""
+    swing = bool(is_swing) and (er is None or er < ER_CONSOLIDATION_MAX)
+    if is_spike:
+        return P0_SPIKE_SWING if swing else P0_SPIKE
+    return P0_SWING if swing else P0_PLAIN
 
 
 def load_ohlc_data(csv_path: str) -> pd.DataFrame:
@@ -65,8 +95,8 @@ def load_ohlc_data(csv_path: str) -> pd.DataFrame:
 # spike if its bar is a HAMMER, an LLPB (the bar's LOW) if it is a SHOOTING
 # STAR. The labels / cluster-selection / spike-atr reports use the opposite
 # "rejection" pairing (LHPB = shooting star). Both are intended; never swap
-# either one without the user deciding, since this pairing drives the
-# candidate gate and so every ledger. See "Spike candles" in lxpb-v2/CLAUDE.md.
+# either one without the user deciding, since this pairing decides which P0s
+# are spike-P0s and so every ledger. See "Spike candles" in lxpb-v2/CLAUDE.md.
 PATTERNS_PURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "lxpb-v2", "patterns_pure")
 SPIKE_PATTERN_FILES = tuple(os.path.join(PATTERNS_PURE_DIR, f)
@@ -185,23 +215,14 @@ def advance_one_bar(state: dict, bar) -> tuple:
     """Advance LXPB state by one OHLC bar -- a row from iter_bars(state, ohlc),
     which carries patterns-pure's hammer/shooting-star verdict for it.
 
-    Returns (finalized_swing, gated_dropped):
-      finalized_swing -- the levels whose `is_swing` was just finalized
-        this call (state['pending_swing'] as it stood before Phase 0
-        cleared it). An external observer that snapshots a level's fields
-        the moment it first sees it (e.g. lxpb_levels_cache.py) captures
-        is_swing while it is still the pending `None`, one bar before the
-        real value lands here -- callers that care about the correct
-        value need to know exactly when it becomes final so they can
-        patch whatever they already recorded.
-      gated_dropped -- levels that broke out this bar (Phase 2) but were
-        NOT promoted to touch_lv1 because they failed the candidate
-        gate (see Phase 2 below): price closed through them, but they
-        weren't a real pre-breakout extreme, so they're not tracked
-        further. An external observer needs this too, to distinguish
-        "broke but not a real candidate" from "never broke at all"
-        (FATE_DISCARDED_NO_CLOSE) -- both look identical from outside
-        (level leaves touch_lv0, never appears in touch_lv1) without it.
+    Returns finalized_swing -- the levels whose `is_swing` was just
+    finalized this call (state['pending_swing'] as it stood before Phase 0
+    cleared it). An external observer that snapshots a level's fields the
+    moment it first sees it (e.g. lxpb_levels_cache.py) captures is_swing
+    while it is still the pending `None`, one bar before the real value
+    lands here -- callers that care about the correct value need to know
+    exactly when it becomes final so they can patch whatever they already
+    recorded.
 
     Order: phase 0 (finalize pending swing) → phase 3 (retest) → phase 2
     (breakout) → phase 1 (register) → phase 4 (running-FTA update). Phase
@@ -238,30 +259,32 @@ def advance_one_bar(state: dict, bar) -> tuple:
     always before that same level's earliest possible breakout (Phase
     2 of this same call).
 
-    Candidate gate (Phase 2): a level only gets promoted to touch_lv1
-    (tracked as a live breakout awaiting retest) if:
-      `is_spike` (its own formation candle was a hammer/shooting star --
-        a self-contained reversal that doesn't need the NEXT bar's
-        confirmation, since a lower-timeframe view of that one candle is
-        itself a low-high-low / high-low-high pattern), OR
-      `is_swing` (a genuine local extreme against its immediate neighbor
-        bars) AND its own neighborhood is CONSOLIDATING rather than
-        trending -- `_efficiency_ratio(lv["er_closes"])` below
+    P0 kind (Phase 2): EVERY level that breaks out is a P0 and moves to
+    touch_lv1 (tracked as a live breakout awaiting retest), stamped with
+    `p0_kind` (see P0_* at module level):
+      spike-P0 -- `is_spike`: its own formation candle was a hammer/
+        shooting star, a self-contained reversal that doesn't need the
+        NEXT bar's confirmation, since a lower-timeframe view of that one
+        candle is itself a low-high-low / high-low-high pattern.
+      swing-P0 -- `is_swing` (a genuine local extreme against its
+        immediate neighbor bars) AND its own neighborhood is CONSOLIDATING
+        rather than trending -- `_efficiency_ratio(lv["er_closes"])` below
         ER_CONSOLIDATION_MAX (see that function and the module-level
         constants' own comments). is_swing alone is not enough: a razor-
         thin 1-bar dip inside an otherwise clean, one-directional run can
         satisfy the immediate-neighbor test purely by chance (its low
         beats the bars on either side by a few ticks) while the wider
         few bars around it show no real two-sided rejection at all --
-        the efficiency ratio catches that by scoring the actual
-        closes, not just endpoints.
-    A level that breaks out satisfying neither is not a real pre-breakout
-    extreme -- e.g. one bar in the middle of the same directional move
-    that produces the breakout, or one bar still inside the immediately
-    preceding opposite move -- so it is silently dropped rather than
-    tracked as a P0. Each of these is an independent, additive check,
-    not a ranking that picks a single "best" candidate among several
-    that still pass -- more may be added the same way later.
+        the efficiency ratio catches that by scoring the actual closes,
+        not just endpoints.
+      spike+swing-P0 -- both; plain-P0 -- neither (e.g. one bar in the
+        middle of the same directional move that produces the breakout,
+        or one bar still inside the immediately preceding opposite move).
+    Levels never interact, so a plain-P0's being tracked cannot change
+    anything about any other level: the spike/swing P0s are exactly the
+    levels this machine tracked before plain-P0s were kept (2026-09-24),
+    with identical lifecycles. Code wanting only that population filters
+    on SPIKE_OR_SWING_P0_KINDS.
     """
     state["bar_count"] += 1
 
@@ -333,7 +356,6 @@ def advance_one_bar(state: dict, bar) -> tuple:
     #     then rejected → genuine failed breakout, discard
     #   bar entirely on before-side → no interaction, keep
     keep = []
-    gated_dropped = []
     broke_out_ids = set()
     for lv in state["touch_lv0"]:
         price = lv["price"]
@@ -367,42 +389,27 @@ def advance_one_bar(state: dict, bar) -> tuple:
                     keep.append(lv)
                     continue
         if broke:
+            # Every breakout is a P0, whatever its kind -- see this
+            # function's own docstring.
             broke_out_ids.add(id(lv))
             er = _efficiency_ratio(lv.get("er_closes", ()))
-            consolidating = er is None or er < ER_CONSOLIDATION_MAX
-            if lv["is_spike"] or (lv["is_swing"] and consolidating):
-                state["touch_lv1"].append({
-                    **lv,
-                    "breakout_time":  bar.Index,
-                    "breakout_bar_count": state["bar_count"],
-                    "breakout_open":  bar.open,
-                    "breakout_high":  bar.high,
-                    "breakout_low":   bar.low,
-                    "breakout_close": bar.close,
-                    "running_fta":    np.nan,
-                    "er_score":       er,
-                })
-            else:
-                # Candidate gate failed: price closed through it, but it
-                # was never a real pre-breakout extreme. Not tracked
-                # further -- see this function's own docstring. Still
-                # stamped with breakout_* (same shape as a touch_lv1
-                # entry) so a caller can record WHAT it broke against
-                # even though it's not being tracked for a retest.
-                gated_dropped.append({
-                    **lv,
-                    "breakout_time":  bar.Index,
-                    "breakout_open":  bar.open,
-                    "breakout_high":  bar.high,
-                    "breakout_low":   bar.low,
-                    "breakout_close": bar.close,
-                    "er_score":       er,
-                })
+            state["touch_lv1"].append({
+                **lv,
+                "breakout_time":  bar.Index,
+                "breakout_bar_count": state["bar_count"],
+                "breakout_open":  bar.open,
+                "breakout_high":  bar.high,
+                "breakout_low":   bar.low,
+                "breakout_close": bar.close,
+                "running_fta":    np.nan,
+                "er_score":       er,
+                "p0_kind":        p0_kind(lv["is_spike"], lv["is_swing"], er),
+            })
         # else: bar range contained the level but close didn't pass — discard
     state["touch_lv0"] = keep
 
     # Every level still growing its own er_closes window gets this bar's
-    # close appended, up to the AFTER cap -- the candidate gate's
+    # close appended, up to the AFTER cap -- the swing-P0 test's
     # efficiency-ratio window (see this function's own docstring) grows
     # forward exactly as far as the level survives, stopping once it has
     # ER_BARS_AFTER post-formation closes. Walks `state["pending_er"]` (a
@@ -413,9 +420,9 @@ def advance_one_bar(state: dict, bar) -> tuple:
     # here every single bar would cost O(bars * |touch_lv0|) for work
     # that only ever touches a handful of recently-formed entries.
     # broke_out_ids excludes levels that left touch_lv0 THIS bar (Phase 2,
-    # above) -- their own er_closes was already read at the exact gate
+    # above) -- their own er_closes was already read at the exact P0-kind
     # check above and must not keep growing after the fact (this list and
-    # the new touch_lv1/gated_dropped dicts share the same list object via
+    # the new touch_lv1 dicts share the same list object via
     # the `**lv` spread, so appending here would silently corrupt an
     # already-decided, already-recorded entry).
     er_cap = ER_BARS_BEFORE + 1 + ER_BARS_AFTER
@@ -489,7 +496,7 @@ def advance_one_bar(state: dict, bar) -> tuple:
             else:  # LLPB
                 lv["running_fta"] = b_high if cur != cur or b_high > cur else cur
 
-    return finalized_swing, gated_dropped
+    return finalized_swing
 
 
 _INTERNAL_KEYS = {"running_fta", "_prev_high", "_prev_low", "er_closes", "breakout_bar_count"}
@@ -499,15 +506,27 @@ def _strip_internal(rows: list) -> list:
     return [{k: v for k, v in r.items() if k not in _INTERNAL_KEYS} for r in rows]
 
 
-def detect_lxpb_h1(ohlc_h1: pd.DataFrame):
+def of_p0_kinds(rows: list, p0_kinds) -> list:
+    """The broken-out entries of `rows` (touch_lv1 / retests dicts) whose
+    P0 kind is in `p0_kinds` -- ALL_P0_KINDS, or SPIKE_OR_SWING_P0_KINDS for
+    the population this machine tracked before plain-P0s were kept."""
+    return rows if p0_kinds == ALL_P0_KINDS else [r for r in rows if r["p0_kind"] in p0_kinds]
+
+
+def detect_lxpb_h1(ohlc_h1: pd.DataFrame, *, p0_kinds):
     """
     Run the 3-phase (+ swing pre-pass) LXPB state machine over H1 bars.
+
+    `p0_kinds` is required, so every caller says which P0s it reads:
+    ALL_P0_KINDS, or SPIKE_OR_SWING_P0_KINDS (plain-P0s left out -- exactly
+    what this returned before plain-P0s were kept, 2026-09-24).
 
     Returns
     -------
     touch_lv0 : zero-touch levels  (formed, not yet broken out)
-    touch_lv1 : one-touch levels   (broken out, awaiting retest)
-    retests   : completed retests  (one-touch level returned to after MIN_BARS_BEFORE_RETEST)
+    touch_lv1 : one-touch levels   (broken out, awaiting retest), of `p0_kinds`
+    retests   : completed retests  (one-touch level returned to after
+                MIN_BARS_BEFORE_RETEST), of `p0_kinds`
     """
     state = new_state()
     for bar in iter_bars(state, ohlc_h1):
@@ -515,8 +534,8 @@ def detect_lxpb_h1(ohlc_h1: pd.DataFrame):
 
     return (
         pd.DataFrame(_strip_internal(state["touch_lv0"])),
-        pd.DataFrame(_strip_internal(state["touch_lv1"])),
-        pd.DataFrame(state["retests"]),
+        pd.DataFrame(_strip_internal(of_p0_kinds(state["touch_lv1"], p0_kinds))),
+        pd.DataFrame(of_p0_kinds(state["retests"], p0_kinds)),
     )
 
 
@@ -548,7 +567,7 @@ if __name__ == "__main__":
     df = load_ohlc_data(args.data)
     print(f"  {len(df)} H1 bars  ({df.index.min()} -> {df.index.max()})")
 
-    touch_lv0, touch_lv1, retests = detect_lxpb_h1(df)
+    touch_lv0, touch_lv1, retests = detect_lxpb_h1(df, p0_kinds=ALL_P0_KINDS)
 
     print_levels(
         "ZERO-TOUCH levels  (formed, not yet broken out)",
@@ -558,13 +577,13 @@ if __name__ == "__main__":
     print_levels(
         "ONE-TOUCH levels  (broken out, awaiting retest)",
         touch_lv1,
-        ["type", "formation_time", "price", "is_spike", "is_swing",
+        ["type", "formation_time", "price", "p0_kind",
          "breakout_time", "breakout_open", "breakout_close"],
     )
     print_levels(
         "RETESTS  (completed)",
         retests,
-        ["type", "formation_time", "price", "is_spike", "is_swing", "breakout_time", "retest_time",
+        ["type", "formation_time", "price", "p0_kind", "breakout_time", "retest_time",
          "entry_price", "fta", "stop_loss"],
     )
 

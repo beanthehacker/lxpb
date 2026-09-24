@@ -2455,7 +2455,7 @@ def render(data_path, output_path, title, n_ticks, tick_size, start=None, end=No
         h1_df = _display_h1().tz_localize(None)
     else:
         h1_df = L.load_ohlc_data(data_path)
-    _touch_lv0, touch_lv1_df, retests_df = L.detect_lxpb_h1(h1_df)
+    _touch_lv0, touch_lv1_df, retests_df = L.detect_lxpb_h1(h1_df, p0_kinds=L.SPIKE_OR_SWING_P0_KINDS)
 
     if start:
         retests_df = retests_df[retests_df["retest_time"] >= pd.Timestamp(start)]

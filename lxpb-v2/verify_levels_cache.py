@@ -10,7 +10,8 @@ Three phases, all of which must pass before trusting `lxpb_levels_cache`:
 
 2. **Retest-set equivalence** -- the ledger must reproduce the completed-retest
    set exactly, since that is the trade population every other script in the
-   repo depends on.
+   repo depends on: every P0 kind on the full ledger (plain-P0s tracked), and
+   spike/swing P0s only on the plain-P0-untracked view.
 
 3. **Report regression** -- the two `build_m5_chart` rows that exposed the M5
    bugs (see ../AGENTS.md) must still render the levels a human verified by
@@ -105,8 +106,10 @@ def _norm(df):
             for _, r in df.iterrows()}
 
 
-def compare_retests(bars, ledger, label):
-    _lv0, _lv1, rt = L.detect_lxpb_h1(bars)
+def compare_retests(bars, ledger, label, p0_kinds):
+    """`ledger` must be the view matching `p0_kinds`: plain-P0s tracked for
+    ALL_P0_KINDS, untracked for SPIKE_OR_SWING_P0_KINDS."""
+    _lv0, _lv1, rt = L.detect_lxpb_h1(bars, p0_kinds=p0_kinds)
     led = LC.retests(ledger)
     if rt.empty and led.empty:
         print(f"{label} retests: both empty")
@@ -1124,18 +1127,22 @@ bad = 0
 
 print("=== H1 ===")
 h1_bars = R._display_h1()
-h1 = LC.h1_levels(bars=h1_bars, rebuild=not QUICK)
+h1 = LC.h1_levels(bars=h1_bars, rebuild=not QUICK, plain_p0=LC.PLAIN_P0_TRACKED)
 LC._print_stats(h1, "H1 ledger")
 bad += compare(h1_bars, h1, "H1 live-set", n_cuts=8 if QUICK else 25)
-bad += compare_retests(h1_bars, h1, "H1")
+bad += compare_retests(h1_bars, h1, "H1 (all P0 kinds)", L.ALL_P0_KINDS)
+bad += compare_retests(h1_bars, LC.untrack_plain_p0(h1), "H1 (spike/swing P0s)",
+                       L.SPIKE_OR_SWING_P0_KINDS)
 
 print("\n=== M5 (continuous) ===")
 m5_bars = LC.m5_bars_continuous()
 print(f"M5 bars: {len(m5_bars):,}  {m5_bars.index[0]} -> {m5_bars.index[-1]}")
-m5 = LC.m5_levels(rebuild=not QUICK)
+m5 = LC.m5_levels(rebuild=not QUICK, plain_p0=LC.PLAIN_P0_TRACKED)
 LC._print_stats(m5, "M5 ledger")
 bad += compare(m5_bars, m5, "M5 live-set", n_cuts=5 if QUICK else 12)
-bad += compare_retests(m5_bars, m5, "M5")
+bad += compare_retests(m5_bars, m5, "M5 (all P0 kinds)", L.ALL_P0_KINDS)
+bad += compare_retests(m5_bars, LC.untrack_plain_p0(m5), "M5 (spike/swing P0s)",
+                       L.SPIKE_OR_SWING_P0_KINDS)
 
 if not SKIP_REPORT:
     print("\n=== build_m5_chart regression ===")

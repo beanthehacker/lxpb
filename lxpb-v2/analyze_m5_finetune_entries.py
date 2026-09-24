@@ -79,7 +79,7 @@ pd.set_option("display.max_columns", 20)
 
 def load_m5_lxpb():
     m5_df = L.load_ohlc_data(M5_PATH)
-    _t0, _t1, m5_retests = L.detect_lxpb_h1(m5_df)
+    _t0, _t1, m5_retests = L.detect_lxpb_h1(m5_df, p0_kinds=L.SPIKE_OR_SWING_P0_KINDS)
     m5_retests, n_gap = R.filter_gap_rows(m5_df, m5_retests)
     print(f"M5 series: {len(m5_df)} bars ({m5_df.index.min()} -> {m5_df.index.max()}); "
           f"{len(m5_retests) + n_gap} completed M5 retests detected, {n_gap} gap-excluded, "

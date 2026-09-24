@@ -155,7 +155,7 @@ Rules when adding a new TradingView export:
 
 ## Fixed bug: `detect_lxpb_h1` buckets are END-OF-DATA state, not as-of state (lxpb-v2)
 
-`lxpb.detect_lxpb_h1(bars)` returns `(touch_lv0, touch_lv1, retests)` describing
+`lxpb.detect_lxpb_h1(bars, p0_kinds=...)` returns `(touch_lv0, touch_lv1, retests)` describing
 the state machine's buckets **as of the LAST bar it was handed** — not as of any
 particular moment inside the series:
 
@@ -235,8 +235,10 @@ consumed exactly at T is not live at T; `stage` is `broken` if
 
 ```python
 import lxpb_levels_cache as LC
-lv  = LC.h1_levels()                       # or LC.m5_levels() — one ledger per
-                                           # timeframe, spanning every rollover
+lv  = LC.h1_levels(plain_p0=LC.PLAIN_P0_UNTRACKED)  # or LC.m5_levels(...) — one
+                                           # ledger per timeframe, spanning every rollover;
+                                           # plain_p0 is required (see "P0 kinds" in
+                                           # lxpb-v2/CLAUDE.md)
 live = LC.levels_live_as_of(lv, ts, type_="LLPB")   # DataFrame + `stage` column
 sig  = LC.retests(lv)                      # the trade population
 bars = LC.m5_bars_continuous()             # continuous M5 OHLC, cached

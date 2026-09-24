@@ -109,7 +109,8 @@ Every level is classified when formed:
 
 ## Output columns
 
-`type`, `formation_time`, `price`, `is_spike`, `is_swing`, `breakout_time`,
+`type`, `formation_time`, `price`, `is_spike`, `is_swing`, `p0_kind` (spike-P0 /
+swing-P0 / spike+swing-P0 / plain-P0 -- see "P0 kinds" in `lxpb-v2/CLAUDE.md`), `breakout_time`,
 `breakout_open/high/low/close`, `retest_time`, `retest_open/high/low/close`,
 `entry_price`, `fta`, `stop_loss`.
 

@@ -56,7 +56,7 @@ def load_full_context():
     but also keeps touch_lv1_df + the pre-strong-filter retests_df, needed for
     compute_hints' confluence-overlay ('all_broken') argument."""
     h1_df = L.load_ohlc_data(A.DATA_PATH)
-    _touch_lv0, touch_lv1_df, retests_df = L.detect_lxpb_h1(h1_df)
+    _touch_lv0, touch_lv1_df, retests_df = L.detect_lxpb_h1(h1_df, p0_kinds=L.SPIKE_OR_SWING_P0_KINDS)
     retests_df, _n_gap = R.filter_gap_rows(h1_df, retests_df)
     retests_df = retests_df[(retests_df["retest_time"] >= pd.Timestamp("2026-07-01")) &
                              (retests_df["retest_time"] <= pd.Timestamp("2026-08-31"))]

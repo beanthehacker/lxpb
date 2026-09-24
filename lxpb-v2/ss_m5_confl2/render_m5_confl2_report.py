@@ -337,7 +337,7 @@ PEG_STEP_DEFAULT = SF.PEG_STEP_DEFAULT
 PEG_CAP_DEFAULT = SF.PEG_CAP_DEFAULT
 P1_BAR_WIDTH = pd.Timedelta(minutes=5)  # this strategy's own P1 is an M5 bar, not H1
 CANDIDATE_COLOR = "#7dd3fc"  # light blue -- every C1..Cn marker (dot + label), chosen or not;
-                             # suppressed ones are distinguished by their " ✕" text suffix, not color
+                             # plain-P0s are distinguished by their " (plain)" text suffix, not color
 
 # Matches analyze_breakout_exits.DEFAULT_START/END -- the same Jul-Aug 2026
 # span the base (non-full-year) ss_confl2 H1 report uses.
@@ -368,7 +368,7 @@ def select_candidates(ss_confl_min, start, end, confluence_points):
     start_ts = pd.Timestamp(start, tz="UTC")
     end_ts = pd.Timestamp(end, tz="UTC") + pd.Timedelta(days=1)  # end date inclusive
     candidates = []
-    m5_ledger = LC.m5_levels(verbose=False)
+    m5_ledger = LC.m5_levels(verbose=False, plain_p0=LC.PLAIN_P0_UNTRACKED)
     if m5_ledger is None or m5_ledger.empty:
         return candidates
     retests = LC.retests(m5_ledger)
@@ -537,7 +537,7 @@ def _dynamic_stop_m5(level_type, alt_price, is_long, entry_level_info,
     Otherwise: _dynamic_stop_m5_thrust (protective extreme of the P1 thrust
     candle among live same-side levels within +/-10pt of the fill) --
     SF.dynamic_stop's own rule, re-implemented locally so the candidate
-    pool can include gated-dropped candles too (see that function's own
+    pool can include plain-P0 candles too (see that function's own
     docstring for why; same reasoning as the target rules).
 
     stop_row is always a pd.Series (like SF.dynamic_stop's own return) so
@@ -564,7 +564,7 @@ def _wider_stop_p1(m5_ledger, level_type, alt_price, is_long, touch_time_alt):
     extreme (breakout low for a long, high for a short) puts the stop at
     least MIN_STOP_PTS beyond the fill; None if there is none. Any fate
     counts -- like a target or the thrust stop, the candle need not have
-    passed the entry gate or still be live, it only has to be a P1 candle.
+    be a spike/swing P0 or still be live, it only has to be a P1 candle.
     Detector pairing is irrelevant: no spike test is made here."""
     if m5_ledger is None or m5_ledger.empty:
         return None
@@ -622,8 +622,8 @@ def _dynamic_stop_m5_thrust(m5_ledger, level_type, alt_price, is_long, touch_tim
     the fill, plus one tick) -- re-implemented here, rather than calling
     SF.dynamic_stop (left unchanged there for the H1 report), for one
     reason: the candidate pool comes from _live_m5_target_candidates
-    instead of SF._live_m5_before_entry, so a thrust candle that failed the
-    entry candidate gate still qualifies to protect a stop. A stop is a
+    instead of SF._live_m5_before_entry, so a plain-P0's thrust candle
+    still qualifies to protect a stop. A stop is a
     price the market broke through and hasn't come back to since, same as
     a target -- it doesn't need to have looked like a genuine turn at the
     time any more than a target does (see _target_candidate_still_live's
@@ -672,34 +672,31 @@ def _window_bounds(touch_time, p1_time, p2_time=None):
 
 
 def _target_candidate_still_live(bars, level_type, price, breakout_time, as_of):
-    """Whether an opposite-type M5 candle that FAILED lxpb.py's entry
-    candidate gate (fate 'gated_dropped' -- neither a spike nor a
-    consolidating swing) has nonetheless gone untouched since its own
-    breakout, as of `as_of`.
+    """Whether an opposite-type M5 plain-P0 (neither a spike nor a
+    consolidating swing -- see lxpb.py's P0 kinds) has gone untouched since
+    its own breakout, as of `as_of`.
 
-    A gated-dropped candidate's death_time is stamped equal to its own
-    breakout_time (see lxpb_levels_cache.py's fate table) because nothing
-    tracks it forward once it fails that gate -- the gate exists to keep
-    noise out of ENTRY selection, where a level needs to have looked like a
-    real turn AT THE TIME to justify trading its retest. A TARGET doesn't
-    need that: a price the market broke through and never came back to is
-    still somewhere price could go, whether or not that original break
-    looked convincing. So for a gated-dropped candidate only, this replays
-    lxpb.py's own consumption rule directly against the bars: ANY bar after
-    the breakout bar that touches or gaps past the price kills it, the
-    immediately-next bar included. (lxpb.py phase 3 silently consumes a
+    This report reads the ledger with plain-P0s UNTRACKED (see
+    lxpb_levels_cache.py), where a plain-P0's death_time is stamped equal to
+    its own breakout_time -- entries are spike/swing P0s only, where a level
+    needs to have looked like a real turn AT THE TIME to justify trading its
+    retest. A TARGET doesn't need that: a price the market broke through and
+    never came back to is still somewhere price could go, whether or not
+    that original break looked convincing. So for a plain-P0 only, this
+    replays lxpb.py's own consumption rule directly against the bars: ANY
+    bar after the breakout bar that touches or gaps past the price kills it,
+    the immediately-next bar included. (lxpb.py phase 3 silently consumes a
     touch inside the MIN_BARS_BEFORE_RETEST gap -- ledger fate
     'consumed_early' -- so that gap only decides whether a touch is a
-    retest TRADE, never whether the level is still standing.) The ledger
-    never recorded this for a candidate that failed the gate.
+    retest TRADE, never whether the level is still standing.)
 
     The bar that first kills a candidate depends only on the candidate and the
-    bars, never on `as_of`, so it is found once (_gated_kill_ns) and every
-    later query just compares against it: the same gated candidates come up
+    bars, never on `as_of`, so it is found once (_plain_p0_kill_ns) and every
+    later query just compares against it: the same plain-P0s come up
     again for trade after trade, and replaying months of bars for each one
     was the single largest per-trade cost."""
     if bars.index.is_monotonic_increasing:
-        kill = _gated_kill_ns(bars, level_type, price, breakout_time)
+        kill = _plain_p0_kill_ns(bars, level_type, price, breakout_time)
         return kill is None or kill > pd.Timestamp(as_of).value
     window = bars[(bars.index > breakout_time) & (bars.index <= as_of)]
     touched = (window["low"] <= price) & (window["high"] >= price)
@@ -710,51 +707,50 @@ def _target_candidate_still_live(bars, level_type, price, breakout_time, as_of):
     return not (touched | gap_over).any()
 
 
-_GATED_KILL_BARS = None   # (bars, times_ns, lows, highs) the memo below belongs to
-_GATED_KILL_NS = {}
+_PLAIN_P0_KILL_BARS = None   # (bars, times_ns, lows, highs) the memo below belongs to
+_PLAIN_P0_KILL_NS = {}
 
 
-def _gated_kill_ns(bars, level_type, price, breakout_time):
-    """UTC-ns time of the first bar that touches or gaps past a gated-dropped
-    candidate under _target_candidate_still_live's rule -- any bar after its
+def _plain_p0_kill_ns(bars, level_type, price, breakout_time):
+    """UTC-ns time of the first bar that touches or gaps past a plain-P0
+    under _target_candidate_still_live's rule -- any bar after its
     breakout bar -- or None if no
     bar in `bars` ever does. The candidate is live as of T exactly when this
     is None or later than T. Memoised per candidate; `bars` must be sorted."""
-    global _GATED_KILL_BARS
-    if _GATED_KILL_BARS is None or _GATED_KILL_BARS[0] is not bars:
-        _GATED_KILL_BARS = (bars, bars.index.asi8, bars["low"].to_numpy(float),
+    global _PLAIN_P0_KILL_BARS
+    if _PLAIN_P0_KILL_BARS is None or _PLAIN_P0_KILL_BARS[0] is not bars:
+        _PLAIN_P0_KILL_BARS = (bars, bars.index.asi8, bars["low"].to_numpy(float),
                             bars["high"].to_numpy(float))
-        _GATED_KILL_NS.clear()
+        _PLAIN_P0_KILL_NS.clear()
     key = (level_type, price, pd.Timestamp(breakout_time).value)
-    if key not in _GATED_KILL_NS:
-        _, times, lows, highs = _GATED_KILL_BARS
+    if key not in _PLAIN_P0_KILL_NS:
+        _, times, lows, highs = _PLAIN_P0_KILL_BARS
         start = int(np.searchsorted(times, key[2], side="right"))
         lo, hi = lows[start:], highs[start:]
         touched = (lo <= price) & (hi >= price)
         gap_over = (hi < price) if level_type == "LHPB" else (lo > price)
         hit = np.flatnonzero(touched | gap_over)
-        _GATED_KILL_NS[key] = int(times[start + hit[0]]) if hit.size else None
-    return _GATED_KILL_NS[key]
+        _PLAIN_P0_KILL_NS[key] = int(times[start + hit[0]]) if hit.size else None
+    return _PLAIN_P0_KILL_NS[key]
 
 
 def _live_m5_target_candidates(m5_ledger, level_type, touch_time, min_breakout_levels=1,
                                price=None, max_pts=None):
     """Same query as SF._live_m5_before_entry (still-standing, completed-bar
-    opposite-type candidates as of `touch_time`), except a candidate that
-    failed lxpb.py's entry candidate gate is not disqualified for that
-    reason alone -- see _target_candidate_still_live's own docstring for
-    why targets and entries need different standards here. Every other
-    fate (real P0s, already accurately tracked to retest/death in the
-    ledger) is resolved exactly as SF._live_m5_before_entry does.
+    opposite-type candidates as of `touch_time`), except a plain-P0 is not
+    disqualified for being one -- see _target_candidate_still_live's own
+    docstring for why targets and entries need different standards here.
+    Every spike/swing P0 (already tracked to retest/death in the ledger)
+    is resolved exactly as SF._live_m5_before_entry does.
 
     `price`/`max_pts`: every caller immediately throws out anything more
     than a fixed number of points from the fill (up-to-50pt for a target,
     +/-DYNAMIC_STOP_RADIUS_PTS for a stop) -- pass them here so a
-    gated-dropped candidate that could never qualify on distance alone is
+    plain-P0 that could never qualify on distance alone is
     dropped BEFORE its own untouched-since-breakout check runs, not after.
-    That check replays real bars per candidate, and the gated-dropped pool
-    is the majority of this ledger's whole history (every candle that ever
-    broke out and failed the entry gate, tens of thousands of rows) -- most
+    That check replays real bars per candidate, and the plain-P0s are the
+    majority of this ledger's P0s (every candle that ever broke out as
+    neither a spike nor a swing, tens of thousands of rows) -- most
     of them formed at some unrelated price months away from this trade, so
     skipping the distance-blind ones first is the difference between
     checking a handful of candidates and checking nearly all of history for
@@ -762,38 +758,38 @@ def _live_m5_target_candidates(m5_ledger, level_type, touch_time, min_breakout_l
     if m5_ledger is None or m5_ledger.empty:
         return pd.DataFrame()
     as_of = pd.to_datetime(touch_time, utc=True).floor("5min") - pd.Timedelta(nanoseconds=1)
-    # Pre-narrowed with LC.select_levels -- real P0s to the ones still alive
-    # at as_of, gated candidates to the distance band -- and then run through
+    # Pre-narrowed with LC.select_levels -- spike/swing P0s to the ones still
+    # alive at as_of, plain-P0s to the distance band -- and then run through
     # exactly the same filters as the full-ledger fallback, so the rows kept
     # are identical.
     near = {"price": price, "pts": max_pts} if price is not None and max_pts is not None else {}
-    nongated = LC.select_levels(m5_ledger, level_type, confirmed_by=as_of, alive_at=as_of,
-                                min_breakout_levels=min_breakout_levels, gated=False)
-    if nongated is not None:
-        live = LC.levels_live_as_of(nongated, as_of)
-        gated = LC.select_levels(m5_ledger, level_type, confirmed_by=as_of,
-                                 min_breakout_levels=min_breakout_levels, gated=True, **near)
+    tracked = LC.select_levels(m5_ledger, level_type, confirmed_by=as_of, alive_at=as_of,
+                               min_breakout_levels=min_breakout_levels, plain_p0=False)
+    if tracked is not None:
+        live = LC.levels_live_as_of(tracked, as_of)
+        plain = LC.select_levels(m5_ledger, level_type, confirmed_by=as_of,
+                                 min_breakout_levels=min_breakout_levels, plain_p0=True, **near)
     else:
         confirmed = m5_ledger[(m5_ledger["type"] == level_type) &
                              (m5_ledger["breakout_time"] <= as_of)]
         if min_breakout_levels > 1:
             counts = confirmed.groupby("breakout_time")["formation_time"].transform("nunique")
             confirmed = confirmed[counts >= min_breakout_levels]
-        is_gated = confirmed["fate"] == "gated_dropped"
-        live = LC.levels_live_as_of(confirmed[~is_gated], as_of)
-        gated = confirmed[is_gated]
+        is_plain = confirmed["p0_kind"] == LC.L.P0_PLAIN
+        live = LC.levels_live_as_of(confirmed[~is_plain], as_of)
+        plain = confirmed[is_plain]
     if near:
-        gated = gated[(gated["price"] - price).abs() <= max_pts]
-    if gated.empty:
+        plain = plain[(plain["price"] - price).abs() <= max_pts]
+    if plain.empty:
         return live
     bars = LC.m5_bars_continuous()
     still_live = np.fromiter(
         (_target_candidate_still_live(bars, level_type, p, pd.Timestamp(b), as_of)
-         for p, b in zip(gated["price"].to_numpy(float), gated["breakout_time"])),
-        dtype=bool, count=len(gated))
-    live_gated = gated[still_live].copy()
-    live_gated["stage"] = "broken"
-    return pd.concat([live, live_gated], ignore_index=True)
+         for p, b in zip(plain["price"].to_numpy(float), plain["breakout_time"])),
+        dtype=bool, count=len(plain))
+    live_plain = plain[still_live].copy()
+    live_plain["stage"] = "broken"
+    return pd.concat([live, live_plain], ignore_index=True)
 
 
 def _opposite_m5_zz_target(m5_ledger, level_type, price, is_long, touch_time,
@@ -1204,7 +1200,7 @@ def _pre_p1_er_by_k(breakout_time, max_k=PRE_P1_ER_MAX_K):
     path traveled; 0 = round-tripped chop, 1 = a straight run) of the M5
     closes immediately preceding this level's own P1 breakout bar, for
     every lookback k = 2..max_k. Same measure lxpb.py's own
-    candidate gate uses, aimed
+    swing-P0 test uses, aimed
     backward from a breakout instead of forward from a level's own
     formation. Returned as a list indexed [0] -> k=2, [1] -> k=3, ...,
     with None where the continuous M5 series doesn't reach back that far.
@@ -1738,13 +1734,12 @@ def _annotate_p0_p1_p2(chart_m5, row_for_chart, is_long):
 def _p1_sibling_group(level_type, breakout_time):
     """Every M5 level (any fate) sharing (level_type, breakout_time) in the
     one continuous M5 ledger -- i.e. the full field of P0 candidates one
-    breakout bar broke at once, including ones lxpb.py's own candidate
-    gate silently dropped (fate 'gated_dropped' -- see lxpb.py's own
-    advance_one_bar docstring), not just the ones that became tradeable
-    P0s. Sorted by formation_time. Returns None if fewer than 2 candidates
+    breakout bar broke at once, plain-P0s included (see lxpb.py's P0
+    kinds), not just the spike/swing P0s this report trades. Sorted by
+    formation_time. Returns None if fewer than 2 candidates
     shared this P1 (nothing else to annotate or protect from chart
     compression)."""
-    ledger = LC.m5_levels(verbose=False)
+    ledger = LC.m5_levels(verbose=False, plain_p0=LC.PLAIN_P0_UNTRACKED)
     if ledger is None or ledger.empty:
         return None
     breakout_time = pd.Timestamp(breakout_time)
@@ -1822,11 +1817,11 @@ def _annotate_candidates(chart_m5, row_for_chart, is_long, group, cluster_member
                 "text": f"C{n} (in trade)",
             })
             continue
-        suppressed = lv["fate"] == "gated_dropped"
+        plain = lv["p0_kind"] == LC.L.P0_PLAIN
         new_markers.append({
             "time": t, "position": "belowBar" if is_long else "aboveBar",
             "color": CANDIDATE_COLOR, "shape": "circle",
-            "text": f"C{n}" + (" ✕" if suppressed else ""),
+            "text": f"C{n}" + (" (plain)" if plain else ""),
         })
     chart_m5["markers"].extend(new_markers)
     chart_m5["markers"].sort(key=lambda m: m["time"])
@@ -2365,7 +2360,7 @@ def _run_cluster_chunk_subprocess(spec):
     contracts only" convention in CLAUDE.md), not one per contract
     segment."""
     args = spec["args"]
-    m5_ledger = LC.m5_levels(verbose=False)
+    m5_ledger = LC.m5_levels(verbose=False, plain_p0=LC.PLAIN_P0_UNTRACKED)
     out = {}
     for pos, cluster in zip(spec["positions"], spec["clusters"]):
         for cand in cluster:
@@ -2521,16 +2516,16 @@ def _h1_p0_kind(level_type, is_spike, is_swing):
     """hammer for LHPB / shooting star for LLPB (lxpb.py's is_spike, judged by
     patterns-pure: LHPB=bar.high+find_hammer, LLPB=bar.low+find_shooting_star --
     same mapping render_m5_confl2_report.py already uses for its own
-    m5_p0_spike stop tooltip). 'swing' when not a spike but still a genuine
-    local extreme; 'other' otherwise (e.g. a level whose is_swing was never
-    finalized, or that qualified as neither -- these never became real M5
-    P0 candidates under lxpb.py's own gate, but H1 tracks every registered
-    level regardless, and this column is a raw structural check, not a
-    replay of the gate)."""
+    m5_p0_spike stop tooltip). 'swing high' (LHPB) / 'swing low' (LLPB) when
+    not a spike but still a local extreme against the bars either side --
+    the RAW swing test, with no consolidation check, so NOT the same thing
+    as a swing-P0; 'other' otherwise (e.g. a level whose is_swing was never
+    finalized, or that is neither). Every registered H1 level counts here,
+    whatever its P0 kind: this column is a raw structural check."""
     if is_spike:
         return "hammer" if level_type == "LHPB" else "shooting star"
     if is_swing:
-        return "swing"
+        return "swing high" if level_type == "LHPB" else "swing low"
     return "other"
 
 
@@ -2568,10 +2563,10 @@ def _apply_h1_p0_confluence(results):
     fully open), also still counts -- there is no upper bound on how late
     the H1 reaction may come, since 'still untested near the M5 retest
     hour' is exactly satisfied by a level that stays untested even longer.
-    Deliberately ANY fate otherwise --
-    gated_dropped/discarded_no_close H1 levels still show, since this
-    column is a raw structural check, not a replay of lxpb.py's candidate
-    gate (see _h1_p0_kind's own docstring for that same point re: kind).
+    Deliberately ANY fate or P0 kind otherwise -- plain-P0 (untracked, so
+    dead at its own breakout) and discarded_no_close H1 levels still show,
+    since this column is a raw structural check (see _h1_p0_kind's own
+    docstring for that same point re: kind).
 
     A candidate H1 P0 is further required to have at least one H1 candle
     between its OWN "start" and its own reaction (death) -- an immediate
@@ -2604,7 +2599,7 @@ def _apply_h1_p0_confluence(results):
     Stores the list (nearest first, [] if none) as res['h1_p0_confl'] for
     _render_row's own column (a plain count, with the full detail in that
     cell's tooltip -- see _h1_confl_cell)."""
-    h1_ledger = LC.h1_levels(verbose=False)
+    h1_ledger = LC.h1_levels(verbose=False, plain_p0=LC.PLAIN_P0_UNTRACKED)
     h1_bar_pos = {ts: i for i, ts in enumerate(R._display_h1().index)}
     for res in results:
         if not res["filled"]:
@@ -2666,7 +2661,7 @@ def _apply_h1_spike_confluence(results):
     untested through 12:00). Same liveness test as _apply_h1_p0_confluence.
     Ships res['spike_confl'] = list of {kind, time, price, dist, death_time}
     nearest first ([] if none) for the badge tooltip."""
-    h1_ledger = LC.h1_levels(verbose=False)
+    h1_ledger = LC.h1_levels(verbose=False, plain_p0=LC.PLAIN_P0_UNTRACKED)
     spikes = h1_ledger[h1_ledger["is_spike"].astype(bool)]
     for res in results:
         if not res["filled"]:
@@ -2726,7 +2721,7 @@ def _apply_h1_bias(results):
     at the REFINED entry price -- fill_price when filled, alt_price
     otherwise -- since it is the one kind that needs a price at all."""
     h1_bars = R._display_h1()
-    h1_ledger = LC.h1_levels(verbose=False)
+    h1_ledger = LC.h1_levels(verbose=False, plain_p0=LC.PLAIN_P0_UNTRACKED)
     for res in results:
         if res["filled"]:
             at = pd.Timestamp(res["touch_time_alt"])
@@ -3832,7 +3827,7 @@ shown. Defaults to any (no filtering).">P1&rarr;P2 gap (min)</span>
     <span class="filter-label" title="Kaufman efficiency ratio (R._efficiency_ratio: net move /
 total path traveled over k M5 closes; 0 = round-tripped chop, 1 = a straight run) of the k M5
 closes immediately BEFORE this level's own P1 (breakout) bar -- same measure lxpb.py's own
-candidate gate uses (lxpb.ER_CONSOLIDATION_MAX = 0.5),
+swing-P0 test uses (lxpb.ER_CONSOLIDATION_MAX = 0.5),
 aimed backward from the breakout instead of forward from a level's own formation. A trade that
 breaks out of a trending/grinding run rather than a contained, overlapping range has a HIGH ER
 here (no structure); a trade that breaks out of real consolidation has a LOW one. BOTH k and the
@@ -4148,7 +4143,7 @@ the box is checked.">Trade management</span>
             f"<th title=\"Kaufman efficiency ratio (net move / total path traveled; 0 = "
             f"round-tripped chop, 1 = a straight run) of the k M5 closes immediately BEFORE "
             f"this level's own P1 (breakout) bar -- same measure lxpb.py's own "
-            f"candidate gate uses "
+            f"swing-P0 test uses "
             f"(R._efficiency_ratio), aimed backward from the breakout instead of forward from "
             f"a level's own formation. k (default {PRE_P1_ER_K_DEFAULT}) and the filter cutoff "
             f"below are both live in the Pre-P1 structure filter above -- no regen "

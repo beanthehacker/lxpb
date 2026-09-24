@@ -1,8 +1,8 @@
 {
   "kind": "m5",
   "contract": "",
-  "algo_version": 3,
-  "rules": "2c669c4f306a-mh1",
+  "algo_version": 4,
+  "rules": "2a2ddd1c7a64-mh1",
   "bars_fingerprint": "222929-1833a5d2a92f4f2a",
   "shape_fingerprint": "222929-e098b587936c475f",
   "anchor": 5327.75,
@@ -13,6 +13,6 @@
   "n_levels": 445858,
   "built_how": "rebuild",
   "resolved": "rebuild",
-  "built_seconds": 63.57,
-  "built_at": "2026-09-22T00:40:24.713481+00:00"
+  "built_seconds": 92.64,
+  "built_at": "2026-09-24T21:26:08.572077+00:00"
 }

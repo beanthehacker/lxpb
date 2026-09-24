@@ -61,13 +61,31 @@ of the three buckets, so anything the old API could answer, this can too.
     retested             reached a valid retest; death_time == retest_time
     consumed_early       touched/gapped past before MIN_BARS_BEFORE_RETEST
     discarded_no_close   bar traded into the level but did not close through
-    gated_dropped        closed through, but failed lxpb.py's candidate gate
-                         (see advance_one_bar's own docstring for the full
-                         rule set: is_spike, or is_swing AND consolidating)
-                         -- not a real pre-breakout extreme, so never
-                         tracked as a P0
     open_unbroken        still in touch_lv0 at the end of the data
     open_awaiting_retest still in touch_lv1 at the end of the data
+
+Every level that closed through is a P0, and `p0_kind` (set at breakout,
+None for a level that never broke) says which: spike-P0, swing-P0,
+spike+swing-P0 or plain-P0 (see lxpb.py's P0_* constants). Before 2026-09-24
+plain-P0s were dropped at their breakout (fate "gated_dropped").
+
+Plain-P0 tracked or untracked
+-----------------------------
+`h1_levels()` / `m5_levels()` take a REQUIRED `plain_p0` choice, so every
+caller says which population it reads:
+
+    PLAIN_P0_TRACKED    the full ledger: plain-P0s live on to a retest like
+                        any other P0.
+    PLAIN_P0_UNTRACKED  plain-P0 rows end at their own breakout (death_time
+                        == breakout_time, no retest, fate
+                        "plain_p0_untracked"), exactly as the machine treated
+                        them before they were kept -- so every query here
+                        gives the pre-2026-09-24 answer. The rows stay in
+                        (breakout confirmed), since P1 sibling counts and
+                        confluence always counted them.
+
+Levels never interact in lxpb.py, so the spike/swing P0 rows are identical
+either way; only the plain-P0 rows differ.
 
 How the lifecycle is captured
 -----------------------------
@@ -163,7 +181,7 @@ L = R.L
 # Bump when the ledger's SCHEMA or the way it is derived changes, so every
 # cached file rebuilds. (Changes to lxpb.py's own rules are picked up via
 # RULES_FINGERPRINT below instead.)
-ALGO_VERSION = 3
+ALGO_VERSION = 4
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          "data", "levels_cache")
@@ -171,18 +189,23 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 FATE_RETESTED = "retested"
 FATE_CONSUMED_EARLY = "consumed_early"
 FATE_DISCARDED_NO_CLOSE = "discarded_no_close"
-FATE_GATED_DROPPED = "gated_dropped"
+# Only in a PLAIN_P0_UNTRACKED view (see the module docstring), never in
+# the stored ledger.
+FATE_PLAIN_P0_UNTRACKED = "plain_p0_untracked"
 FATE_OPEN_UNBROKEN = "open_unbroken"
 FATE_OPEN_AWAITING_RETEST = "open_awaiting_retest"
 
 # Levels that are still alive at the end of the data have no death_time.
 _OPEN_FATES = (FATE_OPEN_UNBROKEN, FATE_OPEN_AWAITING_RETEST)
 
+PLAIN_P0_TRACKED = "tracked"
+PLAIN_P0_UNTRACKED = "untracked"
+
 COLUMNS = [
     "timeframe", "contract", "type", "price",
     "formation_time", "is_spike", "is_swing",
     "breakout_time", "breakout_open", "breakout_high", "breakout_low", "breakout_close",
-    "er_score",
+    "er_score", "p0_kind",
     "retest_time", "retest_open", "retest_high", "retest_low", "retest_close",
     "entry_price", "fta", "stop_loss",
     "death_time", "fate",
@@ -322,6 +345,7 @@ class _LedgerObserver:
             "is_swing": bool(lv["is_swing"]) if lv["is_swing"] is not None else False,
             "breakout_time": pd.NaT, "breakout_open": np.nan, "breakout_high": np.nan,
             "breakout_low": np.nan, "breakout_close": np.nan, "er_score": np.nan,
+            "p0_kind": None,
             "retest_time": pd.NaT, "retest_open": np.nan, "retest_high": np.nan,
             "retest_low": np.nan, "retest_close": np.nan,
             "entry_price": np.nan, "fta": np.nan, "stop_loss": np.nan,
@@ -342,15 +366,15 @@ class _LedgerObserver:
         row["breakout_high"] = lv["breakout_high"]
         row["breakout_low"] = lv["breakout_low"]
         row["breakout_close"] = lv["breakout_close"]
-        # The candidate gate's efficiency-ratio score at the moment this
+        # The swing-P0 test's efficiency-ratio score at the moment this
         # level broke out (see lxpb.advance_one_bar's own docstring),
-        # computed regardless of which rule actually passed it (is_spike
-        # included) -- useful for reviewing/retuning ER_CONSOLIDATION_MAX
-        # later even on levels a different rule let through. NaN if
+        # computed whatever the P0's kind (spike-P0s included) -- useful
+        # for reviewing/retuning ER_CONSOLIDATION_MAX later. NaN if
         # lxpb.py had too few closes to score it at all (.get is
         # defensive; every fresh build always sets the key).
         er = lv.get("er_score")
         row["er_score"] = er if er is not None else np.nan
+        row["p0_kind"] = lv["p0_kind"]
 
     def apply_finalized_swing(self, finalized_swing):
         """Patch the real is_swing value into an already-emitted row.
@@ -368,10 +392,9 @@ class _LedgerObserver:
             if row is not None:
                 row["is_swing"] = bool(lv["is_swing"])
 
-    def observe(self, state, bar_time, gated_dropped=()):
+    def observe(self, state, bar_time):
         """Record everything that happened to levels on the bar just processed."""
         lv0, lv1, retests = state["touch_lv0"], state["touch_lv1"], state["retests"]
-        gated_by_key = {self._key(lv): lv for lv in gated_dropped}
 
         # --- completed retests (phase 3): the level's terminal state ---
         retested_keys = set()
@@ -414,13 +437,8 @@ class _LedgerObserver:
             k = self._key(lv)
             row = self._row_for(lv)
             hit = broke_now.get(k)
-            gated = gated_by_key.get(k)
             if hit is not None:
                 self._apply_breakout(row, hit)
-            elif gated is not None:
-                self._apply_breakout(row, gated)
-                row["death_time"] = bar_time
-                row["fate"] = FATE_GATED_DROPPED
             else:
                 row["death_time"] = bar_time
                 row["fate"] = FATE_DISCARDED_NO_CLOSE
@@ -466,9 +484,8 @@ def build_ledger(bars, timeframe, contract="", resume=None):
         state, obs = resume
 
     for bar in L.iter_bars(state, bars):
-        finalized_swing, gated_dropped = L.advance_one_bar(state, bar)
-        obs.apply_finalized_swing(finalized_swing)
-        obs.observe(state, bar.Index, gated_dropped)
+        obs.apply_finalized_swing(L.advance_one_bar(state, bar))
+        obs.observe(state, bar.Index)
 
     # Snapshot BEFORE finish(), which stamps terminal fates onto the rows of
     # levels that are merely still open -- those must stay open in the blob so a
@@ -680,8 +697,37 @@ def _to_current_scale(df, meta, bars, verbose, label):
     return _reanchor(df, delta)
 
 
-def h1_levels(bars=None, rebuild=False, verbose=True):
-    """Full H1 level ledger for the merged display H1 series.
+_UNTRACKED_CLEARED = ("retest_time", "retest_open", "retest_high", "retest_low",
+                      "retest_close", "entry_price", "fta", "stop_loss")
+
+
+def untrack_plain_p0(ledger):
+    """`ledger` with every plain-P0 row ended at its own breakout -- the
+    PLAIN_P0_UNTRACKED view (see the module docstring): death_time =
+    breakout_time, no retest, fate FATE_PLAIN_P0_UNTRACKED. Every other row
+    is returned untouched. A copy; `ledger` is not modified."""
+    plain = (ledger["p0_kind"] == L.P0_PLAIN).to_numpy()
+    out = ledger.copy()
+    if plain.any():
+        for c in _UNTRACKED_CLEARED:
+            out.loc[plain, c] = pd.NaT if c == "retest_time" else np.nan
+        out.loc[plain, "death_time"] = out.loc[plain, "breakout_time"]
+        out.loc[plain, "fate"] = FATE_PLAIN_P0_UNTRACKED
+    return out
+
+
+def _plain_p0_view(df, plain_p0):
+    if plain_p0 == PLAIN_P0_TRACKED:
+        return df
+    if plain_p0 == PLAIN_P0_UNTRACKED:
+        return untrack_plain_p0(df)
+    raise ValueError(f"plain_p0 must be PLAIN_P0_TRACKED or PLAIN_P0_UNTRACKED, got {plain_p0!r}")
+
+
+def h1_levels(bars=None, rebuild=False, verbose=True, *, plain_p0):
+    """Full H1 level ledger for the merged display H1 series, with plain-P0s
+    tracked or untracked per `plain_p0` (required -- see the module
+    docstring).
 
     The bars come from R._display_h1() -- the single source of truth for the
     TradingView H1 exports -- so this ledger is on exactly the same price
@@ -693,12 +739,14 @@ def h1_levels(bars=None, rebuild=False, verbose=True):
     if bars is None:
         bars = R._display_h1()
     df, meta, _ = _reconcile("h1_levels", bars, "H1", "", rebuild, verbose)
-    return _to_current_scale(df, meta, bars, verbose, "H1")
+    return _plain_p0_view(_to_current_scale(df, meta, bars, verbose, "H1"), plain_p0)
 
 
-def m5_levels(rebuild=False, verbose=True):
+def m5_levels(rebuild=False, verbose=True, *, plain_p0):
     """Full M5 level ledger over the continuous, back-adjusted, gap-free
-    series spanning every contract (m5_bars_continuous) -- one
+    series spanning every contract (m5_bars_continuous), with plain-P0s
+    tracked or untracked per `plain_p0` (required -- see the module
+    docstring) -- one
     state-machine run over the whole thing, same model as h1_levels. A
     level formed on one contract CAN be retested by a later contract's
     bars, exactly like a real trader watching one continuous chart would
@@ -715,24 +763,27 @@ def m5_levels(rebuild=False, verbose=True):
     TradingView exports, so a second reconcile could only ever re-read the
     same parquet. Reports call this once per chart, which made that re-read
     a real share of their per-trade time. Callers must treat the returned
-    ledger as read-only (they all do) -- it is shared."""
+    ledger as read-only (they all do) -- it is shared, per `plain_p0`."""
     global _M5_LEVELS_MEMO
     bars = m5_bars_continuous()
     if bars is None or bars.empty:
         return None
-    if not rebuild and _M5_LEVELS_MEMO is not None and _M5_LEVELS_MEMO[0] is bars:
-        return _M5_LEVELS_MEMO[1]
-    df, meta, _ = _reconcile("m5_levels_continuous", bars, "M5", "", rebuild, verbose)
-    df = _to_current_scale(df, meta, bars, verbose, "M5")
-    _M5_LEVELS_MEMO = (bars, df)
-    return df
+    if rebuild or _M5_LEVELS_MEMO is None or _M5_LEVELS_MEMO[0] is not bars:
+        df, meta, _ = _reconcile("m5_levels_continuous", bars, "M5", "", rebuild, verbose)
+        _M5_LEVELS_MEMO = (bars, {PLAIN_P0_TRACKED: _to_current_scale(df, meta, bars,
+                                                                      verbose, "M5")})
+    views = _M5_LEVELS_MEMO[1]
+    if plain_p0 not in views:
+        views[plain_p0] = _plain_p0_view(views[PLAIN_P0_TRACKED], plain_p0)
+    return views[plain_p0]
 
 
 _M5_LEVELS_MEMO = None
 
 
 def m5_levels_for_ts(ts, **kw):
-    """Convenience/backward-compatible name: the one continuous M5 ledger.
+    """Convenience/backward-compatible name: the one continuous M5 ledger
+    (`plain_p0` is required here too -- pass it through `kw`).
     `ts` is accepted but unused -- kept so existing call sites that ask
     "the M5 ledger relevant to this timestamp" don't need to change; there
     is now only ever one M5 ledger, not one per contract."""
@@ -906,12 +957,12 @@ class _LedgerIndex:
         # breakout bar at or before T is itself confirmed by T.
         counts = (ledger.groupby(["type", "breakout_time"])["formation_time"]
                   .transform("nunique").fillna(0).to_numpy())
-        gated = (ledger["fate"].to_numpy() == FATE_GATED_DROPPED if "fate" in ledger.columns
+        plain = (ledger["p0_kind"].to_numpy() == L.P0_PLAIN if "p0_kind" in ledger.columns
                  else np.zeros(len(ledger), dtype=bool))
         cols = {"price": ledger["price"].to_numpy(float),
                 "bt_ok": ~bt.isna(), "bt": bt.asi8,
                 "dt_na": dt.isna(), "dt": dt.asi8,
-                "count": counts, "gated": gated}
+                "count": counts, "plain_p0": plain}
         self.by_type = {}
         for t in pd.unique(types):
             pos = np.flatnonzero(types == t)
@@ -923,7 +974,7 @@ class _LedgerIndex:
 
     def select(self, level_type, price=None, pts=None, confirmed_by=None,
                min_breakout_levels=1, alive_at=None, breakout_from=None,
-               breakout_to=None, gated=None):
+               breakout_to=None, plain_p0=None):
         d = self.by_type.get(level_type)
         if d is None:
             return np.empty(0, dtype=np.intp)
@@ -949,8 +1000,8 @@ class _LedgerIndex:
             keep &= col("bt_ok") & (col("bt") >= _as_utc(breakout_from).value)
         if breakout_to is not None:
             keep &= col("bt_ok") & (col("bt") <= _as_utc(breakout_to).value)
-        if gated is not None:
-            keep &= col("gated") == gated
+        if plain_p0 is not None:
+            keep &= col("plain_p0") == plain_p0
         local = np.flatnonzero(keep) if sel is None else sel[keep]
         return d["pos"][local]
 
@@ -981,7 +1032,8 @@ def select_levels(ledger, level_type, **query):
       min_breakout_levels   >= this many distinct P0s share the row's P1 bar
       alive_at              death_time null or > this
       breakout_from/_to     breakout_time not null and within [from, to]
-      gated                 fate == gated_dropped (True) / != (False)
+      plain_p0              p0_kind == plain-P0 (True) / != (False, which
+                            includes levels that never broke out)
 
     A pre-filter, not a query: pass the result to the real query, which
     re-applies its own rules. Returns None when the ledger can't be indexed
@@ -1004,9 +1056,12 @@ def _print_stats(df, label):
           f"{df['formation_time'].min()} -> {df['formation_time'].max()}")
     counts = df["fate"].value_counts()
     for fate in (FATE_RETESTED, FATE_CONSUMED_EARLY, FATE_DISCARDED_NO_CLOSE,
-                 FATE_GATED_DROPPED, FATE_OPEN_UNBROKEN, FATE_OPEN_AWAITING_RETEST):
+                 FATE_OPEN_UNBROKEN, FATE_OPEN_AWAITING_RETEST):
         print(f"    {fate:<22} {int(counts.get(fate, 0)):>8,}")
     print(f"    {'broke out at some point':<22} {int(df['breakout_time'].notna().sum()):>8,}")
+    kinds = df["p0_kind"].value_counts()
+    for kind in (L.P0_SPIKE, L.P0_SWING, L.P0_SPIKE_SWING, L.P0_PLAIN):
+        print(f"      {kind:<20} {int(kinds.get(kind, 0)):>8,}")
 
 
 def main():
@@ -1024,11 +1079,11 @@ def main():
         ap.error("nothing to do -- pass --build-h1 and/or --build-m5")
 
     if args.build_h1 or args.stats:
-        df = h1_levels(rebuild=args.rebuild)
+        df = h1_levels(rebuild=args.rebuild, plain_p0=PLAIN_P0_TRACKED)
         _print_stats(df, "H1")
 
     if args.build_m5 or args.stats:
-        df = m5_levels(rebuild=args.rebuild)
+        df = m5_levels(rebuild=args.rebuild, plain_p0=PLAIN_P0_TRACKED)
         _print_stats(df, "M5 (continuous)")
 
 

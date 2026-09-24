@@ -430,7 +430,7 @@ def biases_at(ts, price=None, bars=None, h1_ledger=None):
         return []
     out = list(_hoh_loss_biases(
         ts, price, bars, a,
-        LC.h1_levels(verbose=False) if h1_ledger is None else h1_ledger))
+        LC.h1_levels(verbose=False, plain_p0=LC.PLAIN_P0_UNTRACKED) if h1_ledger is None else h1_ledger))
     # Every bias in BIAS_KINDS, and the only thing that differs between them:
     # which candles make one, and how long it lasts. Expiry (a) and (b) are
     # shared word for word -- a bullish bias hangs on its candle's LOW and

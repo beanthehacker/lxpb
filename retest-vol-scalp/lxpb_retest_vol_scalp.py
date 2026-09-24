@@ -194,7 +194,7 @@ def build_continuous_1s(lo_utc, hi_utc, verbose=True):
 # ---------------------------------------------------------------------------
 def build_retests(h1_csv_path=H1_CSV, months=MONTHS_DEFAULT, year=YEAR, verbose=True):
     h1_df = L.load_ohlc_data(h1_csv_path)
-    _, _, retests = L.detect_lxpb_h1(h1_df)
+    _, _, retests = L.detect_lxpb_h1(h1_df, p0_kinds=L.SPIKE_OR_SWING_P0_KINDS)
     n_total = len(retests)
 
     # Gap exclusion -- identical to label-review/render_lxpb_retest_1s_report.py.

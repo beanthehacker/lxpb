@@ -169,7 +169,7 @@ _SWING_CACHE = {}
 def load_context(data_path=DEFAULT_DATA, start=START_DEFAULT, end=END_DEFAULT):
     """H1 bars + gap-filtered completed retests inside [start, end]."""
     h1_df = L.load_ohlc_data(data_path)
-    _lv0, _lv1, retests_df = L.detect_lxpb_h1(h1_df)
+    _lv0, _lv1, retests_df = L.detect_lxpb_h1(h1_df, p0_kinds=L.SPIKE_OR_SWING_P0_KINDS)
     retests_df, n_gap = R.filter_gap_rows(h1_df, retests_df)
     if start:
         retests_df = retests_df[retests_df["retest_time"] >= pd.Timestamp(start)]
@@ -258,7 +258,8 @@ def _level_key(lv):
 
 def snapshot_pending(h1_df, positions):
     """Replay lxpb's state machine and snapshot `state["touch_lv1"]` (levels
-    already broken out, still awaiting a retest) as of the OPEN of each
+    already broken out, still awaiting a retest; spike/swing P0s only, the
+    population detect_lxpb_h1 is asked for above) as of the OPEN of each
     requested bar position -- i.e. strictly before that bar is processed, so
     the snapshot contains no information from the event itself."""
     want = set(int(p) for p in positions)
@@ -266,7 +267,8 @@ def snapshot_pending(h1_df, positions):
     state = L.new_state()
     for i, bar in enumerate(L.iter_bars(state, h1_df)):
         if i in want:
-            out[i] = L._strip_internal(state["touch_lv1"])
+            out[i] = L._strip_internal(L.of_p0_kinds(state["touch_lv1"],
+                                                     L.SPIKE_OR_SWING_P0_KINDS))
         L.advance_one_bar(state, bar)
     return out
 

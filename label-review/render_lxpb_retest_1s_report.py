@@ -711,7 +711,7 @@ def render(data_path=DEFAULT_DATA, output_path=DEFAULT_OUTPUT, title=None,
            one_min_pad_minutes=ONE_MIN_PAD_MINUTES_DEFAULT,
            vol_threshold=VOL_THRESHOLD_DEFAULT):
     h1_df = L.load_ohlc_data(data_path)
-    touch_lv0, touch_lv1, retests_df = L.detect_lxpb_h1(h1_df)
+    touch_lv0, touch_lv1, retests_df = L.detect_lxpb_h1(h1_df, p0_kinds=L.SPIKE_OR_SWING_P0_KINDS)
 
     # Data file only covers 2026, so every retest is already a 2026 retest --
     # this filter is just a defensive/explicit guard, per the requirement.

@@ -70,15 +70,18 @@ def run_with_snapshots(df):
     """Re-implements detect_lxpb_h1's loop but also captures, per bar, the
     list of (type, price) still in touch_lv1 immediately after that bar's
     full processing -- needed to compute confluence_count at any later
-    retest without re-deriving lxpb.py's internal state."""
+    retest without re-deriving lxpb.py's internal state. Spike/swing P0s
+    only (lxpb.SPIKE_OR_SWING_P0_KINDS), as this study has always used."""
+    kinds = L.SPIKE_OR_SWING_P0_KINDS
     state = L.new_state()
     snapshots = {}
     for bar in L.iter_bars(state, df):
         L.advance_one_bar(state, bar)
-        snapshots[bar.Index] = [(lv["type"], lv["price"]) for lv in state["touch_lv1"]]
+        snapshots[bar.Index] = [(lv["type"], lv["price"])
+                                for lv in L.of_p0_kinds(state["touch_lv1"], kinds)]
     touch_lv0 = pd.DataFrame(L._strip_internal(state["touch_lv0"]))
-    touch_lv1 = pd.DataFrame(L._strip_internal(state["touch_lv1"]))
-    retests = pd.DataFrame(state["retests"])
+    touch_lv1 = pd.DataFrame(L._strip_internal(L.of_p0_kinds(state["touch_lv1"], kinds)))
+    retests = pd.DataFrame(L.of_p0_kinds(state["retests"], kinds))
     return touch_lv0, touch_lv1, retests, snapshots
 
 

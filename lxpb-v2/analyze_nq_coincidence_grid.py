@@ -195,7 +195,7 @@ def main():
     print(f"Strong-breakout ES trades: {len(trades)} (unique bars: {strong['retest_time'].nunique()})")
 
     nq_h1 = L.load_ohlc_data(NQ_H1_PATH)
-    _, _, nq_retests = L.detect_lxpb_h1(nq_h1)
+    _, _, nq_retests = L.detect_lxpb_h1(nq_h1, p0_kinds=L.SPIKE_OR_SWING_P0_KINDS)
     print(f"NQ H1 retests (full series): {len(nq_retests)} rows / {nq_retests['retest_time'].nunique()} unique bars")
 
     print("Building coincidence flags (h1 -> m1 -> 1s escalation, real ticks)...")

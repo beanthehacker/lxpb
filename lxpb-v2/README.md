@@ -537,7 +537,7 @@ changing the M5 entry search.
 
 ## LXPB level ledger cache (`lxpb_levels_cache.py`)
 
-`lxpb.detect_lxpb_h1(bars)` answers *"what does the machine hold at the end of
+`lxpb.detect_lxpb_h1(bars, p0_kinds=...)` answers *"what does the machine hold at the end of
 this series?"* — it returns `(touch_lv0, touch_lv1, retests)` as of the **last
 bar handed to it**, where `retests` means *consumed / dead*. It does not answer
 *"which levels were live at time T?"*, and every attempt to make it do so by
@@ -559,6 +559,7 @@ One row per level:
 | `formation_time` | bar that registered it |
 | `is_swing` | finalized on the following bar |
 | `breakout_time` | close through the level, `NaT` if never broken |
+| `p0_kind` | set at breakout: `spike-P0` / `swing-P0` / `spike+swing-P0` / `plain-P0` (see "P0 kinds" in `CLAUDE.md`); `None` if never broken |
 | `death_time` | when it left the machine, `NaT` if still live at end of data |
 | `fate` | see below |
 | `retest_time`, `fta`, … | populated for `fate == "retested"` |
@@ -582,9 +583,11 @@ reconstructing it from the 22% that happened to survive.
 ```python
 import lxpb_levels_cache as LC
 
-lv   = LC.h1_levels()                    # whole H1 series
-lv   = LC.m5_levels()                    # one continuous M5 ledger, all rollovers
-lv   = LC.m5_levels_for_ts(ts)           # same thing; `ts` is ignored, kept for callers
+# plain_p0 is required: PLAIN_P0_TRACKED (full ledger) or PLAIN_P0_UNTRACKED
+# (plain-P0s end at their breakout -- the pre-2026-09-24 population)
+lv   = LC.h1_levels(plain_p0=LC.PLAIN_P0_UNTRACKED)   # whole H1 series
+lv   = LC.m5_levels(plain_p0=LC.PLAIN_P0_UNTRACKED)   # one continuous M5 ledger, all rollovers
+lv   = LC.m5_levels_for_ts(ts, plain_p0=...)          # same thing; `ts` is ignored, kept for callers
 
 live = LC.levels_live_as_of(lv, ts, type_="LLPB")
 sig  = LC.retests(lv)                    # the trade population

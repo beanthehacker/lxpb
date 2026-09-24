@@ -116,7 +116,7 @@ def main():
     print(f"Lookback bound ({args.lookback_bars} bars before P1): "
           f"formed at/after {R._to_pt_str(min_formation_time)}")
 
-    ledger = LC.h1_levels()
+    ledger = LC.h1_levels(plain_p0=LC.PLAIN_P0_UNTRACKED)
     cand = LC.find_confluent_levels(ledger, level_type, price, formation_time,
                                     cutoff_time, args.n, min_formation_time=min_formation_time)
 

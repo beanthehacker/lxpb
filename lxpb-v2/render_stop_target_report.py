@@ -1169,7 +1169,7 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     form_cutoff = breakout_time + p1_bar_width - pd.Timedelta(nanoseconds=1)
     near_levels = []
     if entry_bar_pos > 0:
-        ledger = LC.m5_levels()
+        ledger = LC.m5_levels(plain_p0=LC.PLAIN_P0_UNTRACKED)
         if ledger is not None and not ledger.empty:
             live = LC.levels_live_as_of(
                 ledger, all_bars.index[entry_bar_pos - 1], level_type=level_type,
@@ -1981,7 +1981,7 @@ def _build_records(h1_df, pos_by_ts, strong, trades, indices, stop, target,
 
     # Loaded once per chunk (not per row) -- see lxpb_levels_cache.h1_levels,
     # it's the whole merged H1 ledger and is cheap once cached on disk.
-    ledger = LC.h1_levels(verbose=False)
+    ledger = LC.h1_levels(verbose=False, plain_p0=LC.PLAIN_P0_UNTRACKED)
 
     out = {}
     n = len(indices)

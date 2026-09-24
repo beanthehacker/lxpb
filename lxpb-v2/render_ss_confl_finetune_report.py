@@ -224,7 +224,7 @@ def select_candidates(ss_confl_min, start=None, end=None, limit=A._DEFAULT, merg
     if not np.isfinite(h1_confluence_points) or h1_confluence_points < 0:
         raise ValueError("H1 confluence radius must be finite and non-negative")
     h1_df, pos_by_ts, strong, _trades = SR._select_rows(start, end, limit, merged=merged)
-    ledger_h1 = LC.h1_levels()
+    ledger_h1 = LC.h1_levels(plain_p0=LC.PLAIN_P0_UNTRACKED)
     candidates = []
     for i in range(len(strong)):
         row_d = strong.iloc[i]
@@ -242,7 +242,7 @@ def m5_confluence_for_row(row_d):
     whichever contract was front-month at this trade's retest. Returns
     (m5_ledger, same_side_m5), both empty (not None) when the contract has
     no M5 data. Keep the full ledger for the independent exit searches."""
-    m5_ledger = LC.m5_levels_for_ts(row_d["retest_time"])
+    m5_ledger = LC.m5_levels_for_ts(row_d["retest_time"], plain_p0=LC.PLAIN_P0_UNTRACKED)
     if m5_ledger is None or m5_ledger.empty:
         empty = pd.DataFrame()
         return (m5_ledger if m5_ledger is not None else empty), empty

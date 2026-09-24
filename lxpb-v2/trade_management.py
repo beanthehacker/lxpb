@@ -311,7 +311,7 @@ def thrust_trail_events(level_type, start_time, end_time, ledger=None, m5_bars=N
     of how large its own body is."""
     if level_type not in ("LHPB", "LLPB"):
         raise ValueError(f"unknown level_type {level_type!r}")
-    ledger = LC.m5_levels(verbose=False) if ledger is None else ledger
+    ledger = LC.m5_levels(verbose=False, plain_p0=LC.PLAIN_P0_UNTRACKED) if ledger is None else ledger
     if ledger is None or ledger.empty:
         return []
     m5_bars = LC.m5_bars_continuous() if m5_bars is None else m5_bars

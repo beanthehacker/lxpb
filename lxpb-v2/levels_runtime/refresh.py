@@ -93,7 +93,7 @@ def _do(store):
             with open(os.path.join(LC.CACHE_DIR, name), "wb") as f:
                 f.write(data)
     before = {n: _mtime(os.path.join(LC.CACHE_DIR, n)) for n in LC_FILES}
-    ledger = LC.m5_levels(verbose=True)
+    ledger = LC.m5_levels(verbose=True, plain_p0=LC.PLAIN_P0_UNTRACKED)
     for name in LC_FILES:
         path = os.path.join(LC.CACHE_DIR, name)
         if _mtime(path) != before[name]:

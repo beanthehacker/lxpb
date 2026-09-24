@@ -42,7 +42,7 @@ the user deciding it -- see "Spike candles" in `../CLAUDE.md`.
 
 | Pairing | LHPB (level = a bar's high) | LLPB (level = a bar's low) | Used by |
 |---|---|---|---|
-| **Detector** | `find_hammer` | `find_shooting_star` | `../../lxpb.py`'s `is_spike` (its candidate gate), so the H1/M5 level caches and everything reading their `is_spike`: `ss_m5_confl2` (spike-P0 stop, H1 P0 kind), `trade_management.py`, `../../retest-vol-scalp`; also `../../lxpb-spike` (its own helper, same pairing) |
+| **Detector** | `find_hammer` | `find_shooting_star` | `../../lxpb.py`'s `is_spike` (which P0s are spike-P0s), so the H1/M5 level caches and everything reading their `is_spike`: `ss_m5_confl2` (spike-P0 stop, H1 P0 kind), `trade_management.py`, `../../retest-vol-scalp`; also `../../lxpb-spike` (its own helper, same pairing) |
 | **Rejection** | `find_shooting_star` (long upper wick) | `find_hammer` (long lower wick) | `render_labels_report.is_spike_pp` (both copies) and the P0 Spike hint, `../analyze_retest_cluster_selection.py` feature **c**, `../analyze_retest_features.py`, `../../lxpb-spike-atr` |
 
 The rejection pairing reads the level as price rejected beyond it, which is
