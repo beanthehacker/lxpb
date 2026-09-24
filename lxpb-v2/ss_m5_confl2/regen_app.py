@@ -17,6 +17,8 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 
+import trade_facts as TF
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 RENDER = os.path.join(HERE, "render_m5_confl2_report.py")
@@ -220,6 +222,12 @@ class App(tk.Tk):
                 if do_gz:
                     with open(final, "rb") as f_in, gzip.open(final + ".gz", "wb") as f_out:
                         shutil.copyfileobj(f_in, f_out)
+                # The /explorer page's data: the report's own row readings,
+                # pulled back out into <name>.trades.json.gz.
+                try:
+                    self.q.put(("log", f"Writing trade facts: {TF.write(final)}\n"))
+                except Exception as exc:
+                    self.q.put(("log", f"\n{label}: trade facts FAILED ({exc}) -- report itself is fine.\n"))
                 self.q.put(("log", f"\n{label}: done -> {final}\n"))
             self.q.put(("status", "All done"))
         finally:

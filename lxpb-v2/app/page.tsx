@@ -150,6 +150,26 @@ export default function HomePage() {
           <span>Upcoming M5 levels -- LHPB / LLPB awaiting retest near the latest ES close</span>
           <span style={{ color: "#6f7680", fontSize: 11, whiteSpace: "nowrap" }}>/levels</span>
         </a>
+        <a
+          href="/explorer"
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "baseline",
+            gap: 12,
+            marginTop: 8,
+            padding: "10px 14px",
+            border: "1px solid #23262b",
+            borderRadius: 8,
+            background: "#12151a",
+            color: "#e6e8eb",
+            textDecoration: "none",
+            fontSize: 13,
+          }}
+        >
+          <span>Trade explorer -- combine M5 Confluence v2 filters (AND / OR / unless) across 2025, 2026 and Jul-Aug</span>
+          <span style={{ color: "#6f7680", fontSize: 11, whiteSpace: "nowrap" }}>/explorer</span>
+        </a>
       </section>
 
       {groups.map((g) => (
