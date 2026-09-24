@@ -18,6 +18,22 @@ is in a worktree, stay in it.
   needs from the main checkout (see the lxpb-v2 env setup memory) rather
   than regenerating or re-exporting.
 
+# Report regens: only when the user asks
+
+**Never regenerate a report unless the user explicitly asks for a regen in
+that request.** This covers every full or partial report run (the
+ss_m5_confl2 reports and any other report under `public/reports/`), in any
+checkout or worktree, including a regen "to verify" a code change or one
+that would follow naturally from finishing a feature. A code change is done
+when it is committed and smoke-tested; the regen waits for the user.
+
+- A smoke test (`--max-rows`, written to a temp file, never to
+  `public/reports/`) is still expected after a report-code change and does
+  not need asking.
+- Permission to regen covers only that request. It does not carry over to
+  the next change.
+- When a change needs a regen before its results show, say so and stop.
+
 # Data convention: TradingView continuous series only
 
 **H1 and M5 bars come from TradingView's own continuous ES1! exports and from
