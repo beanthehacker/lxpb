@@ -210,7 +210,13 @@ the target are ALL M5 LXPB structure:
          (default n=6, < 2x). SLOW APPROACH (`_approach_by_k`): price moved
          <= cutoff x the average M5 candle toward the level from the open of
          the k-th closed candle before the fill's own candle (default k=3,
-         <= 1x). The two combine with a live and/or picker. QUICK EXIT
+         <= 1x). FRESH PRICE (`_fresh_price_visits`): price visited the
+         planned entry price at most N times before the level's own P0
+         (default 2 days, within 1pt, <= 2 visits). M5 SFP
+         (`_m5_sfp_offsets`): patterns-pure's find_sfp pointing our way on
+         one of the last n closed M5 candles before the fill (default 6).
+         Each of those four is off, required, or in OR group A / B, so
+         e.g. (box or approach) and (fresh or SFP) is one setting. QUICK EXIT
          (`_quick_exit_path`): still in the trade N seconds after the fill
          with a best bounce below X points -> exit at market there, less
          slippage (default 30s, 0.75pt, 0.25pt); changes results rather than
@@ -281,6 +287,7 @@ import m5_structure as MS                         # noqa: E402
 import liquidity as LQ                            # noqa: E402
 import volume_spike as VS                         # noqa: E402
 import h1_bias as HB                              # noqa: E402
+from find_sfp import find_sfp                     # noqa: E402  (vendored patterns_pure, on sys.path via R)
 
 SS_CONFL_MIN_DEFAULT = 1
 M5_CONFLUENCE_N_POINTS_DEFAULT = 10.0  # same-side M5 confluence radius: selection + entry refinement
@@ -1305,6 +1312,72 @@ def _quick_exit_path(touch_time, fill_price, is_long, max_seconds=QX_MAX_SECONDS
     return {"b": best, "c": pos}
 
 
+FRESH_MAX_DAYS = 5              # longest look-back the live control may pick (in ~trading days)
+FRESH_DAYS_DEFAULT = 2
+FRESH_BARS_PER_DAY = 288        # M5 candles counted as one trading day of look-back
+FRESH_TOLS = (0.5, 1.0, 2.0)    # "within this many points of the entry" choices
+FRESH_TOL_DEFAULT = 1.0
+FRESH_MAX_VISITS_DEFAULT = 2
+SFP_MAX_BACK = 12               # furthest closed M5 candle before the fill the SFP control may reach
+SFP_BACK_DEFAULT = 6            # 30 minutes
+FRESH_TOL_OPTIONS_HTML = "".join(
+    f'      <option value="{t:g}"{" selected" if t == FRESH_TOL_DEFAULT else ""}>{t:g}</option>\n'
+    for t in FRESH_TOLS)
+
+
+def _fresh_price_visits(formation_time, entry_price, is_long):
+    """FRESH PRICE. How many separate times price visited the planned entry
+    price BEFORE this level's own P0 candle: M5 candles whose low (long) /
+    high (short) came within tol points of the entry price, a run of
+    consecutive such candles counting once. Counted over the last
+    days x FRESH_BARS_PER_DAY M5 candles before P0 -- for every days =
+    1..FRESH_MAX_DAYS and tol in FRESH_TOLS, as
+    [[count per tol] per days]. Few visits = the market hasn't leaned on
+    this price yet; many = an already used-up level."""
+    bars = LC.m5_bars_continuous()
+    pos = int(bars.index.searchsorted(pd.to_datetime(formation_time, utc=True)))
+    ext = (bars["low"] if is_long else bars["high"]).to_numpy(float)
+    out = []
+    for days in range(1, FRESH_MAX_DAYS + 1):
+        seg = ext[max(0, pos - FRESH_BARS_PER_DAY * days):pos]
+        row = []
+        for tol in FRESH_TOLS:
+            t = np.abs(seg - entry_price) <= tol
+            row.append(int((t & ~np.r_[False, t[:-1]]).sum()))
+        out.append(row)
+    return out
+
+
+_M5_SFP_FLAGS = None
+
+
+def _m5_sfp_flags():
+    """(bullish, bearish) per-bar flags of patterns-pure's find_sfp over the
+    whole continuous M5 series, built once per process. find_sfp only reads a
+    candle and the bars before it, so each flag is known at that candle's close."""
+    global _M5_SFP_FLAGS
+    if _M5_SFP_FLAGS is None:
+        bars = LC.m5_bars_continuous()
+        lo, hi = find_sfp(bars)
+        _M5_SFP_FLAGS = (bars.index.isin(lo.index), bars.index.isin(hi.index))
+    return _M5_SFP_FLAGS
+
+
+def _m5_sfp_offsets(touch_time, is_long, max_back=SFP_MAX_BACK):
+    """M5 SFP IN THE TRADE'S FAVOUR. Which of the last max_back fully CLOSED
+    M5 candles before the fill's own candle were an SFP pointing our way
+    (patterns-pure's find_sfp): a bullish SFP -- a candle that swept an
+    untested swing low and closed back above it -- for a long, a bearish one
+    for a short. Returned as the list of 'candles back' (1 = the candle just
+    before the fill's own)."""
+    if touch_time is None:
+        return []
+    bars = LC.m5_bars_continuous()
+    pos = int(bars.index.searchsorted(pd.Timestamp(touch_time).tz_convert("UTC").floor("5min")))
+    flags = _m5_sfp_flags()[0 if is_long else 1]
+    return [k for k in range(1, max_back + 1) if pos - k >= 0 and flags[pos - k]]
+
+
 def _secs_after(ts, t0):
     """Seconds from `t0` (tz-aware) to `ts` (naive = UTC), or None."""
     if ts is None or pd.isna(ts):
@@ -1393,6 +1466,8 @@ def process_cluster(cluster, args):
     result["pre_p1_er_by_k"] = _pre_p1_er_by_k(row_d["breakout_time"])
     # Tight box: see _pre_p1_box_by_n (live window + cutoff in the browser).
     result["pre_p1_box_by_n"] = _pre_p1_box_by_n(row_d["breakout_time"])
+    # Fresh price: visits to the planned entry price before P0 (see _fresh_price_visits).
+    result["fresh_visits"] = _fresh_price_visits(row_d["formation_time"], float(alt_price), is_long)
 
     # P1->P2 gap: how many Globex/ETH reopen-to-reopen trading days
     # (TM.trading_day_label) separate this level's own breakout (P1) from
@@ -1525,6 +1600,7 @@ def process_cluster(cluster, args):
     result.update({"filled": True, "touch_time_alt": touch_time_alt})
     # Slow approach and quick exit both read the fill itself (see their helpers).
     result["approach_by_k"] = _approach_by_k(touch_time_alt, fill_price, is_long)
+    result["m5_sfp_offsets"] = _m5_sfp_offsets(touch_time_alt, is_long)
     result["qx_path"] = _quick_exit_path(touch_time_alt, fill_price, is_long)
     _apply_mode(result, active)
     return result
@@ -2667,7 +2743,7 @@ def _apply_h1_bias(results):
     return results
 
 
-N_COLS = 36  # keep in sync with `head` below and every colspan in this section
+N_COLS = 38  # keep in sync with `head` below and every colspan in this section
 
 # MES position sizing / commissions. R stays a fixed $1,000 and the stop is not
 # widened for costs: contracts = floor(R_DOLLARS / (stop pts x MES_POINT_VALUE)),
@@ -3191,6 +3267,15 @@ def _render_row(idx, res, chart_stacks, fps):
         appr_by_k_attr = _attr_json(appr_by_k)
         appr_default = appr_by_k[APPR_K_DEFAULT - 1] if len(appr_by_k) >= APPR_K_DEFAULT else None
         appr_cell = f"{appr_default:.2f}x" if appr_default is not None else "-"
+        fresh = res.get("fresh_visits") or []
+        fresh_attr = _attr_json(fresh)
+        fresh_default = (fresh[FRESH_DAYS_DEFAULT - 1][FRESH_TOLS.index(FRESH_TOL_DEFAULT)]
+                         if len(fresh) >= FRESH_DAYS_DEFAULT else None)
+        fresh_cell = str(fresh_default) if fresh_default is not None else "-"
+        sfp_offs = res.get("m5_sfp_offsets")
+        sfp_attr = _attr_json(sfp_offs) if sfp_offs is not None else ""
+        sfp_near = [k for k in (sfp_offs or []) if k <= SFP_BACK_DEFAULT]
+        sfp_cell = f"@-{min(sfp_near)}" if sfp_near else "-"
         members_str = ", ".join(f"{p:.2f}" for p in res["cluster_members"])
         if res.get("cluster_size", 1) > 1:
             entry_title = (f' title="{res["cluster_size"]} mutually-confluent M5 levels '
@@ -3261,6 +3346,7 @@ def _render_row(idx, res, chart_stacks, fps):
     data-vspikeoffs="{vspikeoffs_attr}"
     data-er-by-k="{er_by_k_attr}" data-p1-ratio-by-window="{p1_ratio_by_window_attr}"
     data-box-by-n="{box_by_n_attr}" data-appr-by-k="{appr_by_k_attr}"
+    data-fresh="{fresh_attr}" data-sfp="{sfp_attr}"
     onclick="toggleChart({idx})">
   <td class="left">{res['i']}</td>
   <td class="tags-cell">{tags_cell}</td>
@@ -3273,6 +3359,8 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="p1ratio-cell">{p1ratio_cell}</td>
   <td class="box-cell">{box_cell}</td>
   <td class="appr-cell">{appr_cell}</td>
+  <td class="fresh-cell">{fresh_cell}</td>
+  <td class="sfp-cell">{sfp_cell}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
   <td class="h1-confl-cell">-</td>
@@ -3405,6 +3493,7 @@ def _render_row(idx, res, chart_stacks, fps):
     data-mgmt-outcome="{act['mgmtOutcome']}" data-mgmt-fired="{act['mgmtFired']}"
     data-mode="{active_mode}" data-modes="{modes_attr}" {mes_attrs}
     data-box-by-n="{box_by_n_attr}" data-appr-by-k="{appr_by_k_attr}"
+    data-fresh="{fresh_attr}" data-sfp="{sfp_attr}"
     data-qx="{qx_attr}" data-risk="{res['stop_pts']:.6f}"
     data-exit-sec="{act['exitSec']}" data-mgmt-exit-sec="{act['mgmtExitSec']}"
     onclick="toggleChart({idx})">
@@ -3419,6 +3508,8 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="p1ratio-cell">{p1ratio_cell}</td>
   <td class="box-cell">{box_cell}</td>
   <td class="appr-cell">{appr_cell}</td>
+  <td class="fresh-cell">{fresh_cell}</td>
+  <td class="sfp-cell">{sfp_cell}</td>
   <td class="left merged-h1-levels">{members_str}</td>
   <td>{own_cell}</td>
   <td class="h1-confl-cell" title="{h1_confl_title}">{h1_confl_cell}</td>
@@ -3840,12 +3931,20 @@ keep only the thin, unconvincing breakouts instead.">P1 range ratio</span>
     <input type="number" class="f-num-val" data-target="p1ratio" value="__WIDE_RATIO__" min="0.1" max="3" step="0.1">
   </div>
   <div class="filter-row">
-    <span class="filter-label" title="TIGHT BOX (off until ticked; live, no regen). Keeps a trade
-only when the n M5 candles right before its level's P1 breakout spanned less than the cutoff
-times the average M5 candle (average over the __AVG_W__ candles before P1) -- the Pre-P1 box
-column. Price coiling in a small box right before the breakout. A row with no reading fails it.
-With Slow approach ticked too, the and/or picker on that row decides how the two combine.">Tight box</span>
-    <label class="chip"><input type="checkbox" class="f-setup" id="f-box-on"> on</label>
+    <span class="filter-label" title="TIGHT BOX (live, no regen). Passes when the n M5 candles right
+before the level's P1 breakout spanned less than the cutoff times the average M5 candle (average
+over the __AVG_W__ candles before P1) -- the Pre-P1 box column: price coiling in a small box right
+before the breakout. Combine: each of Tight box, Slow approach, Fresh price and M5 SFP is off, 'required' (must pass),
+or a member of OR group A or OR group B. A trade is kept when it passes every required filter
+and at least one member of each OR group in use. The feature study's best mix was Tight box +
+Slow approach in group A and Fresh price + M5 SFP in group B, i.e. (box or approach) and (fresh
+or SFP). A row with no reading fails a filter that is on.">Tight box</span>
+    <select class="f-setup-mode f-setup-val" id="f-box-mode" title="off; required (must pass); or a member of OR group A / OR group B (at least one member of each group in use must pass)">
+      <option value="off" selected>off</option>
+      <option value="and">required</option>
+      <option value="a">OR group A</option>
+      <option value="b">OR group B</option>
+    </select>
     <span class="filter-sublabel">n=</span>
     <input type="number" class="f-setup-val" id="f-box-n" value="__BOX_N__" min="2" max="__BOX_MAX_N__" step="1">
     <span class="filter-sublabel">candles, box &lt;</span>
@@ -3853,23 +3952,69 @@ With Slow approach ticked too, the and/or picker on that row decides how the two
     <span class="filter-sublabel">&times; avg candle</span>
   </div>
   <div class="filter-row">
-    <span class="filter-label" title="SLOW APPROACH (off until ticked; live, no regen). Keeps a
-trade only when price travelled no more than the cutoff times the average M5 candle toward the
-level, from the open of the k-th closed M5 candle before the fill's own candle to the fill
-(average over the __AVG_W__ closed candles before the fill) -- the Approach column. A row with
-no reading fails it. With Tight box ticked too: 'or' keeps a trade passing either (the feature
-study's best combination), 'and' only one passing both.">Slow approach</span>
-    <label class="chip"><input type="checkbox" class="f-setup" id="f-appr-on"> on</label>
+    <span class="filter-label" title="SLOW APPROACH (live, no regen). Passes when price travelled no
+more than the cutoff times the average M5 candle toward the level, from the open of the k-th closed
+M5 candle before the fill's own candle to the fill (average over the __AVG_W__ closed candles before
+the fill) -- the Approach column. Combine: each of Tight box, Slow approach, Fresh price and M5 SFP is off, 'required' (must pass),
+or a member of OR group A or OR group B. A trade is kept when it passes every required filter
+and at least one member of each OR group in use. The feature study's best mix was Tight box +
+Slow approach in group A and Fresh price + M5 SFP in group B, i.e. (box or approach) and (fresh
+or SFP). A row with no reading fails a filter that is on.">Slow approach</span>
+    <select class="f-setup-mode f-setup-val" id="f-appr-mode" title="off; required (must pass); or a member of OR group A / OR group B (at least one member of each group in use must pass)">
+      <option value="off" selected>off</option>
+      <option value="and">required</option>
+      <option value="a">OR group A</option>
+      <option value="b">OR group B</option>
+    </select>
     <span class="filter-sublabel">k=</span>
     <input type="number" class="f-setup-val" id="f-appr-k" value="__APPR_K__" min="1" max="__APPR_MAX_K__" step="1">
     <span class="filter-sublabel">candles back, move &le;</span>
     <input type="number" class="f-setup-val" id="f-appr-max" value="__APPR_MAX__" step="0.1">
     <span class="filter-sublabel">&times; avg candle</span>
-    <span class="filter-sublabel">&nbsp;&nbsp;with Tight box:</span>
-    <select id="f-setup-join" class="f-setup-val">
-      <option value="or" selected>or</option>
-      <option value="and">and</option>
+  </div>
+  <div class="filter-row">
+    <span class="filter-label" title="FRESH PRICE (live, no regen). Passes when price visited the
+planned entry price at most the chosen number of times before the level's own P0 -- M5 candles
+whose low (long) / high (short) came within the tolerance of it, a run of consecutive candles
+counting once, over the chosen look-back (__FRESH_BARS__ M5 candles per day) -- the Fresh visits
+column. A price the market hasn't leaned on yet vs a used-up level. Combine: each of Tight box, Slow approach, Fresh price and M5 SFP is off, 'required' (must pass),
+or a member of OR group A or OR group B. A trade is kept when it passes every required filter
+and at least one member of each OR group in use. The feature study's best mix was Tight box +
+Slow approach in group A and Fresh price + M5 SFP in group B, i.e. (box or approach) and (fresh
+or SFP). A row with no reading fails a filter that is on.">Fresh price</span>
+    <select class="f-setup-mode f-setup-val" id="f-fresh-mode" title="off; required (must pass); or a member of OR group A / OR group B (at least one member of each group in use must pass)">
+      <option value="off" selected>off</option>
+      <option value="and">required</option>
+      <option value="a">OR group A</option>
+      <option value="b">OR group B</option>
     </select>
+    <span class="filter-sublabel">look back</span>
+    <input type="number" class="f-setup-val" id="f-fresh-days" value="__FRESH_DAYS__" min="1" max="__FRESH_MAX_DAYS__" step="1">
+    <span class="filter-sublabel">days, within</span>
+    <select class="f-setup-val" id="f-fresh-tol">
+__FRESH_TOL_OPTIONS__    </select>
+    <span class="filter-sublabel">pt, visits &le;</span>
+    <input type="number" class="f-setup-val" id="f-fresh-max" value="__FRESH_MAX__" min="0" step="1">
+  </div>
+  <div class="filter-row">
+    <span class="filter-label" title="M5 SFP IN THE TRADE'S FAVOUR (live, no regen). Passes when one
+of the last n closed M5 candles before the fill's own candle was an SFP pointing our way
+(patterns-pure's find_sfp): for a long, a candle that swept an untested swing low and closed back
+above it; for a short, one that swept an untested swing high and closed back below it -- the M5
+SFP column. Combine: each of Tight box, Slow approach, Fresh price and M5 SFP is off, 'required' (must pass),
+or a member of OR group A or OR group B. A trade is kept when it passes every required filter
+and at least one member of each OR group in use. The feature study's best mix was Tight box +
+Slow approach in group A and Fresh price + M5 SFP in group B, i.e. (box or approach) and (fresh
+or SFP). A row with no reading fails a filter that is on.">M5 SFP</span>
+    <select class="f-setup-mode f-setup-val" id="f-sfp-mode" title="off; required (must pass); or a member of OR group A / OR group B (at least one member of each group in use must pass)">
+      <option value="off" selected>off</option>
+      <option value="and">required</option>
+      <option value="a">OR group A</option>
+      <option value="b">OR group B</option>
+    </select>
+    <span class="filter-sublabel">within the last</span>
+    <input type="number" class="f-setup-val" id="f-sfp-back" value="__SFP_BACK__" min="1" max="__SFP_MAX_BACK__" step="1">
+    <span class="filter-sublabel">closed M5 candles</span>
   </div>
   <div class="filter-row">
     <span class="filter-label" title="QUICK EXIT (off until ticked; live, no regen). Does not hide
@@ -3970,6 +4115,17 @@ the box is checked.">Trade management</span>
             f"before the fill. Low = price drifted onto the level; high = it raced into it. "
             f"Negative = it came from the far side. k (default {APPR_K_DEFAULT}) and the cutoff "
             f"are live in the Setup filters row above.\">Approach</th>"
+            f"<th title=\"FRESH PRICE: how many separate times price visited the planned entry "
+            f"price before this level's own P0 -- M5 candles whose low (long) / high (short) came "
+            f"within the tolerance of it, a run of consecutive candles counting once -- over the "
+            f"look-back picked in the Fresh price row above (default {FRESH_DAYS_DEFAULT} days, "
+            f"{FRESH_TOL_DEFAULT:g}pt). Few = an untouched price; many = a used-up "
+            f"level.\">Fresh visits</th>"
+            f"<th title=\"M5 SFP IN THE TRADE'S FAVOUR (patterns-pure's find_sfp): the nearest "
+            f"closed M5 candle before the fill's own candle, within the look-back picked in the "
+            f"M5 SFP row above (default {SFP_BACK_DEFAULT}), that swept an untested swing low and "
+            f"closed back above it (for a long) / swept a swing high and closed back below it "
+            f"(for a short), as @-candles back; '-' when none.\">M5 SFP</th>"
             f"<th class=\"left\" title=\"Distinct M5 prices merged into this trade, "
             f"extreme-first: highest for LLPB, lowest for LHPB. "
             f"Single-level trades show their own M5 price.\">Merged M5 levels</th>"
@@ -4069,6 +4225,13 @@ the box is checked.">Trade management</span>
    .replace("__QX_MAX_SEC__", f"{QX_MAX_SECONDS:g}")
    .replace("__QX_MIN__", f"{QX_MIN_BOUNCE_DEFAULT:g}")
    .replace("__QX_SLIP__", f"{QX_SLIPPAGE_DEFAULT:g}")
+   .replace("__FRESH_BARS__", f"{FRESH_BARS_PER_DAY:g}")
+   .replace("__FRESH_DAYS__", f"{FRESH_DAYS_DEFAULT:g}")
+   .replace("__FRESH_MAX_DAYS__", f"{FRESH_MAX_DAYS:g}")
+   .replace("__FRESH_MAX__", f"{FRESH_MAX_VISITS_DEFAULT:g}")
+   .replace("__FRESH_TOL_OPTIONS__", FRESH_TOL_OPTIONS_HTML)
+   .replace("__SFP_BACK__", f"{SFP_BACK_DEFAULT:g}")
+   .replace("__SFP_MAX_BACK__", f"{SFP_MAX_BACK:g}")
    .replace("__OPPZZ_CHECKED__",
             "checked" if "opposite-m5-zz" in args.default_target_modes else "")
    .replace("__SWING_CHECKED__",
@@ -4137,16 +4300,17 @@ td.outcome-cell { max-width:130px; white-space:normal; }
 #lvl-table thead th:nth-child(8),   /* Pre-P1 ER */
 #lvl-table thead th:nth-child(9),   /* P1 range ratio */
 #lvl-table thead th:nth-child(10),  /* Pre-P1 box */
-#lvl-table thead th:nth-child(14),  /* H1 P0 confl */
-#lvl-table thead th:nth-child(22),  /* Quick exit */
-#lvl-table thead th:nth-child(28),  /* MAE (win) */
-#lvl-table thead th:nth-child(29),  /* MFE (loss) */
-#lvl-table thead th:nth-child(30) { /* Max DD */
+#lvl-table thead th:nth-child(12),  /* Fresh visits */
+#lvl-table thead th:nth-child(16),  /* H1 P0 confl */
+#lvl-table thead th:nth-child(24),  /* Quick exit */
+#lvl-table thead th:nth-child(30),  /* MAE (win) */
+#lvl-table thead th:nth-child(31),  /* MFE (loss) */
+#lvl-table thead th:nth-child(32) { /* Max DD */
   white-space:normal; overflow-wrap:break-word; max-width:60px;
 }
 td.daygap-cell, td.h1gap-cell, td.prep1er-cell { max-width:50px; }
 td.mingap-cell, td.p1ratio-cell { max-width:60px; }
-td.box-cell, td.appr-cell, td.qx-cell { max-width:60px; }
+td.box-cell, td.appr-cell, td.qx-cell, td.fresh-cell, td.sfp-cell { max-width:60px; }
 select.f-setup-val, input.f-setup-val { background:var(--surface2); color:var(--text);
     border:1px solid var(--border); border-radius:4px; font-size:0.85em; padding:3px 5px; }
 input.f-setup-val { width:4.5em; }
@@ -4477,29 +4641,54 @@ function _pickFromArray(json, i) {
 function applySetupReadings() {
   const n = Math.round(_setupNum('f-box-n', 6));
   const k = Math.round(_setupNum('f-appr-k', 3));
+  const days = Math.round(_setupNum('f-fresh-days', 2));
+  const tolEl = document.getElementById('f-fresh-tol');
+  const tolIdx = tolEl ? tolEl.selectedIndex : -1;   // options are FRESH_TOLS, in order
+  const back = Math.round(_setupNum('f-sfp-back', 6));
   document.querySelectorAll('#lvl-table tbody tr.lvl-row').forEach(tr => {
     const box = _pickFromArray(tr.dataset.boxByN, n - 2);
     const appr = _pickFromArray(tr.dataset.apprByK, k - 1);
+    const freshRow = _pickFromArray(tr.dataset.fresh, days - 1);
+    const fresh = (freshRow && tolIdx >= 0) ? freshRow[tolIdx] : null;
+    let sfp = null;                    // nearest in-favour SFP within the look-back (0 = none)
+    if (tr.dataset.sfp) {
+      const near = JSON.parse(tr.dataset.sfp).filter(o => o <= back);
+      sfp = near.length ? Math.min(...near) : 0;
+    }
     tr.dataset.box = box === null ? '' : String(box);
     tr.dataset.appr = appr === null ? '' : String(appr);
+    tr.dataset.freshNow = fresh === null ? '' : String(fresh);
+    tr.dataset.sfpNow = sfp === null ? '' : String(sfp);
     setCell(tr, '.box-cell', box === null ? '-' : box.toFixed(2) + 'x', 'box-cell');
     setCell(tr, '.appr-cell', appr === null ? '-' : appr.toFixed(2) + 'x', 'appr-cell');
+    setCell(tr, '.fresh-cell', fresh === null ? '-' : String(fresh), 'fresh-cell');
+    setCell(tr, '.sfp-cell', sfp ? '@-' + sfp : '-', 'sfp-cell');
   });
 }
-// Tight box / slow approach: a ticked filter keeps only rows passing it (a row
-// with no reading fails); both ticked combine with the and/or picker.
+// Tight box / slow approach / fresh price / M5 SFP. Each is off, 'required', or a member of OR
+// group A or B: a row is kept when every required filter passes and at least one member of each
+// OR group in use passes. A filter with no reading on a row fails.
+function _setupMode(id) {
+  const el = document.getElementById(id);
+  return el ? el.value : 'off';
+}
 function setupPass(tr) {
-  const boxOn = _setupOn('f-box-on'), apprOn = _setupOn('f-appr-on');
-  if (!boxOn && !apprOn) return true;
-  const box = tr.dataset.box === '' ? NaN : parseFloat(tr.dataset.box);
-  const appr = tr.dataset.appr === '' ? NaN : parseFloat(tr.dataset.appr);
-  const boxOk = Number.isFinite(box) && box < _setupNum('f-box-max', 2);
-  const apprOk = Number.isFinite(appr) && appr <= _setupNum('f-appr-max', 1);
-  if (boxOn && apprOn) {
-    const joinEl = document.getElementById('f-setup-join');
-    return (joinEl && joinEl.value === 'and') ? (boxOk && apprOk) : (boxOk || apprOk);
+  const num = v => (v === '' || v === undefined) ? NaN : parseFloat(v);
+  const tests = [
+    ['f-box-mode', () => { const v = num(tr.dataset.box); return Number.isFinite(v) && v < _setupNum('f-box-max', 2); }],
+    ['f-appr-mode', () => { const v = num(tr.dataset.appr); return Number.isFinite(v) && v <= _setupNum('f-appr-max', 1); }],
+    ['f-fresh-mode', () => { const v = num(tr.dataset.freshNow); return Number.isFinite(v) && v <= _setupNum('f-fresh-max', 2); }],
+    ['f-sfp-mode', () => { const v = num(tr.dataset.sfpNow); return Number.isFinite(v) && v > 0; }],
+  ];
+  const groups = { a: null, b: null };
+  for (const [id, test] of tests) {
+    const mode = _setupMode(id);
+    if (mode === 'off') continue;
+    const ok = test();
+    if (mode === 'and') { if (!ok) return false; }
+    else groups[mode] = (groups[mode] || false) || ok;
   }
-  return boxOn ? boxOk : apprOk;
+  return groups.a !== false && groups.b !== false;
 }
 // Quick exit: the trade is still open `sec` seconds after the fill (its exit,
 // baseline or managed, comes later) and its best bounce so far is below the
@@ -4709,7 +4898,7 @@ recomputeDynStats();
 // text, so R / PnL / MAE / MFE / Max DD sort by whatever the ticked target
 // rules and management toggle currently show. Empty / '-' cells always sink
 // to the bottom. A trade's chart row travels with its trade row.
-const SORT_COLS = [0, 4, 5, 6, 7, 8, 9, 10, 13, 19, 21, 24, 27, 28, 29];  // Trade Id, P1->P2 (d/H1/min), Pre-P1 ER, P1 range ratio, Pre-P1 box, Approach, H1 P0 confl, R, Quick exit, PnL, MAE, MFE, Max DD
+const SORT_COLS = [0, 4, 5, 6, 7, 8, 9, 10, 11, 15, 21, 23, 26, 29, 30, 31];  // Trade Id, P1->P2 (d/H1/min), Pre-P1 ER, P1 range ratio, Pre-P1 box, Approach, Fresh visits, H1 P0 confl, R, Quick exit, PnL, MAE, MFE, Max DD
 const SUPERS = ['¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹', '¹⁰'];
 let sortSpec = [];
 (function () {
