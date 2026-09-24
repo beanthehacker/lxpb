@@ -159,6 +159,11 @@ the target are ALL M5 LXPB structure:
          under a live bullish bias, a long under a live bearish one -- is
          tagged `fading_bias`. Like `volume-spike` this is purely a Dynamic
          filter chip, NOT excluded from the headline stats by default.
+         The same column also lists every TRAP (trap_variants.py) live at the
+         entry, as `<variant>·<timeframe>` with a check mark once confirmed:
+         the daily-analysis trapVariants one timeframe down (D1 variants
+         V1-V4/V2.5 -> H1, H1 variants V6-V9 -> M5). Display only: no tag,
+         no filter.
 
        * NEWS PULL (`--news-pull-window`, on by default). The level's first
          tick-level touch (the retest itself, from
@@ -287,6 +292,7 @@ import m5_structure as MS                         # noqa: E402
 import liquidity as LQ                            # noqa: E402
 import volume_spike as VS                         # noqa: E402
 import h1_bias as HB                              # noqa: E402
+import trap_variants as TV                        # noqa: E402
 from find_sfp import find_sfp                     # noqa: E402  (vendored patterns_pure, on sys.path via R)
 
 SS_CONFL_MIN_DEFAULT = 1
@@ -2743,6 +2749,30 @@ def _apply_h1_bias(results):
     return results
 
 
+def _apply_trap_variants(results):
+    """Stores res['traps']: every trap (trap_variants.py -- the
+    daily-analysis trapVariants one timeframe down) still LIVE at this
+    trade's own entry, queried on the same instant and price as
+    _apply_h1_bias (the fill when filled, else the P2 retest at alt_price).
+    Display only, in the Bias column: no dyn tag, no stats change."""
+    if not results:
+        return results
+    queries = []
+    for res in results:
+        if res["filled"]:
+            queries.append((pd.Timestamp(res["touch_time_alt"]), float(res["fill_price"])))
+        else:
+            queries.append((pd.Timestamp(res["row"]["retest_time"]), float(res["alt_price"])))
+    times = [TV._utc(t) for t, _ in queries]
+    traps = TV.scan(min(times), max(times))
+    m5 = R._display_m5()
+    for res, (at, price) in zip(results, queries):
+        res["traps"] = TV.traps_at(traps, at, price=price, m5=m5)
+    n = sum(bool(r["traps"]) for r in results)
+    print(f"{n} of {len(results)} row(s) enter under at least one live trap", flush=True)
+    return results
+
+
 N_COLS = 38  # keep in sync with `head` below and every colspan in this section
 
 # MES position sizing / commissions. R stays a fixed $1,000 and the stop is not
@@ -2888,6 +2918,7 @@ def render(args):
     results = _apply_h1_p0_confluence(results)
     results = _apply_h1_spike_confluence(results)
     results = _apply_h1_bias(results)
+    results = _apply_trap_variants(results)
     tag_counts = {}
     for r in results:
         if not r["filled"]:
@@ -3186,13 +3217,31 @@ def _bias_detail(b):
             f'lives {b["max_age"]} closed H1 candle(s), this is its {ordinal}')
 
 
+def _trap_detail(t):
+    """One live trap (trap_variants.py), spelled out for a tooltip."""
+    side = "bullish" if t["direction"] == "bullish" else "bearish"
+    extreme = "low" if t["direction"] == "bullish" else "high"
+    state = (f'confirmed {R._to_pt_str(t["confirm_ts"])}' if t["phase"] == 2
+             else "awaiting confirmation")
+    return (f'trap {t["vnum"]} ({t["tf"]}, {side}) {t["variant"]}: trigger '
+            f'{t["tf"]} bar {R._to_pt_str(t["trigger_ts"])}, swept {t["swept_type"]} '
+            f'{t["swept_level"]:.2f}, target {t["magnet_source"]} {t["magnet_price"]:.2f}, '
+            f'dies below the trigger {extreme} '
+            f'{(t["low"] if t["direction"] == "bullish" else t["high"]):.2f}; {state}')
+
+
 def _bias_cell(res):
     """(cell_html, title) for the 'Bias' column from res['h1_bias'] (see
     _apply_h1_bias) -- the live bullish biases then the live bearish ones,
     each as its own '<kind>@<offset>' metadata string, nearest H1 candle
-    first. '-' with no tooltip when the row carries none."""
+    first -- then res['traps'] (see _apply_trap_variants), bullish then
+    bearish, newest first, as '<variant>·<timeframe>' (a check mark once
+    confirmed). Traps use arrows rather than the bias triangles so anything
+    reading the triangles as "has a live bias" (the explorer) is unaffected.
+    '-' with no tooltip when the row carries neither."""
     biases = res.get("h1_bias") or []
-    if not biases:
+    traps = res.get("traps") or []
+    if not biases and not traps:
         return "-", ""
     bull, bear = HB.summarize(biases)
     out = ""
@@ -3200,7 +3249,14 @@ def _bias_cell(res):
         out += f'<span class="bias-bull">&#9650; {" ".join(bull)}</span>'
     if bear:
         out += f'<span class="bias-bear">&#9660; {" ".join(bear)}</span>'
-    return out, "; ".join(_bias_detail(b) for b in biases)
+    ent = lambda l: l.encode("ascii", "xmlcharrefreplace").decode()   # the dot / check mark
+    trap_bull = [ent(t["label"]) for t in traps if t["direction"] == "bullish"]
+    trap_bear = [ent(t["label"]) for t in traps if t["direction"] == "bearish"]
+    if trap_bull:
+        out += f'<span class="trap-bull">&#8593; trap {" ".join(trap_bull)}</span>'
+    if trap_bear:
+        out += f'<span class="trap-bear">&#8595; trap {" ".join(trap_bear)}</span>'
+    return out, "; ".join([_bias_detail(b) for b in biases] + [_trap_detail(t) for t in traps])
 
 
 def _pt_str_stacked(ts):
@@ -4161,7 +4217,15 @@ the box is checked.">Trade management</span>
             f"it goes stale -- after {HB.HAMMER_BIAS_MAX_AGE} closed candles for a "
             f"hammer/star, {HB.SFP_BIAS_MAX_AGE} for an sfp, the only difference between "
             f"them. "
-            f"A trade fading one of these is tagged fading_bias. This strategy is M5-only "
+            f"A trade fading one of these is tagged fading_bias. "
+            f"Below them, every TRAP live at the entry (arrows, '&lt;variant&gt;&#183;&lt;timeframe&gt;', "
+            f"a check mark once confirmed): the daily-analysis trapVariants one timeframe down -- "
+            f"D1 variants V1-V4/V2.5 on H1 bars, H1 variants V6-V9 on M5 triggers under H1 "
+            f"context and H1 levels, ATR({TV.ATR_PERIOD}) on H1. A trap is live from its trigger "
+            f"bar's close until its trigger low (bullish) / high (bearish) breaks, its target is "
+            f"reached, or it goes {TV.CONFIRMATION_WINDOW} bars unconfirmed / "
+            f"{TV.LIVE_AFTER_CONFIRM} bars past confirmation. "
+            f"This strategy is M5-only "
             f"(no H1 input); purely a review aid. Hover for each bias's own detail.\">Bias</th>"
             f"<th>Entry</th>"
             f"<th class=\"left\">Entry (touch) time</th>"
@@ -4283,6 +4347,10 @@ td.bias-cell { max-width:150px; white-space:normal; cursor:help; }
 .bias-bull, .bias-bear { display:block; font-size:0.86em; white-space:nowrap; }
 .bias-bull { color:#6ee7b7; }
 .bias-bear { color:#fda4af; }
+/* Live traps (_apply_trap_variants), below the biases in the same cell. */
+.trap-bull, .trap-bear { display:block; font-size:0.86em; white-space:nowrap; font-style:italic; }
+.trap-bull { color:#34d399; }
+.trap-bear { color:#fb7185; }
 td.tags-cell { max-width:200px; white-space:normal; }
 /* Outcome can carry a full sentence (e.g. "NO TRADE (no target under any
    rule)") instead of just WIN/LOSS, so let it wrap rather than force the

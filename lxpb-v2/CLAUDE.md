@@ -254,3 +254,17 @@ lives in `patterns_pure/` and is never restated at a call site.
 Every bias is short-lived and `h1_bias.py` owns the expiries.
 Its only consumer is `ss_m5_confl2`'s Bias column and its `fading_bias` dynamic
 filter -- a review aid, never a strategy input.
+
+# Trap variants (`trap_variants.py`)
+
+The daily-analysis trapVariants (`E:\daily-analysis\trapVariants`, engine
+`patterns-pure/find_trap.py`) ported ONE TIMEFRAME DOWN: the D1 variants
+(V1, V2, V2.5, V3, V4) run entirely on H1, the H1 variants (V6-V9) run as M5
+triggers under H1 wide/inside context against H1 levels. ATR is ATR(24) on H1
+(the upstream LTF convention). Every detector is the vendored patterns-pure one
+(`find_LP`, `find_eqh_eql`, `find_swings`, `find_inside_bar`,
+`find_engulfing_*`, `find_targets`, hammer/shooting star); the module owns
+only the variant cascade and the trap lifecycle, and its docstring lists every
+local decision (confirmation on H1 too, target renames IHH/IHL/IDH/IDL, life
+after confirmation, level-pool depth). Like `h1_bias.py`, its only consumer is
+the ss_m5_confl2 Bias column -- a review aid, never a strategy input.

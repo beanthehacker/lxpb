@@ -14,6 +14,9 @@ self-contained and does not depend on that external folder being present.
 | `find_candle_utils` → `candle_utils.py` | `has_large_upper_wick` / `has_large_lower_wick` (feature **d**) |
 | `find_spike_thrust.py` | `find_spike_thrust()` — the **spike-thrust** candle definition (see "Spike candles" in `../CLAUDE.md`); `../h1_bias.py`'s bias-thrust builds on it |
 | `find_sfp.py` | `find_sfp()` — the **SFP** (swing failure) definition: a candle that sweeps a confirmed, still-**untested** fractal swing and closes back on the near side of it. Used by `../h1_bias.py` |
+| `find_LP.py` / `find_eqh_eql.py` | liquidity pools / equal highs-lows: the trap level pool in `../trap_variants.py` |
+| `find_inside_bar.py` / `find_engulfing_bullish.py` / `find_engulfing_bearish.py` | inside-bar context and engulfing triggers of `../trap_variants.py` |
+| `find_targets.py` | trap targets in `../trap_variants.py` (run one timeframe down: H1 in its D1 slot, D1 in its W1 slot) |
 | `find_three_drive_failure.py` | `find_three_drive_failure()` — the **3DF** (Three-Drive Failure) structure: three consecutive swing lows/highs, each further out than the last and each one taken straight back; not yet used by any report |
 
 `find_hammer.py` / `find_shooting_star.py` are the **only** hammer /
@@ -52,6 +55,17 @@ detector's flag alongside as `is_spike_lxpb`, so the two are never confused.
 ```powershell
 Copy-Item D:\daily-analysis\patterns-pure\{find_ATR,find_swings,find_hammer,find_shooting_star,find_spike_thrust,find_sfp,find_three_drive_failure,candle_utils}.py `
           D:\lxpb\lxpb-v2\patterns_pure\ -Force
+```
+
+The six trap-variant detectors (`find_LP`, `find_eqh_eql`, `find_inside_bar`,
+`find_engulfing_bullish`, `find_engulfing_bearish`, `find_targets`) were
+vendored 2026-09-24 from `E:\daily-analysis\patterns-pure` (the full upstream
+library; `D:\daily-analysis\patterns-pure` only holds this vendored subset).
+Refresh them from there:
+
+```powershell
+Copy-Item E:\daily-analysis\patterns-pure\{find_LP,find_eqh_eql,find_inside_bar,find_engulfing_bullish,find_engulfing_bearish,find_targets}.py `
+          E:\lxpb\lxpb-v2\patterns_pure\ -Force
 ```
 
 **Deliberate local modification (2026-09-21):** `find_hammer.py` /
