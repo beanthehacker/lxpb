@@ -16,7 +16,10 @@ H1 RANGE BREAKOUT -> M5 LXPB RETEST. Rules set by the user 2026-09-25:
   4. FAILED BREAK. If an H1 candle closes back inside the box after the
      breakout (the H1 candle holding the breakout candle included) before the
      trade fills, the break failed: that edge is finished, no trade. The
-     opposite edge is unaffected.
+     watch starts at the range's own H1 break candle on that side when that
+     comes first: an H1 break made of weak M5 candles arms nothing, but an H1
+     close back inside after it still finishes the edge (user, 2026-09-25).
+     The opposite edge is unaffected.
   5. ENTRY. The first retest (M5 level ledger, plain-P0s TRACKED) of an M5
      LLPB (breakout below -> short) / LHPB (breakout above -> long) that
      FORMED during the range (from its first candle up to the breakout) and
@@ -191,14 +194,18 @@ def _walk_edge(r, side, j0, bhi, blo, ra, bd, levels):
     strong = (a["rng_atr"][i0:] >= ra) & (a["body"][i0:] >= bd)
     cand = np.flatnonzero(ok & ~np.isnan(ehi) & (o >= elo) & (o <= ehi) & beyond & strong)
     s = dict(range=r, side=side, level_type=lt, is_long=is_long, outcome="never broken")
-    if not len(cand):
+    # The failed-break watch starts at whichever comes first: the H1 candle
+    # holding the first strong M5 breakout, or the range's own H1 break candle
+    # on this side -- a break on weak M5 candles still ends the range, so an
+    # H1 close back inside after it finishes the edge too.
+    j_brk = r["e"] if r["status"] == "broken" and r["break_dir"] == side else None
+    starts = ([a["hpos"][i0 + cand[0]]] if len(cand) else []) + ([j_brk] if j_brk is not None else [])
+    if not starts:
         return s
-    k1 = i0 + cand[0]
-    s.update(t_bo=a["t"][k1], edge=float(ehi[cand[0]] if is_long else elo[cand[0]]),
-             box=(float(ehi[cand[0]]), float(elo[cand[0]])),
-             bo_rng_atr=float(a["rng_atr"][k1]), bo_body=float(a["body"][k1]))
+    if j_brk is not None:
+        s["t_break"] = h.index[j_brk]
     fail_t = None
-    for j in range(a["hpos"][k1], len(h)):
+    for j in range(min(starts), len(h)):
         bh, bl = bhi[j - j0], blo[j - j0]
         if np.isnan(bh):
             fail_t = h.index[j]          # merged away
@@ -206,14 +213,22 @@ def _walk_edge(r, side, j0, bhi, blo, ra, bd, levels):
         if bl <= a["h_close"][j] <= bh:
             fail_t = h.index[j] + H1
             break
-    bo_times = a["t"][i0 + cand]
+    s["fail_t"] = fail_t
     if fail_t is not None:
-        bo_times = bo_times[bo_times < fail_t]
+        cand = cand[a["t"][i0 + cand] < fail_t]
+    if not len(cand):
+        if fail_t is not None:
+            s["outcome"] = "failed"      # H1 broke, came back inside before any strong M5 breakout
+        return s
+    k1 = i0 + cand[0]
+    s.update(t_bo=a["t"][k1], edge=float(ehi[cand[0]] if is_long else elo[cand[0]]),
+             box=(float(ehi[cand[0]]), float(elo[cand[0]])),
+             bo_rng_atr=float(a["rng_atr"][k1]), bo_body=float(a["body"][k1]))
+    bo_times = a["t"][i0 + cand]
     lv = levels[(levels["type"] == lt) & levels["breakout_time"].isin(bo_times)
                 & (levels["formation_time"] >= r["start"]) & (levels["fate"] == "retested")]
     if fail_t is not None:
         lv = lv[lv["retest_time"] < fail_t]
-    s["fail_t"] = fail_t
     if lv.empty:
         s["outcome"] = "failed" if fail_t is not None else "armed"
         return s
@@ -241,7 +256,7 @@ def find_setups(start, end, ra, bd):
                 if start <= s["level"]["retest_time"] <= end:
                     trades.append(s)
                     counts["trade"] = counts.get("trade", 0) + 1
-            elif s.get("t_bo") is not None and start <= s["t_bo"] <= end:
+            elif s["outcome"] != "never broken" and start <= s.get("t_bo", s.get("t_break")) <= end:
                 counts[s["outcome"]] = counts.get(s["outcome"], 0) + 1
             elif s["outcome"] == "never broken" and start <= r["confirm"] <= end:
                 counts["never broken"] = counts.get("never broken", 0) + 1
@@ -974,7 +989,10 @@ box while find_range tracks it and its last box after a break or cancel. EDGES: 
 most one trade and stays valid until it has taken it. BREAKOUT: an M5 candle that opens inside the box
 and closes beyond the edge, with a range of at least {args.bo_range_atr:g}&times; the M5 ATR(21) and a
 body of at least {args.bo_body * 100:.0f}% of its range, arms the edge. FAILED BREAK: an H1 candle closing
-back inside the box before the fill ends that edge with no trade; the other edge is unaffected. ENTRY:
+back inside the box before the fill ends that edge with no trade, watched from the breakout or from the
+range's own H1 break candle on that side, whichever comes first (an H1 break made only of weak M5
+candles arms nothing, but a close back inside after it still ends the edge); the other edge is
+unaffected. ENTRY:
 the first retest of an M5 LLPB (break below, short) / LHPB (break above, long) that formed during the
 range and was broken by a breakout candle of that edge, filled as a plain limit at the level on real
 ticks. STOP: one tick beyond that level's own P1 (breakout) candle; a live Stop toggle in the Trades tab
