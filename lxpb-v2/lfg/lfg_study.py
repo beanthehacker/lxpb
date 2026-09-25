@@ -2,6 +2,9 @@
 lfg_study.py -- LFG (liquidity flush-n-grab) study page
 =======================================================
 
+WIP, PARKED 2026-09-24 -- see README.md in this folder for the status,
+the 2026 snapshot and the open questions before building on this.
+
 A mean-reversion trade off an H1 tight range: price flushes out of the range
 on M5 and runs into the nearest untested M5 P0 just outside it, and the
 retest of that P0 is traded back towards the range.

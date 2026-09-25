@@ -18,7 +18,7 @@ self-contained and does not depend on that external folder being present.
 | `find_inside_bar.py` / `find_engulfing_bullish.py` / `find_engulfing_bearish.py` | inside-bar context and engulfing triggers of `../trap_variants.py` |
 | `find_targets.py` | trap targets in `../trap_variants.py` (run one timeframe down: H1 in its D1 slot, D1 in its W1 slot) |
 | `find_three_drive_failure.py` | `find_three_drive_failure()` — the **3DF** (Three-Drive Failure) structure: three consecutive swing lows/highs, each further out than the last and each one taken straight back; not yet used by any report |
-| `find_range.py` | `find_range()` — **tight ranges** (consolidations) on any timeframe: nested boxes of ≥ 4 candles ≤ 0.7× ATR(21), a failed breakout cancels only the range it pokes out of, ended by a close or gap open outside the box; every candidate returned with its status for point-in-time use. Definition: upstream `PATTERNS.md`. Not yet used by any report |
+| `find_range.py` | `find_range()` — **tight ranges** (consolidations) on any timeframe: nested boxes of ≥ 4 candles ≤ 0.7× ATR(21), a failed breakout cancels only the range it pokes out of, ended by a close or gap open outside the box; every candidate returned with its status for point-in-time use. Definition: upstream `PATTERNS.md`. Not yet used by any report; read by the parked WIP LFG study, `../lfg/` |
 
 `find_hammer.py` / `find_shooting_star.py` are the **only** hammer /
 shooting-star definition allowed anywhere in the repo -- see "Spike candles"
