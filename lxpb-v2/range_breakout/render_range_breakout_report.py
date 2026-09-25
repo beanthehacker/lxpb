@@ -35,6 +35,11 @@ H1 RANGE BREAKOUT -> M5 LXPB RETEST. Rules set by the user 2026-09-25:
      that its swing-extreme target -- called, not restated. Both brackets are
      precomputed and tick-resolved for every trade, so changing N in the
      browser only picks between them.
+  8. ONE TRADE PER LEVEL. Nested / overlapping ranges that pick the same M5
+     level give one trade, kept under the range that started first.
+  9. ONE TRADE AT A TIME (live toggle, on by default). In fill order, a
+     trade filling while an earlier counted trade is still open is NO TRADE
+     (another trade on); its edge is still spent.
 
 Everything downstream of the trade itself -- tick-accurate exit resolution
 (render_stop_target_report.resolve_trades via ss_m5_confl2's
@@ -61,6 +66,7 @@ import time
 import pickle
 import shutil
 import argparse
+import bisect
 import multiprocessing as mp
 
 import numpy as np
@@ -218,7 +224,10 @@ def _walk_edge(r, side, j0, bhi, blo, ra, bd, levels):
 
 def find_setups(start, end, ra, bd):
     """(trades, edge_counts): every trade whose entry level was retested in
-    [start, end], in retest order, and how every range edge in scope ended."""
+    [start, end], in retest order, and how every range edge in scope ended.
+    Nested / overlapping ranges often break on the same M5 candle and so pick
+    the same M5 level: that is ONE trade, kept under the range that started
+    first (the other copies are counted as 'duplicate')."""
     h = _h1()
     levels = _ledger(True)
     levels = levels[levels["breakout_time"].notna()]
@@ -236,8 +245,17 @@ def find_setups(start, end, ra, bd):
                 counts[s["outcome"]] = counts.get(s["outcome"], 0) + 1
             elif s["outcome"] == "never broken" and start <= r["confirm"] <= end:
                 counts["never broken"] = counts.get("never broken", 0) + 1
-    trades.sort(key=lambda s: s["level"]["retest_time"])
-    return trades, counts
+    trades.sort(key=lambda s: (s["level"]["retest_time"], s["range"]["start"]))
+    seen, kept = set(), []
+    for s in trades:
+        lv = s["level"]
+        key = (lv["type"], float(lv["price"]), lv["formation_time"])
+        if key in seen:
+            counts["duplicate"] = counts.get("duplicate", 0) + 1
+            continue
+        seen.add(key)
+        kept.append(s)
+    return kept, counts
 
 
 # --------------------------------------------------------------------------
@@ -343,6 +361,7 @@ def process_setup(i, s, args):
         "entry_m5_level": None, "improved": False, "swerve": None, "crest_refine": None,
         "dyn_tags": [], "filled": False,
         "setup": {"range_id": r["id"], "range_start": r["start"], "range_confirm": r["confirm"],
+                  "range_end": r["end"],
                   "range_status": r["status"], "inner": r["outer"] is not None,
                   "side": s["side"], "box": s["box"], "edge": s["edge"], "t_bo": s["t_bo"],
                   "bo_rng_atr": s["bo_rng_atr"], "bo_body": s["bo_body"]},
@@ -487,6 +506,75 @@ def _add_range_box(chart_m5, res):
                           f"{R._to_pt_str(st['range_confirm'])}) box {lo:.2f}-{hi:.2f}")
 
 
+RANGE_H1_PAD_BARS = 24       # H1 candles loaded before the range's first candle, at least
+RANGE_FOCUS_PAD_BARS = 8     # opening zoom: H1 candles either side of range start .. entry
+RANGE_FOCUS_PRICE_PAD = 0.15  # opening zoom: price margin, as a share of the fitted span
+RANGE_UP_COLOR, RANGE_DOWN_COLOR = "#fde68a", "#d97706"
+
+
+def _add_range_h1(chart_h1, res):
+    """The H1 pane always shows the whole range: widened back to a few
+    candles before its first candle when the default window starts later,
+    its candles (first to last) tinted amber, start / end / breakout
+    markers, and the box high / low as price-labelled rays from the first
+    candle to the breakout. The range's last candle is the one before the
+    candle that ended it (break / cancel / merge), or the one before the
+    breakout candle's H1 candle if the range was still open then."""
+    if chart_h1 is None or not chart_h1.get("candles"):
+        return
+    st, h = res["setup"], _h1()
+    hi, lo = st["box"]
+    j_start = h.index.get_loc(pd.Timestamp(st["range_start"]))
+    j_bo = h.index.searchsorted(pd.Timestamp(st["t_bo"]), side="right") - 1
+    j_end = j_bo - 1
+    if pd.notna(st.get("range_end")):
+        j_end = min(j_end, h.index.get_loc(pd.Timestamp(st["range_end"])) - 1)
+    j_end = max(j_end, j_start)
+    candles = chart_h1["candles"]
+    lo_t = h.index[max(0, j_start - RANGE_H1_PAD_BARS)]
+    first = pd.Timestamp(candles[0]["time"], unit="s", tz="UTC")
+    if lo_t < first:
+        extra = h[(h.index >= lo_t) & (h.index < first)]
+        candles[:0] = [{"time": R._to_epoch_utc(t), "open": float(b.open), "high": float(b.high),
+                        "low": float(b.low), "close": float(b.close)} for t, b in extra.iterrows()]
+    e0, e1 = R._to_epoch_utc(h.index[j_start]), R._to_epoch_utc(h.index[j_end])
+    e_bo = R._to_epoch_utc(h.index[j_bo])
+    for c in candles:
+        if e0 <= c["time"] <= e1:
+            col = RANGE_UP_COLOR if c["close"] >= c["open"] else RANGE_DOWN_COLOR
+            c.update(color=col, borderColor=col, wickColor=col)
+    times = [c["time"] for c in candles]
+    for px, name in ((hi, "range high"), (lo, "range low")):
+        title = f"{name} {px:.2f}"
+        chart_h1.setdefault("rays", []).append({
+            "points": [{"time": t, "value": px} for t in times if e0 <= t <= max(e1, e_bo)],
+            "color": BOX_COLOR, "lineWidth": 2, "lineStyle": 0, "priceLabel": True,
+            "title": title, "label": title})
+    hm = lambda e: pd.Timestamp(e, unit="s", tz="UTC").tz_convert(PT).strftime("%H:%M")
+    chart_h1["markers"] += [
+        {"time": e0, "position": "aboveBar", "color": BOX_COLOR, "shape": "arrowDown",
+         "text": f"range start {hm(e0)}"},
+        {"time": e1, "position": "belowBar", "color": BOX_COLOR, "shape": "arrowUp",
+         "text": f"range end {hm(e1)}"},
+        {"time": e_bo, "position": "belowBar" if res["is_long"] else "aboveBar",
+         "color": BOX_COLOR, "shape": "square", "text": "BO"}]
+    chart_h1["markers"].sort(key=lambda m: m["time"])
+    # Opening zoom (focusPane in the page): candles from a few before the
+    # range to a few after the entry, prices fitted to the box plus entry and
+    # stop. Everything else stays loaded: scroll, or drag the price axis.
+    entry_e = R._to_epoch_utc(pd.Timestamp(res.get("touch_time_alt") or res["row"]["retest_time"]))
+    i0 = bisect.bisect_left(times, e0)
+    i1 = max(bisect.bisect_right(times, max(e1, e_bo, entry_e)) - 1, i0)
+    prices = [hi, lo] + ([res["fill_price"], res["stop_price"]] if res["filled"] else [])
+    span = max(prices) - min(prices)
+    chart_h1["focus"] = {"from": i0 - RANGE_FOCUS_PAD_BARS, "to": i1 + RANGE_FOCUS_PAD_BARS,
+                         "lo": min(prices) - RANGE_FOCUS_PRICE_PAD * span,
+                         "hi": max(prices) + RANGE_FOCUS_PRICE_PAD * span}
+    ts = lambda e: R._to_pt_str(pd.Timestamp(e, unit="s", tz="UTC"))
+    chart_h1["title"] = (f"H1  |  {ts(times[0])} → {ts(times[-1])}  |  range {ts(e0)} → {ts(e1)} "
+                         f"(amber candles), high {hi:.2f} / low {lo:.2f}")
+
+
 def build_row(i, s, args):
     res = process_setup(i, s, args)
     if res["filled"]:
@@ -494,6 +582,7 @@ def build_row(i, s, args):
     else:
         stack, fp = C2._build_unfilled_chart_stack(res, args)
     _add_range_box(stack.get("m5"), res)
+    _add_range_h1(stack.get("h1"), res)
     return res, stack, fp
 
 
@@ -653,7 +742,47 @@ function applyStopCells(tr, p) {
   tr.dataset.contracts = p.contracts; tr.dataset.comm = p.comm;
   tr.dataset.mesFlag = p.mesFlag; tr.dataset.risk = p.risk;
 }
+// One trade at a time (recomputeDynStats): rows in fill order, unfilled ones
+// last; and the label a blocked row gets (applyTargetModes rewrites the
+// outcome cell on every recompute, so it clears itself when no longer blocked).
+function rowsByFill() {
+  const rows = Array.from(document.querySelectorAll('#lvl-table tbody tr.lvl-row'));
+  const t = tr => { const v = parseFloat(tr.dataset.fill); return Number.isFinite(v) ? v : Infinity; };
+  return rows.sort((a, b) => t(a) - t(b) || a.dataset.idx - b.dataset.idx);
+}
+function markOverlap(tr, openIdx) {
+  tr.classList.add('overlap-row');
+  const oc = tr.querySelector('.outcome-cell');
+  if (!oc) return;
+  oc.className = 'outcome-cell';
+  const lbl = oc.querySelector('.outcome-label');
+  if (lbl) lbl.innerHTML = 'NO TRADE (another trade on: #' + openIdx + ')';
+  const mgb = oc.querySelector('.mgmt-badge');
+  if (mgb) mgb.innerHTML = '';
+}
 </script>
+"""
+FOCUS_JS_OLD = "_centerLogicalRange(chart, el, cd.candles.length);"
+FOCUS_JS_NEW = "_centerLogicalRange(chart, el, cd.candles.length); focusPane(chart, series, cd);"
+FOCUS_JS_FN = """<script>
+// H1 pane opening zoom on the range (cd.focus, from _add_range_h1): the
+// candle window from a few bars before the range to a few after the entry,
+// and the price scale fitted to the range box plus entry and stop through
+// the series' autoscale. Every candle stays loaded, so scrolling works as
+// usual; dragging the price axis switches autoscale off and zooms out
+// freely, and double-clicking the axis snaps back to this fit.
+function focusPane(chart, series, cd) {
+  const f = cd && cd.focus;
+  if (!f) return;
+  chart.timeScale().setVisibleLogicalRange({ from: f.from, to: f.to });
+  series.applyOptions({ autoscaleInfoProvider: () => ({ priceRange: { minValue: f.lo, maxValue: f.hi } }) });
+}
+</script>
+"""
+OVERLAP_CSS = """<style>
+tr.lvl-row.overlap-row td { color:var(--text-faint); font-style:italic; }
+.overlap-row .contracts-cell > *, .overlap-row .comm-cell { visibility:hidden; }
+</style>
 """
 CHART_JS_OLD_BASE = "      rays: m5.rays.filter(r => !(r.title || '').startsWith('target')),"
 CHART_JS_NEW_BASE = "      rays: m5.rays.filter(r => !/^(target|stop)/.test(r.title || '')),"
@@ -681,7 +810,8 @@ def _patch_page(path, args, trades, counts, setups_n):
     edge_boxes = "".join(
         f'  <div class="box"><strong>{counts.get(k, 0)}</strong>{label}</div>\n'
         for k, label in (("trade", "edges traded"), ("failed", "breaks failed (H1 back inside)"),
-                         ("armed", "broken, no retest yet"), ("never broken", "ranges edges never broken")))
+                         ("armed", "broken, no retest yet"), ("never broken", "ranges edges never broken"),
+                         ("duplicate", "edges sharing another range's trade (merged)")))
     new_boxes = (f'  <div class="box"><strong>&ge;{ra:g}&times; / {bd * 100:.0f}%</strong>'
                  f'breakout candle (M5 ATR / body)</div>\n'
                  f'  <div class="box"><strong>${R_DOLLARS:,.0f}</strong>1R (MES, '
@@ -723,13 +853,22 @@ def _patch_page(path, args, trades, counts, setups_n):
         '    <select id="f-widen-pts">'
         + "".join(f'<option value="{w:g}"{" selected" if w == 3.0 else ""}>{w:g}</option>' for w in WIDEN_PTS)
         + '</select>\n'
-        '    <span class="filter-sublabel">pt by walking back to an earlier P1 candle</span>\n  ') + html[end:]
+        '    <span class="filter-sublabel">pt by walking back to an earlier P1 candle</span>\n  </div>\n'
+        '  <div class="filter-row">\n'
+        '    <span class="filter-label" title="Live, no regen. On: only one position at a time. Walking '
+        'the trades in fill order, a trade that fills while an earlier counted trade is still open '
+        '(its exit under the current target / stop / management / quick-exit settings) is NO TRADE '
+        '(another trade on) and leaves the stats. A trade hidden by any filter does not count, so it '
+        'never blocks a later one. A trade that never hit stop or target holds the slot for the '
+        f'whole {SF.HORIZON_HOURS}h tick window. The edge it came from is still spent.">Position</span>\n'
+        '    <label class="chip"><input type="checkbox" id="f-one-at-a-time" checked> one trade at a '
+        'time</label>\n  ') + html[end:]
     html = _patch_once(html, PICK_JS_OLD, PICK_JS_NEW, "target pick JS")
     html = _patch_once(html, PICK_JS_APPLY_OLD, PICK_JS_APPLY_NEW, "stop cells JS")
     html = _patch_once(html, CHART_JS_OLD_BASE, CHART_JS_NEW_BASE, "chart base rays JS")
     html = _patch_once(html, CHART_JS_OLD_SWAP, CHART_JS_NEW_SWAP, "chart swap rays JS")
     html = _patch_once(html, "const mgmtToggleCb = document.getElementById('mgmt-thrust-trail');",
-                       "['f-quick-hours', 'f-widen-on', 'f-widen-pts'].forEach(id => {\n"
+                       "['f-quick-hours', 'f-widen-on', 'f-widen-pts', 'f-one-at-a-time'].forEach(id => {\n"
                        "  const el = document.getElementById(id);\n"
                        "  if (el) { el.addEventListener('input', recomputeDynStats); "
                        "el.addEventListener('change', recomputeDynStats); }\n"
@@ -744,7 +883,47 @@ def _patch_page(path, args, trades, counts, setups_n):
     # Profit factor and $ PnL beside the stats the strip already carries.
     html = _patch_once(html, "let n = 0, wins = 0, sumR = 0, sumPnl = 0, sumComm = 0,",
                        "let grossWinR = 0, grossLossR = 0, sumUsd = 0;\n"
+                       "  const oneAtATime = _setupOn('f-one-at-a-time');\n"
+                       "  let openUntil = -Infinity, openIdx = null, overlapN = 0;\n"
                        "  let n = 0, wins = 0, sumR = 0, sumPnl = 0, sumComm = 0,", "stats vars")
+
+    # One trade at a time: walk the rows in fill order (not table order, which
+    # the user can sort); see the Position row's tooltip for the rule.
+    html = _patch_once(html, "  document.querySelectorAll('#lvl-table tbody tr.lvl-row').forEach(tr => {\n"
+                             "    const tags = (tr.dataset.dynTags",
+                       "  rowsByFill().forEach(tr => {\n"
+                       "    const tags = (tr.dataset.dynTags", "fill-order walk")
+    html = _patch_once(html, "    if (qxOn && qx) { rVal = qx.r; pnl = qx.pnl; outcome = 'quick_exit'; }\n",
+                       "    if (qxOn && qx) { rVal = qx.r; pnl = qx.pnl; outcome = 'quick_exit'; }\n"
+                       "    let overlap = false;\n"
+                       "    tr.classList.remove('overlap-row');\n"
+                       "    const fillT = parseFloat(tr.dataset.fill);\n"
+                       "    if (oneAtATime && !hidden && !isNoTradeRow && Number.isFinite(fillT)) {\n"
+                       "      if (fillT < openUntil) {\n"
+                       "        overlap = true;\n"
+                       "        overlapN += 1;\n"
+                       "        markOverlap(tr, openIdx);\n"
+                       "      } else {\n"
+                       "        let sec = (qxOn && qx) ? Math.round(_setupNum('f-qx-sec', 30))\n"
+                       "          : parseFloat(useRow ? tr.dataset.mgmtExitSec : tr.dataset.exitSec);\n"
+                       f"        if (!Number.isFinite(sec)) sec = {SF.HORIZON_HOURS * 3600};\n"
+                       "        openUntil = fillT + sec;\n"
+                       "        openIdx = tr.dataset.idx;\n"
+                       "      }\n"
+                       "    }\n", "overlap check")
+    html = _patch_once(html, "    const bucket = isNoTradeRow ? 'no_trade'",
+                       "    const bucket = (isNoTradeRow || overlap) ? 'no_trade'", "overlap bucket")
+    html = _patch_once(html, "    if (hidden || outcomeHidden || isNoTradeRow) return;",
+                       "    if (hidden || outcomeHidden || isNoTradeRow || overlap) return;", "overlap skip")
+    html = _patch_once(html, "  setText('sum-trades', String(n));\n",
+                       "  setText('sum-trades', String(n));\n"
+                       "  setText('sum-overlap', String(overlapN));\n", "overlap count")
+    html = _patch_once(html, "</head><body>", OVERLAP_CSS + "</head><body>", "overlap css")
+    # First render and every resize of a pane (both in _renderPane).
+    if html.count(FOCUS_JS_OLD) != 2:
+        raise RuntimeError(f"page patch 'pane focus': expected 2 matches, found {html.count(FOCUS_JS_OLD)}")
+    html = html.replace(FOCUS_JS_OLD, FOCUS_JS_NEW)
+    html = _patch_once(html, anchor, FOCUS_JS_FN + anchor, "pane focus function")
     html = _patch_once(html, "      sumR += rVal;\n",
                        "      sumR += rVal;\n"
                        "      if (rVal > 0) grossWinR += rVal; else grossLossR -= rVal;\n"
@@ -761,7 +940,9 @@ def _patch_page(path, args, trades, counts, setups_n):
                        "stats text")
     comm_box = 'commissions (MES)</div>'
     html = _patch_once(html, comm_box,
-                       comm_box + '<div class="box"><strong id="sum-pf">-</strong>profit factor</div>'
+                       comm_box + '<div class="box"><strong id="sum-overlap">-</strong>no trade: another '
+                       'trade on</div>'
+                       '<div class="box"><strong id="sum-pf">-</strong>profit factor</div>'
                        '<div class="box"><strong id="sum-gross-usd">-</strong>gross $ (MES)</div>'
                        '<div class="box"><strong id="sum-net-usd">-</strong>net $ after commissions</div>'
                        '<div class="box"><strong id="sum-net-r">-</strong>net R after commissions</div>',
@@ -801,7 +982,9 @@ instead walks back to an earlier P1 candle when that stop is tighter than a thre
 retest came within N hours of P1 (a live control in the Trades tab, default {args.quick_hours:g}h), the
 lowest low (short) / highest high (long) since P1 -- M5 candles from P1, plus the real trades inside the
 retest candle before the touch; otherwise ss_m5_confl2's opposite-M5-level-after-the-zigzag-pivot target,
-else its swing-extreme target. Exits, MAE/MFE and everything in the charts are resolved on real ticks by
+else its swing-extreme target. Nested ranges picking the same M5 level make one trade. ONE TRADE AT A
+TIME (the Position toggle, on by default): a trade that fills while an earlier one is still open is
+NO TRADE (another trade on). Exits, MAE/MFE and everything in the charts are resolved on real ticks by
 the same code as the ss_m5_confl2 reports. {eod} Sizing: 1R = ${R_DOLLARS:,.0f} on MES
 (${C2.MES_POINT_VALUE:g}/pt), contracts rounded down, ${MES_COMMISSION_RT} per contract round trip on
 top of the risk.</p>"""
@@ -837,6 +1020,10 @@ def render(args):
     charts, rows_html = [], []
     for idx, res in enumerate(results):
         chart_entry, row_html = C2._render_row(idx, res, chart_stacks, fps)
+        if res["filled"]:     # fill instant, for the one-trade-at-a-time walk in the page
+            fill = f'{pd.Timestamp(res["touch_time_alt"]).tz_convert("UTC").timestamp():.3f}'
+            row_html = _patch_once(row_html, f'data-idx="{idx}" data-key=',
+                                   f'data-idx="{idx}" data-fill="{fill}" data-key=', "fill attr")
         charts.append(chart_entry)
         rows_html.append(row_html)
     C2._finish_report(args, results, results, results, filled, skipped, reason_counts,

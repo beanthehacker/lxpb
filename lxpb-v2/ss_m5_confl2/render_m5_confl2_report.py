@@ -4768,6 +4768,27 @@ function quickExitResult(tr, useMgmt) {
   const pnl = q.c[sec] - _setupNum('f-qx-slip', 0.25);
   return { r: pnl / parseFloat(tr.dataset.risk), pnl: pnl };
 }
+// The review-workflow filters (Status / Valid / Replayed / Notes) are only
+// ever applied by the shared applyReviewFilters, which hides rows but knows
+// nothing of the stats -- so a row hidden by them used to stay in every
+// total. reviewFilterOk mirrors those four tests for the stats loop below,
+// and the wrapper re-runs the stats whenever the shared code re-applies them
+// (a filter chip, a row's own Reviewed/Valid/Replayed box, a note, an import).
+function reviewFilterOk(tr) {
+  const on = sel => Array.from(document.querySelectorAll(sel + ':checked')).map(c => c.value);
+  const note = tr.querySelector('.trade-note');
+  const hasNotes = note ? note.value.trim().length > 0 : false;
+  return on('.f-review-status').includes(tr.classList.contains('is-reviewed') ? 'reviewed' : 'unreviewed')
+    && on('.f-review-valid').includes(tr.classList.contains('is-valid') ? 'valid' : 'not_valid')
+    && on('.f-review-replay').includes(tr.classList.contains('is-replayed') ? 'replayed' : 'not_replayed')
+    && on('.f-review-notes').includes(hasNotes ? 'has_notes' : 'no_notes');
+}
+const _applyReviewFiltersBase = applyReviewFilters;
+let _inDynStats = false;
+applyReviewFilters = function() {
+  _applyReviewFiltersBase();
+  if (!_inDynStats) recomputeDynStats();
+};
 function recomputeDynStats() {
   applyTargetModes();
   applyPreP1Er();
@@ -4819,7 +4840,8 @@ function recomputeDynStats() {
     // value) set once at render time, never rewritten by a live control.
     const vspikeoffsHidden = !numFilterOk(tr, 'vspikeoffs');
     const setupHidden = !setupPass(tr);
-    const hidden = rrHidden || daygapHidden || h1gapHidden || mingapHidden || erHidden || p1ratioHidden || vspikeoffsHidden || setupHidden || (isolateTags.length > 0
+    const reviewHidden = !reviewFilterOk(tr);
+    const hidden = reviewHidden || rrHidden || daygapHidden || h1gapHidden || mingapHidden || erHidden || p1ratioHidden || vspikeoffsHidden || setupHidden || (isolateTags.length > 0
       ? !tags.some(t => isolateTags.includes(t))
       : (excludeTags.length > 0 && tags.some(t => excludeTags.includes(t))));
     tr.classList.toggle('dyn-hidden', hidden);
@@ -4888,9 +4910,15 @@ function recomputeDynStats() {
   // SAME R >= filter (numFilterOk, data-target "rr") against tr.dataset.rr,
   // which applyTargetModes() just rewrote for whichever target rule is now
   // ticked -- re-run it so that pass doesn't go stale either.
-  applyReviewFilters();
+  _inDynStats = true;
+  try { applyReviewFilters(); } finally { _inDynStats = false; }
 }
 document.querySelectorAll('.f-dyn-exclude, .f-target-mode, .f-outcome').forEach(cb => cb.addEventListener('change', recomputeDynStats));
+// The shared code bound its own review-chip listeners to the ORIGINAL
+// applyReviewFilters before the wrapper above existed, so those chips need
+// their own stats trigger.
+document.querySelectorAll('.f-review-status, .f-review-valid, .f-review-replay, .f-review-notes')
+  .forEach(cb => cb.addEventListener('change', recomputeDynStats));
 // The f-dyn-isolate radios have NO shared name, so each is its own group and
 // several Only tags can be on at once (rows carrying ANY picked tag show).
 // A native radio can't uncheck itself by being clicked again, so remember
