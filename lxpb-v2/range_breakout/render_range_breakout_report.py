@@ -10,9 +10,20 @@ H1 RANGE BREAKOUT -> M5 LXPB RETEST. Rules set by the user 2026-09-25:
      (its outer range carries on).
   2. EDGES. Each box edge takes at most ONE trade and stays valid until it
      has taken it -- however long that is.
-  3. BREAKOUT. An M5 candle that opens inside the box, closes beyond the edge
-     and is strong: range >= --bo-range-atr x ATR(21) of the M5 series as of
-     the previous close, body >= --bo-body of its range. It ARMS the edge.
+  3. BREAKOUT. A RUN of consecutive M5 candles that each close in the
+     breakout direction (down: close < open; up: close > open), judged as
+     one combined candle (first open, last close, highest high, lowest
+     low): it opens inside the box, closes beyond the edge and is strong:
+     range >= --bo-range-atr x ATR(21) of the M5 series as of the close
+     before its first candle, body >= --bo-body of its range. A single
+     candle is a run of one. The run starts at the first candle of the
+     same-direction streak that opens inside the box and carries on while
+     candles keep closing that way -- beyond the edge too -- ending at the
+     first candle that closes the other way or flat; no length limit (user,
+     2026-09-26: 6 Jan 2026 19:55-20:05 PT, no single candle strong and
+     beyond, is a breakout). It is known, and ARMS the edge, at the first
+     candle where some stretch of the run ending there closes beyond the
+     edge and is strong. Only the edge's FIRST breakout counts.
   4. FAILED BREAK. If an H1 candle closes back inside the box after the
      breakout (the H1 candle holding the breakout candle included) before the
      trade fills, the break failed: that edge is finished, no trade. The
@@ -25,8 +36,9 @@ H1 RANGE BREAKOUT -> M5 LXPB RETEST. Rules set by the user 2026-09-25:
      way, 2026-01-09). A failure never touches the opposite edge.
   5. ENTRY. The first retest (M5 level ledger, plain-P0s TRACKED) of an M5
      LLPB (breakout below -> short) / LHPB (breakout above -> long) that
-     FORMED during the range (from its first candle up to the breakout) and
-     whose P1 is a breakout candle of that edge. Filled as a plain limit at
+     FORMED during the range (from its first candle up to the candle before
+     the breakout run) and whose P1 is a candle of that run, retested after
+     the candle that armed the edge. Filled as a plain limit at
      the level's price on real ticks (render_ss_confl_finetune_report.
      find_alt_fill, no chasing).
   6. STOP. One tick beyond that level's own P1 candle: above its high for a
@@ -156,7 +168,8 @@ def _m5_arrays():
     o, hi, lo, c = (m5[x].to_numpy() for x in ("open", "high", "low", "close"))
     rng = hi - lo
     body = np.where(rng > 0, np.abs(c - o) / np.where(rng > 0, rng, 1), 0.0)
-    _CACHE["arr"] = dict(t=m5.index, o=o, h=hi, l=lo, c=c, rng_atr=rng / atr_prev, body=body,
+    _CACHE["arr"] = dict(t=m5.index, o=o, h=hi, l=lo, c=c, atr_prev=atr_prev,
+                         rng_atr=rng / atr_prev, body=body,
                          hpos=h.index.searchsorted(m5.index, side="right") - 1,
                          h_close=h.close.to_numpy())
     return _CACHE["arr"]
@@ -181,6 +194,41 @@ def _box_arrays(r, n_h):
     return j0, hi, lo
 
 
+def _first_breakout(i0, is_long, ok, ehi, elo, ra, bd):
+    """The edge's first breakout run, as offsets from i0: (s0, k, e, s, rng_atr,
+    body), or None. Every candle of the run closes in the breakout direction;
+    s0 is its first candle that opens inside the box, e its last candle (the
+    one before the first candle closing the other way or flat), k the candle
+    that arms it: the first where some stretch s..k of the run (s opening
+    inside the box) closes beyond the edge and, as one candle, has a range
+    >= ra x ATR as of the close before s and a body >= bd of that range. A
+    stretch of one is the single-candle breakout."""
+    a = _m5_arrays()
+    o, hi, lo, c = (a[x][i0:] for x in ("o", "h", "l", "c"))
+    atr = a["atr_prev"][i0:]
+    live = ok & ~np.isnan(ehi)
+    run = (c > o) if is_long else (c < o)
+    inside = live & run & (o >= elo) & (o <= ehi)
+    beyond = live & run & ((c > ehi) if is_long else (c < elo))
+    n = len(o)
+    streak = np.cumsum(~run)             # one id per same-direction streak
+    first_in = pd.Series(np.where(inside, np.arange(n), n)).groupby(streak).cummin().to_numpy()
+    for k in np.flatnonzero(beyond & (first_in <= np.arange(n))):
+        for s in range(first_in[k], k + 1):
+            if not inside[s]:
+                continue
+            span = hi[s:k + 1].max() - lo[s:k + 1].min()
+            if span <= 0 or not atr[s] > 0:
+                continue
+            body = abs(c[k] - o[s]) / span
+            if span / atr[s] >= ra and body >= bd:
+                e = k
+                while e + 1 < n and run[e + 1]:
+                    e += 1
+                return first_in[k], k, e, s, span / atr[s], body
+    return None
+
+
 def _walk_edge(r, side, j0, bhi, blo, ra, bd, levels):
     """One edge of one range -> a setup dict. outcome: 'trade', 'failed',
     'never broken' or 'armed' (broken, no retest yet)."""
@@ -192,13 +240,10 @@ def _walk_edge(r, side, j0, bhi, blo, ra, bd, levels):
     ok = (hp >= 0) & (hp < len(bhi))
     hp = np.clip(hp, 0, len(bhi) - 1)
     ehi, elo = bhi[hp], blo[hp]
-    o, c = a["o"][i0:], a["c"][i0:]
-    beyond = (c > ehi) if is_long else (c < elo)
-    strong = (a["rng_atr"][i0:] >= ra) & (a["body"][i0:] >= bd)
-    cand = np.flatnonzero(ok & ~np.isnan(ehi) & (o >= elo) & (o <= ehi) & beyond & strong)
+    bo = _first_breakout(i0, is_long, ok, ehi, elo, ra, bd)
     s = dict(range=r, side=side, level_type=lt, is_long=is_long, outcome="never broken")
     # The failed-break watch starts at whichever comes first: the H1 candle
-    # holding the first strong M5 breakout, the range's own H1 break candle on
+    # holding the candle that arms the breakout, the range's own H1 break candle on
     # this side (a gap break included), or ANY H1 close beyond this edge -- a
     # break on weak M5 candles still takes price through the edge, so an H1
     # close back inside after it finishes the edge too. That covers the edge
@@ -209,7 +254,7 @@ def _walk_edge(r, side, j0, bhi, blo, ra, bd, levels):
         past = np.flatnonzero((hc > bhi) if is_long else (hc < blo))
     brks = ([r["e"]] if r["status"] == "broken" and r["break_dir"] == side else []) + \
            ([j0 + past[0]] if len(past) else [])
-    starts = ([a["hpos"][i0 + cand[0]]] if len(cand) else []) + brks
+    starts = ([a["hpos"][i0 + bo[1]]] if bo else []) + brks
     if not starts:
         return s
     if brks:
@@ -224,19 +269,17 @@ def _walk_edge(r, side, j0, bhi, blo, ra, bd, levels):
             fail_t = h.index[j] + H1
             break
     s["fail_t"] = fail_t
-    if fail_t is not None:
-        cand = cand[a["t"][i0 + cand] < fail_t]
-    if not len(cand):
+    if bo is None or (fail_t is not None and a["t"][i0 + bo[1]] >= fail_t):
         if fail_t is not None:
             s["outcome"] = "failed"      # H1 broke, came back inside before any strong M5 breakout
         return s
-    k1 = i0 + cand[0]
-    s.update(t_bo=a["t"][k1], edge=float(ehi[cand[0]] if is_long else elo[cand[0]]),
-             box=(float(ehi[cand[0]]), float(elo[cand[0]])),
-             bo_rng_atr=float(a["rng_atr"][k1]), bo_body=float(a["body"][k1]))
-    bo_times = a["t"][i0 + cand]
-    lv = levels[(levels["type"] == lt) & levels["breakout_time"].isin(bo_times)
-                & (levels["formation_time"] >= r["start"]) & (levels["fate"] == "retested")]
+    s0, k, e, _, bo_ra, bo_bd = bo
+    t_run0, t_bo = a["t"][i0 + s0], a["t"][i0 + k]
+    s.update(t_bo=t_bo, t_run=(t_run0, a["t"][i0 + e]), edge=float(ehi[k] if is_long else elo[k]),
+             box=(float(ehi[k]), float(elo[k])), bo_rng_atr=float(bo_ra), bo_body=float(bo_bd))
+    lv = levels[(levels["type"] == lt) & levels["breakout_time"].isin(a["t"][i0 + s0:i0 + e + 1])
+                & (levels["formation_time"] >= r["start"]) & (levels["formation_time"] < t_run0)
+                & (levels["fate"] == "retested") & (levels["retest_time"] > t_bo)]
     if fail_t is not None:
         lv = lv[lv["retest_time"] < fail_t]
     if lv.empty:
@@ -389,7 +432,7 @@ def process_setup(i, s, args):
                   "range_end": r["end"],
                   "range_status": r["status"], "inner": r["outer"] is not None,
                   "side": s["side"], "box": s["box"], "edge": s["edge"], "t_bo": s["t_bo"],
-                  "bo_rng_atr": s["bo_rng_atr"], "bo_body": s["bo_body"]},
+                  "t_run": s["t_run"], "bo_rng_atr": s["bo_rng_atr"], "bo_body": s["bo_body"]},
     }
     res["p1_range_ratio_by_window"] = C2._m5_p1_range_ratio_by_window(lv["breakout_time"])
     k = C2.M5_RANGE_RATIO_WINDOW_DEFAULT - 1
@@ -521,11 +564,13 @@ def _add_range_box(chart_m5, res):
         view["stopRay"] = {**tmpl, "points": pts, "title": title, "label": title}
     snap = C2._snapper(chart_m5)
     t = snap(st["t_bo"]) if snap else None
+    t0, t1 = (pd.Timestamp(x).tz_convert(PT) for x in st["t_run"])
+    run = f" (run {t0:%H:%M}-{t1:%H:%M})" if t1 > t0 else ""
     if t is not None:
         chart_m5["markers"].append({
             "time": t, "position": "belowBar" if res["is_long"] else "aboveBar",
             "color": BOX_COLOR, "shape": "square",
-            "text": f"BO {st['bo_rng_atr']:.1f}xATR {st['bo_body'] * 100:.0f}%"})
+            "text": f"BO {st['bo_rng_atr']:.1f}xATR {st['bo_body'] * 100:.0f}%" + run})
         chart_m5["markers"].sort(key=lambda m: m["time"])
     chart_m5["title"] += (f"  |  H1 range {R._to_pt_str(st['range_start'])} (confirmed "
                           f"{R._to_pt_str(st['range_confirm'])}) box {lo:.2f}-{hi:.2f}")
@@ -996,15 +1041,17 @@ def _lead_html(args):
     return f"""<p class="lead">H1 RANGE BREAKOUT &rarr; M5 LXPB RETEST (rules set 2026-09-25).
 RANGE: every patterns-pure find_range candidate on H1, inner or outer; its box is the point-in-time
 box while find_range tracks it and its last box after a break or cancel. EDGES: each box edge takes at
-most one trade and stays valid until it has taken it. BREAKOUT: an M5 candle that opens inside the box
-and closes beyond the edge, with a range of at least {args.bo_range_atr:g}&times; the M5 ATR(21) and a
-body of at least {args.bo_body * 100:.0f}% of its range, arms the edge. FAILED BREAK: an H1 candle closing
+most one trade and stays valid until it has taken it. BREAKOUT: a run of consecutive M5 candles all
+closing in the breakout direction, taken as one candle, that opens inside the box and closes beyond the
+edge, with a range of at least {args.bo_range_atr:g}&times; the M5 ATR(21) and a body of at least
+{args.bo_body * 100:.0f}% of its range, arms the edge (a single candle is a run of one; the run carries on
+until a candle closes the other way or flat). Only the edge's first breakout counts. FAILED BREAK: an H1 candle closing
 back inside the box before the fill ends that edge with no trade, watched from the breakout or from the
 range's own H1 break candle on that side, whichever comes first (an H1 break made only of weak M5
 candles arms nothing, but a close back inside after it still ends the edge); the other edge is
 unaffected. ENTRY:
 the first retest of an M5 LLPB (break below, short) / LHPB (break above, long) that formed during the
-range and was broken by a breakout candle of that edge, filled as a plain limit at the level on real
+range before the breakout run and was broken by a candle of that run, filled as a plain limit at the level on real
 ticks. STOP: one tick beyond that level's own P1 (breakout) candle; a live Stop toggle in the Trades tab
 instead walks back to an earlier P1 candle when that stop is tighter than a threshold. TARGET: if the
 retest came within N hours of P1 (a live control in the Trades tab, default {args.quick_hours:g}h), the
