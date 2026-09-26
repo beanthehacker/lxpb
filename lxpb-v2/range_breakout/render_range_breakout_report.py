@@ -19,7 +19,10 @@ H1 RANGE BREAKOUT -> M5 LXPB RETEST. Rules set by the user 2026-09-25:
      watch starts at the range's own H1 break candle on that side when that
      comes first: an H1 break made of weak M5 candles arms nothing, but an H1
      close back inside after it still finishes the edge (user, 2026-09-25).
-     The opposite edge is unaffected.
+     The same goes for ANY H1 close beyond an edge, not just the range's own
+     break: a range that broke down and later closed above its top and back
+     inside has spent its top edge too (a month-old range took a trade that
+     way, 2026-01-09). A failure never touches the opposite edge.
   5. ENTRY. The first retest (M5 level ledger, plain-P0s TRACKED) of an M5
      LLPB (breakout below -> short) / LHPB (breakout above -> long) that
      FORMED during the range (from its first candle up to the breakout) and
@@ -195,15 +198,22 @@ def _walk_edge(r, side, j0, bhi, blo, ra, bd, levels):
     cand = np.flatnonzero(ok & ~np.isnan(ehi) & (o >= elo) & (o <= ehi) & beyond & strong)
     s = dict(range=r, side=side, level_type=lt, is_long=is_long, outcome="never broken")
     # The failed-break watch starts at whichever comes first: the H1 candle
-    # holding the first strong M5 breakout, or the range's own H1 break candle
-    # on this side -- a break on weak M5 candles still ends the range, so an
-    # H1 close back inside after it finishes the edge too.
-    j_brk = r["e"] if r["status"] == "broken" and r["break_dir"] == side else None
-    starts = ([a["hpos"][i0 + cand[0]]] if len(cand) else []) + ([j_brk] if j_brk is not None else [])
+    # holding the first strong M5 breakout, the range's own H1 break candle on
+    # this side (a gap break included), or ANY H1 close beyond this edge -- a
+    # break on weak M5 candles still takes price through the edge, so an H1
+    # close back inside after it finishes the edge too. That covers the edge
+    # the range did not break on: after breaking down, price that later
+    # closes above the top and comes back inside has spent the top edge.
+    hc = a["h_close"][j0:j0 + len(bhi)]
+    with np.errstate(invalid="ignore"):
+        past = np.flatnonzero((hc > bhi) if is_long else (hc < blo))
+    brks = ([r["e"]] if r["status"] == "broken" and r["break_dir"] == side else []) + \
+           ([j0 + past[0]] if len(past) else [])
+    starts = ([a["hpos"][i0 + cand[0]]] if len(cand) else []) + brks
     if not starts:
         return s
-    if j_brk is not None:
-        s["t_break"] = h.index[j_brk]
+    if brks:
+        s["t_break"] = h.index[min(brks)]
     fail_t = None
     for j in range(min(starts), len(h)):
         bh, bl = bhi[j - j0], blo[j - j0]
