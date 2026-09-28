@@ -331,5 +331,7 @@ The layout does this by itself, so a new column needs no width tuning:
   page's scroll width equals the window width and the table font is still
   the default (no fallback shrink).
 
-Status: applied by hand to `public/reports/range_breakout/2025.html` for
-review; not yet in `range_breakout/render_range_breakout_report.py`.
+All of it lives in `range_breakout/report_layout.html` (CSS + script), which
+`render_range_breakout_report.py` inserts just before `</body>` of every
+report, plus a viewport meta tag. Change the layout there, never by hand in a
+report. The 2026 report picks it up on its next regen.

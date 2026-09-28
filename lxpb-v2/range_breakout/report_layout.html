@@ -1,0 +1,235 @@
+<!-- Page layout for the range_breakout reports (see the "Report layout"
+     section of CLAUDE.md). render_range_breakout_report._patch_page inserts
+     this whole file just before </body>, so its rules come last and win over
+     the shared report CSS without editing it. Three parts: iPad/touch-only
+     layout, desktop fit-to-window, and the compact Tags / Bias columns. -->
+<style>
+/* ---- iPad / touch-tablet layout (iPad Air 11": 820x1180 / 1180x820) ----
+   Everything here sits inside one touch-only media query, so a desktop
+   (mouse/trackpad) browser never sees it. On a touch tablet:
+   1. The trade table scrolls inside its own box, sized to the window: the
+      header row stays pinned while scrolling down, Trade Id stays pinned
+      while scrolling right, and the PAGE never scrolls sideways.
+   2. An expanded chart row is pinned to the box's VISIBLE width (--wrap-w,
+      set by the script below), not the full table width, so the
+      charts always fit on screen whatever the horizontal scroll position.
+   3. Chart heights follow the screen height instead of a fixed 516px.
+   4. Larger tap targets; 16px form text so iPadOS doesn't zoom on focus. */
+@media (hover: none) and (pointer: coarse) {
+  :root { --pane-h: clamp(360px, 62vh, 760px); }
+  html { -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+  body { overflow-x:hidden; }
+
+  .table-wrap { overflow:auto; max-height:calc(100vh - 16px); max-height:calc(100dvh - 16px);
+                border:1px solid var(--border); border-radius:6px;
+                overscroll-behavior:contain; }
+  .table-wrap > table { border:none; border-radius:0; }
+  #lvl-table tr.lvl-row > td:first-child,
+  #lvl-table thead th:first-child { position:sticky; left:0; }
+  #lvl-table thead th:first-child { z-index:3; }
+  #lvl-table tr.lvl-row > td:first-child { z-index:1; background:var(--surface);
+                                           box-shadow:inset -1px 0 0 var(--border); }
+  #lvl-table tr.lvl-row.band-1 > td:first-child { background:color-mix(in srgb, #60a5fa 5.5%, var(--surface)); }
+  #lvl-table tr.lvl-row.is-reviewed > td:first-child { background:var(--done); }
+  #lvl-table tr.lvl-row.is-invalid > td:first-child { background:var(--invalid); }
+
+  .chart-stack { position:sticky; left:7px; width:calc(var(--wrap-w, 100vw) - 14px); }
+  .chart-h1, .chart-col-1m .chart-cell { height:var(--pane-h); }
+  .chart-col-1s { height:var(--pane-h); grid-template-rows:minmax(0,3fr) minmax(0,1fr) minmax(0,1fr); }
+
+  .filter-row { flex-wrap:wrap; row-gap:6px; }
+  .pctile-wrap { overflow-x:auto; }
+  textarea.trade-note { width:240px; height:90px; }
+
+  .btn { padding:9px 14px; }
+  .chip { padding:6px 12px; }
+  .chip.chip-iso { padding:3px 10px 3px 7px; }
+  .expand-btn { padding:6px 12px; }
+  input[type="checkbox"], input[type="radio"] { width:20px; height:20px; }
+  .tab-btn { padding:10px 16px; }
+  select, textarea, input[type="text"], input[type="number"], input:not([type]) { font-size:16px; }
+}
+/* ---- Desktop (mouse/trackpad): the trade table always fits the window ----
+   RULE: on a 24" monitor (1920px wide) the whole row is visible with no
+   horizontal scrollbar, however many columns the table has. Two layers:
+   1. CSS: every header and cell may wrap between words, never inside one
+      (times and prices stay on one line), padding is tighter, the Notes box
+      follows its column's width.
+   2. Script below: if the table is STILL wider than the window after
+      wrapping (a column was added), the table's font steps down until it
+      fits, never below 9px. It re-fits on every window resize.
+   Expanded chart rows take the table's width and never widen it. */
+@media (hover: hover) and (pointer: fine) {
+  #lvl-table { width:100%; }
+  #lvl-table th, #lvl-table td { white-space:normal; padding:4px 3px; }
+  #lvl-table th { overflow-wrap:break-word; }
+  #lvl-table td.time-stacked, #lvl-table td.time-stacked .time-part { white-space:nowrap; }
+  #lvl-table .src-tag, #lvl-table .dyn-tag-badge, #lvl-table .mes-flag,
+  #lvl-table .bias-bull, #lvl-table .bias-bear, #lvl-table .trap-bull, #lvl-table .trap-bear {
+    white-space:normal; }
+  #lvl-table textarea.trade-note { width:100%; min-width:140px; max-width:360px; }
+  #lvl-table tr.chart-row > td { padding:6px 0; }
+  .chart-stack { width:0; min-width:100%; }
+}
+/* ---- Tags column: never wider than Type (every device) ----
+   Each tag badge shows a 2-3 letter code (script below), stacked one per
+   line; the full label and its detail are in the badge's hover text and
+   the code legend is in the Tags header's hover text. */
+#lvl-table td.tags-cell { max-width:none; white-space:normal; }
+#lvl-table td.tags-cell .dyn-tag-badge { display:block; margin:0 auto 2px; padding:1px 3px;
+                                         text-align:center; white-space:nowrap; }
+/* ---- Bias column: never wider than Type either (every device) ----
+   One short code per line (script below): H hammer, S shooting star,
+   SFP swing failure, HoH / LoSS retest, V1..V9 trap variant; -N =
+   closed H1 candles back, ✓ = trap confirmed. Green bullish, red bearish,
+   italic = trap (the arrows are dropped to save width). */
+#lvl-table td.bias-cell { max-width:none; }
+#lvl-table td.bias-cell .bias-code { display:block; white-space:nowrap; font-size:0.86em; line-height:1.3; }
+/* iPad portrait: charts one per row, tighter page. */
+@media (hover: none) and (pointer: coarse) and (max-width: 1000px) {
+  body { padding:12px; }
+  .chart-row-2col, .footprint-pair { grid-template-columns:1fr; }
+  .chart-col-1s { height:calc(var(--pane-h) * 0.8); }
+  .toolbar { margin-left:0; flex-wrap:wrap; }
+}
+</style>
+<script>
+/* Tags column: replace each tag badge's label with a short code so the
+   column is never wider than Type. The full label goes first in the
+   badge's hover text; the legend goes on the Tags header. Badges the page
+   re-draws later (target-rule toggles) are shortened again as they appear. */
+(function () {
+  const t = document.getElementById('lvl-table');
+  if (!t) return;
+  const CODES = [            // [label prefix, code, legend wording]
+    ['VOL SPIKE', 'VS', 'volume spike'],
+    ['SPIKE CONFL', 'SC', 'H1 spike confluence'],
+    ['FADING-BIAS', 'FB', 'fading bias'],
+    ['BIAS SERVED', 'BS', 'bias served'],
+    ['NEWS / THIN', 'NT', 'news / thin book'],
+    ['GLOBEX OPEN', 'GO', 'Globex/ETH open fill'],
+    ['SWERVE BLOCKED', 'SWB', 'swerve blocked (not taken)'],
+    ['SWERVED', 'SW', 'swerved'],
+    ['CREST', 'CR', 'crest refined'],
+    ['R < MIN', 'R<', 'R below minimum'],
+    ['EOD FLAT', 'EOD', 'end-of-day flat'],
+    ['MGMT', 'MG', 'trade management'],
+  ];
+  const codeFor = (label) => {
+    const u = label.toUpperCase();
+    const hit = CODES.find(([p]) => u.startsWith(p));
+    if (hit) return hit[1];
+    return u.split(/[\s\-\/_]+/).filter(Boolean).map(w => w[0]).join('').slice(0, 3) || '?';
+  };
+  const shorten = (root) => {
+    root.querySelectorAll('.tags-cell .dyn-tag-badge:not([data-full])').forEach(el => {
+      const full = el.textContent.trim();
+      el.dataset.full = full;
+      el.title = full + (el.title ? '\n\n' + el.title : '');
+      el.textContent = codeFor(full);
+    });
+  };
+  shorten(t);
+  const th = t.tHead && t.tHead.rows[0].cells[
+    [...t.querySelectorAll('tbody tr.lvl-row')][0]?.querySelector('.tags-cell')?.cellIndex ?? 1];
+  if (th) th.title = 'Codes: ' + CODES.map(([, c, w]) => c + ' = ' + w).join(', ')
+                     + '. Hover a badge for its full label and detail.\n\n' + (th.title || '');
+  new MutationObserver((muts) => {
+    if (muts.some(m => m.target.closest && m.target.closest('.tags-cell'))) shorten(t);
+  }).observe(t.tBodies[0], { childList: true, subtree: true });
+})();
+/* Bias column: same idea. Each bias / trap entry becomes one short code
+   per line, keeping its colour class; the cell's original text goes first
+   in its hover text and the legend on the Bias header. Anything not
+   recognised is left exactly as it was. */
+(function () {
+  const t = document.getElementById('lvl-table');
+  if (!t) return;
+  const NAMES = { hammer: 'H', star: 'S', sfp: 'SFP' };
+  const RETEST = { 'HoH retest': 'HoH', 'LoSS retest': 'LoSS' };
+  const codesFor = (cls, text) => {
+    const body = text.trim().slice(1).trim();   // drop the leading arrow: colour carries direction
+    const out = [];
+    if (/^trap-/.test(cls)) {
+      const re = /V(\d(?:\.\d)?)·(?:H1|M5)(✓?)/g;
+      let m;
+      while ((m = re.exec(body))) out.push('V' + m[1] + m[2]);
+    } else {
+      const re = /(HoH retest|LoSS retest)|([a-z]+)@(-?\d+)/g;
+      let m;
+      while ((m = re.exec(body))) {
+        if (m[1]) out.push(RETEST[m[1]]);
+        else if (NAMES[m[2]]) out.push(NAMES[m[2]] + m[3]);
+        else return null;
+      }
+    }
+    return out.length ? out : null;
+  };
+  t.querySelectorAll('td.bias-cell').forEach(td => {
+    const spans = [...td.querySelectorAll(':scope > .bias-bull, :scope > .bias-bear, :scope > .trap-bull, :scope > .trap-bear')];
+    if (!spans.length) return;
+    const parts = spans.map(sp => [sp.className, codesFor(sp.className, sp.textContent)]);
+    if (parts.some(([, c]) => !c)) return;
+    td.title = spans.map(sp => sp.textContent.trim()).join('\n') + (td.title ? '\n\n' + td.title : '');
+    td.innerHTML = '';
+    parts.forEach(([cls, codes]) => codes.forEach(code => {
+      const s = document.createElement('span');
+      s.className = cls + ' bias-code';
+      s.textContent = code;
+      td.appendChild(s);
+    }));
+  });
+  const idx = t.querySelector('tbody td.bias-cell')?.cellIndex;
+  const th = idx != null ? t.tHead.rows[0].cells[idx] : null;
+  if (th) th.title = 'Codes: H = hammer, S = shooting star, SFP = swing failure, HoH / LoSS = '
+    + 'high-of-hammer / low-of-shooting-star retest, V1..V9 = trap variant '
+    + '(V1-V4 on H1, V6-V9 on M5); -N = that many closed H1 candles back, '
+    + '✓ = trap confirmed; green = bullish, red = bearish, italic = trap. '
+    + 'Hover a cell for its full text and detail.\n\n' + (th.title || '');
+})();
+/* Touch tablets only (same query as the CSS above): feed the table box's
+   visible width to CSS (--wrap-w) so an expanded chart row fits the screen,
+   not the full table width. Skips 0 widths (tab hidden) so charts don't
+   collapse while the other tab is open. */
+(function () {
+  if (!window.matchMedia('(hover: none) and (pointer: coarse)').matches) return;
+  const wrap = document.querySelector('.table-wrap');
+  if (!wrap) return;
+  const set = () => {
+    const w = wrap.clientWidth;
+    if (w > 0) document.documentElement.style.setProperty('--wrap-w', w + 'px');
+  };
+  new ResizeObserver(set).observe(wrap);
+  set();
+})();
+/* Desktop only (same query as the CSS above): if the trade table is still
+   wider than the window after wrapping, step its font down (binary search,
+   9px floor) until the whole row fits. Re-runs on window resize and tab
+   switch; skips while the Trades tab is hidden. */
+(function () {
+  if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+  const t = document.getElementById('lvl-table');
+  if (!t) return;
+  const wrap = t.parentElement;
+  const MIN_PX = 9;
+  let raf = 0;
+  const fit = () => {
+    raf = 0;
+    const avail = wrap.clientWidth;
+    if (!avail) return;
+    t.style.fontSize = '';
+    if (t.offsetWidth <= avail) return;
+    let lo = MIN_PX, hi = parseFloat(getComputedStyle(t).fontSize);
+    for (let k = 0; k < 7; k++) {
+      const mid = (lo + hi) / 2;
+      t.style.fontSize = mid + 'px';
+      if (t.offsetWidth <= avail) lo = mid; else hi = mid;
+    }
+    t.style.fontSize = lo + 'px';
+  };
+  const schedule = () => { if (!raf) raf = requestAnimationFrame(fit); };
+  window.addEventListener('resize', schedule);
+  document.querySelectorAll('.tab-btn').forEach(b => b.addEventListener('click', schedule));
+  schedule();
+})();
+</script>

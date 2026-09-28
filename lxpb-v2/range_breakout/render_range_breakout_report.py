@@ -854,7 +854,11 @@ tr.lvl-row.overlap-row td { color:var(--text-faint); font-style:italic; }
 .overlap-row .contracts-cell > *, .overlap-row .comm-cell { visibility:hidden; }
 </style>
 """
-CHART_JS_OLD_BASE = "      rays: m5.rays.filter(r => !(r.title || '').startsWith('target')),"
+# Page layout (iPad/touch layout, desktop fit-to-window, compact Tags/Bias
+# columns): its own file beside this one, inserted just before </body>.
+LAYOUT_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_layout.html")
+VIEWPORT_META = '<meta name="viewport" content="width=device-width, initial-scale=1">'
+CHART_JS_OLD_BASE ="      rays: m5.rays.filter(r => !(r.title || '').startsWith('target')),"
 CHART_JS_NEW_BASE = "      rays: m5.rays.filter(r => !/^(target|stop)/.test(r.title || '')),"
 CHART_JS_OLD_SWAP = "  m5.rays = m5._base.rays.concat(v ? [v.ray] : []);"
 CHART_JS_NEW_SWAP = ("  m5.rays = m5._base.rays.concat(v ? [v.ray].concat(v.stopRay ? [v.stopRay] : [])"
@@ -1029,6 +1033,13 @@ def _patch_page(path, args, trades, counts, setups_n):
     lead_start = html.index('<p class="lead">M5-native strategy:')
     lead_end = html.index("</p>", lead_start) + len("</p>")
     html = html[:lead_start] + _lead_html(args) + html[lead_end:]
+
+    # Layout last, so its rules win over everything above (CLAUDE.md "Report layout").
+    html = _patch_once(html, '<meta charset="utf-8">',
+                       '<meta charset="utf-8">\n' + VIEWPORT_META, "viewport meta")
+    with open(LAYOUT_HTML_PATH, encoding="utf-8") as f:
+        layout = f.read()
+    html = _patch_once(html, "</body></html>", layout + "</body></html>", "page layout")
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
 
