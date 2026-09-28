@@ -296,6 +296,16 @@ import trap_variants as TV                        # noqa: E402
 from find_sfp import find_sfp                     # noqa: E402  (vendored patterns_pure, on sys.path via R)
 
 SS_CONFL_MIN_DEFAULT = 1
+# Which P0s this report trades (--p0-kinds). "spike-or-swing" is the original
+# population: the M5 ledger is read with plain-P0s UNTRACKED (they end at their
+# own breakout, so only spike/swing P0s ever reach a retest). "all" reads it
+# TRACKED, so a plain-P0 lives on to its retest like any other P0 -- and is
+# then a trade candidate, a confluence member, an entry-pool level, a stop
+# level and a trailing-stop sibling wherever a spike/swing P0 would be.
+# Targets are unaffected: _live_m5_target_candidates already takes plain-P0s
+# either way. See lxpb_levels_cache's "Plain-P0 tracked or untracked".
+P0_KINDS_DEFAULT = "spike-or-swing"
+P0_KINDS_LEDGER = {"spike-or-swing": LC.PLAIN_P0_UNTRACKED, "all": LC.PLAIN_P0_TRACKED}
 M5_CONFLUENCE_N_POINTS_DEFAULT = 10.0  # same-side M5 confluence radius: selection + entry refinement
 MIN_DYNAMIC_TARGET_PTS = 0.25   # one tick: no real floor, just strictly favourable (SF is 1)
 MAX_DYNAMIC_TARGET_PTS = 50.0   # own band (SF is 20); every target rule here shares it
@@ -352,7 +362,7 @@ pd.set_option("display.max_columns", 20)
 # Selection: every M5 retest with same-side M5 confluence >= threshold
 # --------------------------------------------------------------------------
 
-def select_candidates(ss_confl_min, start, end, confluence_points):
+def select_candidates(ss_confl_min, start, end, confluence_points, plain_p0):
     """M5-native candidate rows over the one continuous M5 ledger (see the
     "continuous contracts only" convention in CLAUDE.md -- LC.m5_levels()
     now spans every contract rollover in one state-machine run, so a P0
@@ -362,13 +372,16 @@ def select_candidates(ss_confl_min, start, end, confluence_points):
     since dynamic_target/dynamic_stop need the full ledger, not just the
     confluence subset -- and `seg_idx`, which RAW contract's own ticks
     cover this candidate's own instant, still needed for chart/tick work
-    even though level detection itself no longer cares)."""
+    even though level detection itself no longer cares).
+
+    `plain_p0` is the ledger view, P0_KINDS_LEDGER[--p0-kinds]. With
+    `ss_confl_min` 0 every retest qualifies, with or without confluence."""
     if not np.isfinite(confluence_points) or confluence_points < 0:
         raise ValueError("M5 confluence radius must be finite and non-negative")
     start_ts = pd.Timestamp(start, tz="UTC")
     end_ts = pd.Timestamp(end, tz="UTC") + pd.Timedelta(days=1)  # end date inclusive
     candidates = []
-    m5_ledger = LC.m5_levels(verbose=False, plain_p0=LC.PLAIN_P0_UNTRACKED)
+    m5_ledger = LC.m5_levels(verbose=False, plain_p0=plain_p0)
     if m5_ledger is None or m5_ledger.empty:
         return candidates
     retests = LC.retests(m5_ledger)
@@ -676,8 +689,10 @@ def _target_candidate_still_live(bars, level_type, price, breakout_time, as_of):
     consolidating swing -- see lxpb.py's P0 kinds) has gone untouched since
     its own breakout, as of `as_of`.
 
-    This report reads the ledger with plain-P0s UNTRACKED (see
-    lxpb_levels_cache.py), where a plain-P0's death_time is stamped equal to
+    By default this report reads the ledger with plain-P0s UNTRACKED (see
+    lxpb_levels_cache.py and P0_KINDS_LEDGER; `--p0-kinds all` reads it
+    tracked, and this replay still gives targets the same answer, so targets
+    are identical either way), where a plain-P0's death_time is stamped equal to
     its own breakout_time -- entries are spike/swing P0s only, where a level
     needs to have looked like a real turn AT THE TIME to justify trading its
     retest. A TARGET doesn't need that: a price the market broke through and
@@ -1441,6 +1456,16 @@ def process_cluster(cluster, args):
         "dyn_tags": [],
         "filled": False,
     }
+    # Only an `--p0-kinds all` / `--ss-confl-min 0` report can produce these
+    # two (see P0_KINDS_LEDGER): the subject level is a plain-P0, and no
+    # member of the trade had any same-side M5 confluence. Informational
+    # chips, so the old population stays one click away.
+    result["p0_kind"] = row_d.get("p0_kind")
+    result["plain_p0"] = P0_KINDS_LEDGER[getattr(args, "p0_kinds", None) or P0_KINDS_DEFAULT]
+    if result["p0_kind"] == LC.L.P0_PLAIN:
+        result["dyn_tags"].append("plain_p0")
+    if all(c["same_side_m5"].empty for c in cluster):
+        result["dyn_tags"].append("no_confl")
     if swerve is not None:
         result["dyn_tags"].append("swerved" if swerve["moved"] else "swerve_blocked")
     if crest_refine is not None:
@@ -2220,7 +2245,7 @@ def build_chart_stack_for_row(res, m5_only=False):
         # more market structure instead of just more empty space.
         bars_before_retest=2 * SR.M5_BARS_BEFORE_RETEST,
         bars_after_exit=2 * SR.M5_BARS_AFTER_EXIT,
-        extra_context_times=extra_context_times)
+        extra_context_times=extra_context_times, plain_p0=res["plain_p0"])
     if chart_m5 is not None:
         chart_m5["title"] += (f"  |  R {res['r_multiple']:.2f}  |  entry via "
                               f"{res['alt_source']} ({res['group_n']} in group)")
@@ -2279,7 +2304,7 @@ def _build_unfilled_chart_stack(res, args):
         p1_bar_width=P1_BAR_WIDTH, p1_label="M5",
         bars_before_retest=2 * SR.M5_BARS_BEFORE_RETEST,
         bars_after_exit=2 * SR.M5_BARS_AFTER_EXIT,
-        fill_window=(window_start, window_end))
+        fill_window=(window_start, window_end), plain_p0=res["plain_p0"])
     if chart_m5 is not None:
         chart_m5["priceLines"] = []
         chart_m5["title"] += (f"  |  entry via {res['alt_source']} "
@@ -2360,7 +2385,7 @@ def _run_cluster_chunk_subprocess(spec):
     contracts only" convention in CLAUDE.md), not one per contract
     segment."""
     args = spec["args"]
-    m5_ledger = LC.m5_levels(verbose=False, plain_p0=LC.PLAIN_P0_UNTRACKED)
+    m5_ledger = LC.m5_levels(verbose=False, plain_p0=P0_KINDS_LEDGER[args.p0_kinds])
     out = {}
     for pos, cluster in zip(spec["positions"], spec["clusters"]):
         for cand in cluster:
@@ -2893,11 +2918,14 @@ def render(args):
     if not np.isfinite(args.max_alt_fill_hours) or args.max_alt_fill_hours <= 0:
         raise ValueError("Fill-window hours must be finite and positive")
 
+    if not getattr(args, "p0_kinds", None):
+        args.p0_kinds = P0_KINDS_DEFAULT
     candidates = select_candidates(
-        args.ss_confl_min, args.start, args.end, args.m5_confluence_points)
+        args.ss_confl_min, args.start, args.end, args.m5_confluence_points,
+        P0_KINDS_LEDGER[args.p0_kinds])
     radius = SR._fmt_pts(args.m5_confluence_points)
-    print(f"{len(candidates)} M5 retests have SS Confl >= {args.ss_confl_min} "
-          f"(+/-{radius}pt) in [{args.start}, {args.end}]", flush=True)
+    print(f"{len(candidates)} M5 retests ({args.p0_kinds} P0s) have SS Confl >= "
+          f"{args.ss_confl_min} (+/-{radius}pt) in [{args.start}, {args.end}]", flush=True)
     if args.max_rows is not None:
         candidates = candidates[:args.max_rows]
         print(f"--max-rows: processing only the first {len(candidates)}", flush=True)
@@ -3078,6 +3106,16 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
     skip unfilled rows), so those two branches are simply never reached
     when dyn_tags came from an unfilled row's tags alone."""
     out = ""
+    if "plain_p0" in dyn_tags:
+        out += ('<span class="dyn-tag-badge" title="Dynamic filter ‘plain_p0’: the level '
+                'this trade retests is a plain-P0 -- neither a spike nor a consolidating swing '
+                'at its formation. Only an all-P0-kinds report trades these. Informational; '
+                'not excluded from the headline stats by default.">PLAIN-P0</span>')
+    if "no_confl" in dyn_tags:
+        out += ('<span class="dyn-tag-badge" title="Dynamic filter ‘no_confl’: no other '
+                'same-side M5 level was live within the confluence radius at this level&#39;s '
+                'own P1 (SS Confl 0), so an SS Confl &ge; 1 report would not have taken it. '
+                'Informational; not excluded from the headline stats by default.">NO CONFL</span>')
     if "globex_eth_open" in dyn_tags:
         out += (f'<span class="dyn-tag-badge" title="Dynamic filter '
                 f'‘globex_eth_open’: this fill landed at {entry_touch_str}, inside the '
@@ -3640,6 +3678,12 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
         f"if neither is on. With both ticked (the default here: "
         f"{' + '.join(args.default_target_modes)}) a trade takes whichever rule offers the "
         f"FARTHER target.")
+    p0_kinds_phrase = (
+        "ANY P0 KIND -- spike-P0, swing-P0 and plain-P0 alike; a plain-P0 is tracked to its "
+        "retest and counts as a candidate, confluence, entry-pool and stop level exactly like "
+        "the others (PLAIN-P0 badge)"
+        if args.p0_kinds == "all" else
+        "a spike-P0 or swing-P0 (plain-P0s end at their own breakout and are never traded)")
     reason_html = "".join(
         f'<div class="box"><strong>{n}</strong>{reason}</div>'
         for reason, n in sorted(reason_counts.items(), key=lambda kv: -kv[1]))
@@ -3650,6 +3694,7 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
     summary_html = f"""
 <div class="summary">
   <div class="box"><strong>{len(candidates)}</strong>SS Confl &ge; {args.ss_confl_min}</div>
+  <div class="box"><strong>{args.p0_kinds}</strong>P0 kinds traded</div>
   <div class="box"><strong>{len(clusters)}</strong>confluence clusters</div>
   <div class="box"><strong>&plusmn;{radius}pt</strong>M5 confluence radius</div>
   <div class="box"><strong>{args.min_r:.2f}</strong>min R (below: tagged, not skipped)</div>
@@ -3674,8 +3719,8 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
     # live in their own tab (see SR.tab_bar_html / SR.TABS_JS).
     pctile_tab_html = f"""
 <p class="lead">M5-native strategy: the trade signal, entry, stop and target are ALL M5 LXPB
-structure -- there is no H1 level anywhere in this report. SELECT: every M5 LXPB retest in
-[{args.start}, {args.end}] with SAME-SIDE M5 confluence (other M5 levels of the SAME type,
+structure -- there is no H1 level anywhere in this report. SELECT: every M5 LXPB retest of
+{p0_kinds_phrase} in [{args.start}, {args.end}] with SAME-SIDE M5 confluence (other M5 levels of the SAME type,
 confirmed-broken-out and not yet retested as of the subject's own P1 breakout bar) &ge;
 {args.ss_confl_min}, radius &plusmn;{radius}pt. Mutually-confluent M5 levels swept by the
 same bar are merged into one trade (Merged M5 levels column). ENTRY (refined AT THE BREAKOUT
@@ -3935,6 +3980,7 @@ bias's thrust as of the entry, on the same size/body rows that expire a bias.">
 other row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" name="f-dyn-isolate-radio" class="f-dyn-isolate" data-tag="bias_served"> only</label>
     </div>
+__P0_KIND_CHIPS__
   </div>
   <div class="filter-row">
     <span class="filter-label" title="How many seconds before(-)/after(+) the fill the CLOSEST
@@ -4257,6 +4303,33 @@ the box is checked.">Trade management</span>
             f"dims the row, no effect on stats or filters\">Done</th>"
             f"<th class=\"left\">Notes</th><th class=\"expand-th\">\u25b6</th>")
 
+    # A variant (all P0 kinds, a non-default confluence radius) is named in
+    # the title and keeps its own review notes, apart from the default report's.
+    all_p0 = args.p0_kinds == "all"
+    variant = []
+    if all_p0:
+        variant.append("all P0 kinds")
+        storage_suffix = "_allp0" + storage_suffix
+    if args.m5_confluence_points != M5_CONFLUENCE_N_POINTS_DEFAULT:
+        radius_pts = SR._fmt_pts(args.m5_confluence_points)
+        variant.append(f"&plusmn;{radius_pts}pt confluence")
+        storage_suffix = f"_r{radius_pts}" + storage_suffix
+    if variant:
+        title_suffix = f" ({', '.join(variant)})" + title_suffix
+    # Only a report that can hold plain-P0 / no-confluence trades gets their chips.
+    p0_kind_chips = ""
+    for tag, label, show in (
+            ("plain_p0", "Exclude plain-P0 trades", all_p0),
+            ("no_confl", "Exclude no-confluence trades (SS Confl 0)", args.ss_confl_min < 1)):
+        if show:
+            p0_kind_chips += f"""    <div class="chip-stack">
+      <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="{tag}">
+        {label}</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged {tag}, hiding every
+other row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" class="f-dyn-isolate" data-tag="{tag}"> only</label>
+    </div>
+"""
     storage_key = f"lxpb_m5_confl{args.ss_confl_min}_review_v1{storage_suffix}"
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -4267,7 +4340,8 @@ the box is checked.">Trade management</span>
 {SR.tab_bar_html([("trades", "Trades"), ("pctile", "Excursion percentiles")])}
 <div class="tab-panel" id="tab-trades">
 {summary_html}
-{filter_panel.replace("__WIDE_RATIO__", f"{WIDE_M5_BREAKOUT_RATIO_THRESHOLD:g}")
+{filter_panel.replace("__P0_KIND_CHIPS__", p0_kind_chips)
+   .replace("__WIDE_RATIO__", f"{WIDE_M5_BREAKOUT_RATIO_THRESHOLD:g}")
    .replace("__PRE_P1_K__", f"{PRE_P1_ER_K_DEFAULT:g}")
    .replace("__PRE_P1_MAX_K__", f"{PRE_P1_ER_MAX_K:g}")
    .replace("__PRE_P1_ER_MAX__", f"{PRE_P1_ER_MAX_DEFAULT:g}")
@@ -5080,7 +5154,14 @@ if __name__ == "__main__":
                      "entry fine-tuned to the confluence group's extreme price at the "
                      "breakout bar, stop above/below the thrust candle, target the nearest "
                      "qualifying opposite M5 level, no trade if either is missing or R < 1.")
-    parser.add_argument("--ss-confl-min", type=int, default=SS_CONFL_MIN_DEFAULT)
+    parser.add_argument("--ss-confl-min", type=int, default=SS_CONFL_MIN_DEFAULT,
+                        help="minimum same-side M5 confluence count; 0 takes every retest, "
+                             "a level with no confluence at all included.")
+    parser.add_argument("--p0-kinds", choices=sorted(P0_KINDS_LEDGER), default=P0_KINDS_DEFAULT,
+                        help="which P0s are traded: 'spike-or-swing' (default; plain-P0s end "
+                             "at their own breakout) or 'all' (plain-P0s tracked to their "
+                             "retest and treated like every other P0 -- candidates, "
+                             "confluence, entry pool, stop pool).")
     parser.add_argument("--m5-confluence-points", type=float, default=M5_CONFLUENCE_N_POINTS_DEFAULT,
                         help=f"M5 price radius for SS qualification, clustering and entry "
                              f"selection (default {M5_CONFLUENCE_N_POINTS_DEFAULT}pt).")

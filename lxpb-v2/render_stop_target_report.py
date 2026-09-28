@@ -1024,7 +1024,8 @@ _m5_bars = LC.m5_bars_continuous
 
 def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=None,
                    fill_window=None, p1_bar_width=pd.Timedelta(hours=1), p1_label="H1",
-                   bars_before_retest=None, bars_after_exit=None, extra_context_times=None):
+                   bars_before_retest=None, bars_after_exit=None, extra_context_times=None,
+                   plain_p0=LC.PLAIN_P0_UNTRACKED):
     """5-minute companion pane for build_trade_chart's H1 chart.
 
     Runs the SAME LXPB state machine (lxpb.detect_lxpb_h1 is timeframe
@@ -1097,7 +1098,12 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     two charts never mix raw and adjusted numbers for the same instant. It
     spans every rollover, so the state machine can be walked from the H1
     breakout bar forward no matter how long ago that was, and the window is
-    bounded only by the export's own coverage."""
+    bounded only by the export's own coverage.
+
+    `plain_p0` is the M5 ledger view the drawn levels come from (see
+    lxpb_levels_cache's "Plain-P0 tracked or untracked"); a caller that
+    trades tracked plain-P0s passes LC.PLAIN_P0_TRACKED so its chart shows
+    the same live levels its trade logic saw."""
     setup_time = pd.Timestamp(row["retest_time"], tz="UTC")
     retest_time = (pd.to_datetime(fill_window[0], utc=True)
                    if fill_window is not None else setup_time)
@@ -1169,7 +1175,7 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     form_cutoff = breakout_time + p1_bar_width - pd.Timedelta(nanoseconds=1)
     near_levels = []
     if entry_bar_pos > 0:
-        ledger = LC.m5_levels(plain_p0=LC.PLAIN_P0_UNTRACKED)
+        ledger = LC.m5_levels(plain_p0=plain_p0)
         if ledger is not None and not ledger.empty:
             live = LC.levels_live_as_of(
                 ledger, all_bars.index[entry_bar_pos - 1], level_type=level_type,

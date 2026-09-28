@@ -25,6 +25,12 @@ const GROUP_ORDER: { key: string; title: string; description: string; test: (rel
     test: (rel) => rel.startsWith("ss_m5_confl2/"),
   },
   {
+    key: "m5_allp0_2pt",
+    title: "M5 Confluence v2 -- all P0 kinds, ±2pt",
+    description: "Same strategy, but every P0 kind (spike, swing and plain) is tracked to its retest and traded, and same-side confluence must lie within ±2pt.",
+    test: (rel) => rel.startsWith("ss_m5_allp0_2pt/"),
+  },
+  {
     key: "ss_confl1",
     title: "SS1 Confluence Fine-Tune",
     description: "Same-side H1-confluence fine-tuning for the SS1 strategy.",

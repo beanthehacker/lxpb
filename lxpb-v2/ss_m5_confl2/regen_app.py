@@ -22,15 +22,20 @@ import trade_facts as TF
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 RENDER = os.path.join(HERE, "render_m5_confl2_report.py")
-OUT_DIR = os.path.join(REPO, "public", "reports", "ss_m5_confl2")
+REPORTS_DIR = os.path.join(REPO, "public", "reports")
 
-# (label, output file, extra args, also write .html.gz)
+# Variant: every P0 kind is traded (plain-P0s tracked to their retest like any
+# other P0) and same-side confluence must lie within +/-2pt. Own folder.
+ALL_P0_2PT = ["--p0-kinds", "all", "--m5-confluence-points", "2"]
+
+# (label, output file under public/reports, extra args, also write .html.gz)
 REPORTS = [
-    ("Jul-Aug 2026 (default report)", "jul-aug.html", [], True),
-    ("Full 2025", "2025.html",
+    ("Jul-Aug 2026 (default report)", "ss_m5_confl2/jul-aug.html", [], True),
+    ("Full 2025", "ss_m5_confl2/2025.html",
      ["--start", "2025-01-01", "--end", "2025-12-31"], True),
-    ("Full 2026", "2026.html",
+    ("Full 2026", "ss_m5_confl2/2026.html",
      ["--start", "2026-01-01", "--end", "2026-12-31"], True),
+    ("Jul-Aug 2026, all P0 kinds, +/-2pt", "ss_m5_allp0_2pt/jul-aug.html", ALL_P0_2PT, True),
 ]
 
 
@@ -144,17 +149,19 @@ class App(tk.Tk):
     def git_work(self):
         try:
             self.q.put(("status", "Committing..."))
-            rel = os.path.relpath(OUT_DIR, REPO)
-            if self.git("add", "-A", "--", rel).returncode != 0:
+            rels = sorted({os.path.relpath(os.path.dirname(os.path.join(REPORTS_DIR, name)), REPO)
+                           for _, name, *_ in REPORTS
+                           if os.path.isdir(os.path.dirname(os.path.join(REPORTS_DIR, name)))})
+            if self.git("add", "-A", "--", *rels).returncode != 0:
                 self.q.put(("status", "git add failed"))
                 return
-            if self.git("diff", "--cached", "--quiet", "--", rel).returncode == 0:
-                self.q.put(("log", "\nNothing to commit in the report folder.\n"))
+            if self.git("diff", "--cached", "--quiet", "--", *rels).returncode == 0:
+                self.q.put(("log", "\nNothing to commit in the report folders.\n"))
                 self.q.put(("status", "Nothing to commit"))
                 return
             msg = ("Regen ss_m5_confl2 reports\n\n"
                    "Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>")
-            if self.git("commit", "-m", msg, "--", rel).returncode != 0:
+            if self.git("commit", "-m", msg, "--", *rels).returncode != 0:
                 self.q.put(("status", "Commit failed"))
                 return
             self.q.put(("status", "Pushing..."))
@@ -201,7 +208,8 @@ class App(tk.Tk):
                 os.makedirs(tmp_dir, exist_ok=True)
                 for label, name, extra, _ in jobs:
                     self.q.put(("status", f"Smoke test: {label}"))
-                    rc = self.run_render(extra, os.path.join(tmp_dir, name), 20, 1)
+                    rc = self.run_render(extra, os.path.join(tmp_dir, name.replace("/", "_")),
+                                         20, 1)
                     if rc != 0 or self.stop_flag:
                         self.q.put(("log", f"\nSMOKE TEST FAILED/STOPPED ({label}) -- nothing written.\n"))
                         self.q.put(("status", "Failed" if not self.stop_flag else "Stopped"))
@@ -209,7 +217,8 @@ class App(tk.Tk):
                 shutil.rmtree(tmp_dir, ignore_errors=True)
             for label, name, extra, do_gz in jobs:
                 self.q.put(("status", f"Regenerating: {label}"))
-                final = os.path.join(OUT_DIR, name)
+                final = os.path.join(REPORTS_DIR, name)
+                os.makedirs(os.path.dirname(final), exist_ok=True)
                 part = final + ".new"
                 rc = self.run_render(extra, part, None, workers)
                 if rc != 0 or self.stop_flag or not os.path.exists(part):
