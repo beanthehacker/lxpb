@@ -295,3 +295,41 @@ only the variant cascade and the trap lifecycle, and its docstring lists every
 local decision (confirmation on H1 too, target renames IHH/IHL/IDH/IDL, life
 after confirmation, level-pool depth). Like `h1_bias.py`, its only consumer is
 the ss_m5_confl2 Bias column -- a review aid, never a strategy input.
+
+# Report layout: the trade table fits a 24" monitor (range_breakout)
+
+**On a desktop 24" monitor (1920px wide) a range_breakout report's trade
+table shows the whole row with NO horizontal scrollbar, however many columns
+it has.** Adding or removing a column must never bring the scrollbar back.
+The layout does this by itself, so a new column needs no width tuning:
+
+- Desktop (mouse/trackpad, `(hover: hover) and (pointer: fine)`): the table is
+  the window's width, and every header and cell may wrap between words but
+  never inside one (times and prices stay on one line). The Notes box follows
+  its column's width. If the row still doesn't fit, a small script steps the
+  table's font down until it does (9px floor), and re-fits on window resize.
+  Expanded chart rows take the table's width and never widen it.
+- iPad / touch tablet (`(hover: none) and (pointer: coarse)`), and only there:
+  the table scrolls inside its own window-sized box (pinned header row and
+  Trade Id column), charts are pinned to the visible width with heights
+  following the screen, portrait puts one chart per row, and tap targets are
+  bigger.
+- The Tags column is never wider than the Type column (every device): each
+  tag badge shows a 2-3 letter code (VS volume spike, SC H1 spike
+  confluence, FB fading bias, BS bias served, NT news/thin, GO Globex open,
+  SW/SWB/CR swerve, R< below min R, EOD end-of-day flat, MG management),
+  stacked one per line, with the full label and detail in its hover text
+  and the legend on the Tags header. A new tag needs a code in that list.
+- The Bias column is never wider than Type either: one code per line (H
+  hammer, S shooting star, SFP swing failure, HoH / LoSS retest, V1..V9 trap variant;
+  -N = H1 candles back, ✓ = trap confirmed), green bullish / red bearish /
+  italic trap, full text in the cell's hover. A new bias kind needs a code.
+- A new column's cell content must have break points: no long space-less
+  strings (comma lists need a space or `<wbr>` after each comma), or it pins
+  its column wide and forces the font down.
+- After a layout change, check with headless Chrome at 1920x1080 that the
+  page's scroll width equals the window width and the table font is still
+  the default (no fallback shrink).
+
+Status: applied by hand to `public/reports/range_breakout/2025.html` for
+review; not yet in `range_breakout/render_range_breakout_report.py`.
