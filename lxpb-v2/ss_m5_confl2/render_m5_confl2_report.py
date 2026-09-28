@@ -4848,14 +4848,21 @@ function quickExitResult(tr, useMgmt) {
 // total. reviewFilterOk mirrors those four tests for the stats loop below,
 // and the wrapper re-runs the stats whenever the shared code re-applies them
 // (a filter chip, a row's own Reviewed/Valid/Replayed box, a note, an import).
-function reviewFilterOk(tr) {
+// The ticked chips are read ONCE per pass (reviewFilterState) and handed to
+// every row: reading them per row meant four whole-page scans per row, which
+// is seconds per click on a big report.
+function reviewFilterState() {
   const on = sel => Array.from(document.querySelectorAll(sel + ':checked')).map(c => c.value);
+  return { status: on('.f-review-status'), valid: on('.f-review-valid'),
+           replay: on('.f-review-replay'), notes: on('.f-review-notes') };
+}
+function reviewFilterOk(tr, st) {
   const note = tr.querySelector('.trade-note');
   const hasNotes = note ? note.value.trim().length > 0 : false;
-  return on('.f-review-status').includes(tr.classList.contains('is-reviewed') ? 'reviewed' : 'unreviewed')
-    && on('.f-review-valid').includes(tr.classList.contains('is-valid') ? 'valid' : 'not_valid')
-    && on('.f-review-replay').includes(tr.classList.contains('is-replayed') ? 'replayed' : 'not_replayed')
-    && on('.f-review-notes').includes(hasNotes ? 'has_notes' : 'no_notes');
+  return st.status.includes(tr.classList.contains('is-reviewed') ? 'reviewed' : 'unreviewed')
+    && st.valid.includes(tr.classList.contains('is-valid') ? 'valid' : 'not_valid')
+    && st.replay.includes(tr.classList.contains('is-replayed') ? 'replayed' : 'not_replayed')
+    && st.notes.includes(hasNotes ? 'has_notes' : 'no_notes');
 }
 const _applyReviewFiltersBase = applyReviewFilters;
 let _inDynStats = false;
@@ -4872,6 +4879,7 @@ function recomputeDynStats() {
   const excludeTags = activeDynExcludeTags();
   const isolateTags = activeDynIsolateTags();
   const outcomeOn = activeOutcomeBuckets();
+  const reviewState = reviewFilterState();
   const mgmtCb = document.getElementById('mgmt-thrust-trail');
   const useMgmt = !!(mgmtCb && mgmtCb.checked);
   let n = 0, wins = 0, sumR = 0, sumPnl = 0, sumComm = 0, maxWinMae = 0, maxLossMfe = 0;
@@ -4914,7 +4922,7 @@ function recomputeDynStats() {
     // value) set once at render time, never rewritten by a live control.
     const vspikeoffsHidden = !numFilterOk(tr, 'vspikeoffs');
     const setupHidden = !setupPass(tr);
-    const reviewHidden = !reviewFilterOk(tr);
+    const reviewHidden = !reviewFilterOk(tr, reviewState);
     const hidden = reviewHidden || rrHidden || daygapHidden || h1gapHidden || mingapHidden || erHidden || p1ratioHidden || vspikeoffsHidden || setupHidden || (isolateTags.length > 0
       ? !tags.some(t => isolateTags.includes(t))
       : (excludeTags.length > 0 && tags.some(t => excludeTags.includes(t))));
