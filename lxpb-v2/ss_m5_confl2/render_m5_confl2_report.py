@@ -307,6 +307,14 @@ SS_CONFL_MIN_DEFAULT = 1
 P0_KINDS_DEFAULT = "spike-or-swing"
 P0_KINDS_LEDGER = {"spike-or-swing": LC.PLAIN_P0_UNTRACKED, "all": LC.PLAIN_P0_TRACKED}
 M5_CONFLUENCE_N_POINTS_DEFAULT = 10.0  # same-side M5 confluence radius: selection + entry refinement
+# How long a same-side confluence partner must have stayed untouched
+# (--confl-untested-until). "p1" (the original rule): still untouched at the
+# traded level's own P1 candle. "leg-start": still untouched when the latest
+# leg into the retest began (_leg_start_time); a touch on that last leg is
+# fine. The traded level itself is untouched until its own retest by
+# definition, so this only ever tests the partner.
+CONFL_UNTESTED_UNTIL_DEFAULT = "p1"
+CONFL_UNTESTED_UNTIL_CHOICES = ("p1", "leg-start")
 MIN_DYNAMIC_TARGET_PTS = 0.25   # one tick: no real floor, just strictly favourable (SF is 1)
 MAX_DYNAMIC_TARGET_PTS = 50.0   # own band (SF is 20); every target rule here shares it
 DYNAMIC_STOP_RADIUS_PTS = SF.DYNAMIC_STOP_RADIUS_PTS
@@ -362,7 +370,37 @@ pd.set_option("display.max_columns", 20)
 # Selection: every M5 retest with same-side M5 confluence >= threshold
 # --------------------------------------------------------------------------
 
-def select_candidates(ss_confl_min, start, end, confluence_points, plain_p0):
+def _leg_start_time(row_d, pivots, bars):
+    """The candle where the latest leg into this level's retest began -- the
+    point a confluence partner must have stayed untouched past under
+    `--confl-untested-until leg-start`.
+
+    The most recent CONFIRMED zigzag TROUGH (LLPB) / CREST (LHPB) formed after
+    the level's P1 and both formed and confirmed before its retest candle:
+    the same zigzag, parameters and causality rule as the opposite-M5-level
+    target (_opposite_m5_zz_target). When price only pulled back a little
+    and no pivot confirmed in that window, the leg starts at the lowest low
+    (LLPB) / highest high (LHPB) between the P1 candle and the retest candle
+    (both excluded; the later candle on a tie), confirmed or not. With no
+    candle in between at all, the P1 candle itself."""
+    is_long = row_d["type"] == "LHPB"
+    p1 = pd.Timestamp(row_d["breakout_time"])
+    p2 = pd.Timestamp(row_d["retest_time"])
+    pivot_time, _ = MS.most_recent_pivot(pivots, "high" if is_long else "low", p2, after=p1)
+    if pivot_time is not None:
+        return pivot_time
+    lo = bars.index.searchsorted(p1, side="right")
+    hi = bars.index.searchsorted(p2, side="left")
+    if hi <= lo:
+        return p1
+    seg = bars["high" if is_long else "low"].to_numpy(float)[lo:hi]
+    ext = seg.max() if is_long else seg.min()
+    return pd.Timestamp(bars.index[lo + int(np.flatnonzero(seg == ext)[-1])])
+
+
+def select_candidates(ss_confl_min, start, end, confluence_points, plain_p0,
+                      untested_until=CONFL_UNTESTED_UNTIL_DEFAULT,
+                      zz_threshold=ZZ_THRESHOLD_PTS_DEFAULT, zz_min_bars=ZZ_MIN_BARS_DEFAULT):
     """M5-native candidate rows over the one continuous M5 ledger (see the
     "continuous contracts only" convention in CLAUDE.md -- LC.m5_levels()
     now spans every contract rollover in one state-machine run, so a P0
@@ -375,25 +413,42 @@ def select_candidates(ss_confl_min, start, end, confluence_points, plain_p0):
     even though level detection itself no longer cares).
 
     `plain_p0` is the ledger view, P0_KINDS_LEDGER[--p0-kinds]. With
-    `ss_confl_min` 0 every retest qualifies, with or without confluence."""
+    `ss_confl_min` 0 every retest qualifies, with or without confluence.
+
+    `untested_until` (CONFL_UNTESTED_UNTIL_CHOICES): with "leg-start" a
+    partner also has to have stayed untouched past _leg_start_time (zigzag
+    `zz_threshold`/`zz_min_bars`, the target rule's own), not just at P1.
+    The reduced set is the confluence set everywhere after this --
+    qualification, clustering and the entry pool alike."""
     if not np.isfinite(confluence_points) or confluence_points < 0:
         raise ValueError("M5 confluence radius must be finite and non-negative")
+    if untested_until not in CONFL_UNTESTED_UNTIL_CHOICES:
+        raise ValueError(f"untested_until must be one of {CONFL_UNTESTED_UNTIL_CHOICES}")
     start_ts = pd.Timestamp(start, tz="UTC")
     end_ts = pd.Timestamp(end, tz="UTC") + pd.Timedelta(days=1)  # end date inclusive
     candidates = []
     m5_ledger = LC.m5_levels(verbose=False, plain_p0=plain_p0)
     if m5_ledger is None or m5_ledger.empty:
         return candidates
+    if untested_until == "leg-start":
+        pivots = MS.zigzag_pivots(threshold_pts=zz_threshold, min_bars=zz_min_bars)
+        bars = LC.m5_bars_continuous()
     retests = LC.retests(m5_ledger)
     retests = retests[(retests["retest_time"] >= start_ts) & (retests["retest_time"] < end_ts)]
     for _, row_d in retests.iterrows():
         same_side_m5 = SF._same_side_confluence(m5_ledger, row_d, confluence_points)
+        leg_start = None
+        if untested_until == "leg-start" and not same_side_m5.empty:
+            leg_start = _leg_start_time(row_d, pivots, bars)
+            death = pd.to_datetime(same_side_m5["death_time"], utc=True)
+            same_side_m5 = same_side_m5[(death.isna() | (death > leg_start)).to_numpy()
+                                        ].reset_index(drop=True)
         if len(same_side_m5) < ss_confl_min:
             continue
         seg_idx = R._contract_index_for(pd.Timestamp(row_d["retest_time"]))
         sym = R.CONTRACTS[seg_idx][0]
         candidates.append({
-            "row": row_d, "same_side_m5": same_side_m5,
+            "row": row_d, "same_side_m5": same_side_m5, "leg_start": leg_start,
             "m5_ledger": m5_ledger, "seg_idx": seg_idx, "sym": sym,
         })
     candidates.sort(key=lambda c: pd.Timestamp(c["row"]["retest_time"]))
@@ -2920,12 +2975,16 @@ def render(args):
 
     if not getattr(args, "p0_kinds", None):
         args.p0_kinds = P0_KINDS_DEFAULT
+    if not getattr(args, "confl_untested_until", None):
+        args.confl_untested_until = CONFL_UNTESTED_UNTIL_DEFAULT
     candidates = select_candidates(
         args.ss_confl_min, args.start, args.end, args.m5_confluence_points,
-        P0_KINDS_LEDGER[args.p0_kinds])
+        P0_KINDS_LEDGER[args.p0_kinds], untested_until=args.confl_untested_until,
+        zz_threshold=args.zz_threshold_pts, zz_min_bars=args.zz_min_bars)
     radius = SR._fmt_pts(args.m5_confluence_points)
     print(f"{len(candidates)} M5 retests ({args.p0_kinds} P0s) have SS Confl >= "
-          f"{args.ss_confl_min} (+/-{radius}pt) in [{args.start}, {args.end}]", flush=True)
+          f"{args.ss_confl_min} (+/-{radius}pt, partners untouched until "
+          f"{args.confl_untested_until}) in [{args.start}, {args.end}]", flush=True)
     if args.max_rows is not None:
         candidates = candidates[:args.max_rows]
         print(f"--max-rows: processing only the first {len(candidates)}", flush=True)
@@ -3684,6 +3743,16 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
         "the others (PLAIN-P0 badge)"
         if args.p0_kinds == "all" else
         "a spike-P0 or swing-P0 (plain-P0s end at their own breakout and are never traded)")
+    untested_phrase = (
+        "confirmed-broken-out by the retest, and still untouched when the latest leg into the "
+        "retest began: the most recent CONFIRMED M5 zigzag trough (LLPB) / crest (LHPB) formed "
+        "after the subject's own P1 and before its retest (the same zigzag as the "
+        "opposite-M5-level target), or, when none confirmed there, the lowest low (LLPB) / "
+        "highest high (LHPB) between the P1 and retest candles -- a touch on that last leg "
+        "itself is fine"
+        if args.confl_untested_until == "leg-start" else
+        "confirmed-broken-out by the retest and not yet retested as of the subject's own P1 "
+        "breakout bar")
     reason_html = "".join(
         f'<div class="box"><strong>{n}</strong>{reason}</div>'
         for reason, n in sorted(reason_counts.items(), key=lambda kv: -kv[1]))
@@ -3697,6 +3766,7 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
   <div class="box"><strong>{args.p0_kinds}</strong>P0 kinds traded</div>
   <div class="box"><strong>{len(clusters)}</strong>confluence clusters</div>
   <div class="box"><strong>&plusmn;{radius}pt</strong>M5 confluence radius</div>
+  <div class="box"><strong>{args.confl_untested_until}</strong>partner untouched until</div>
   <div class="box"><strong>{args.min_r:.2f}</strong>min R (below: tagged, not skipped)</div>
   <div class="box"><strong id="sum-avg-r">{stats['avg_r']:.2f}</strong>avg R</div>
   <div class="box"><strong>{improved_n}</strong>/{len(filled)} entry improved over own level</div>
@@ -3721,7 +3791,7 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
 <p class="lead">M5-native strategy: the trade signal, entry, stop and target are ALL M5 LXPB
 structure -- there is no H1 level anywhere in this report. SELECT: every M5 LXPB retest of
 {p0_kinds_phrase} in [{args.start}, {args.end}] with SAME-SIDE M5 confluence (other M5 levels of the SAME type,
-confirmed-broken-out and not yet retested as of the subject's own P1 breakout bar) &ge;
+{untested_phrase}) &ge;
 {args.ss_confl_min}, radius &plusmn;{radius}pt. Mutually-confluent M5 levels swept by the
 same bar are merged into one trade (Merged M5 levels column). ENTRY (refined AT THE BREAKOUT
 BAR): the most extreme price (highest for LLPB/short, lowest for LHPB/long) among the
@@ -4314,6 +4384,8 @@ the box is checked.">Trade management</span>
         radius_pts = SR._fmt_pts(args.m5_confluence_points)
         variant.append(f"&plusmn;{radius_pts}pt confluence")
         storage_suffix = f"_r{radius_pts}" + storage_suffix
+    if args.confl_untested_until != CONFL_UNTESTED_UNTIL_DEFAULT:
+        variant.append(f"partners untouched until {args.confl_untested_until}")
     if variant:
         title_suffix = f" ({', '.join(variant)})" + title_suffix
     # Only a report that can hold plain-P0 / no-confluence trades gets their chips.
@@ -5173,6 +5245,13 @@ if __name__ == "__main__":
     parser.add_argument("--m5-confluence-points", type=float, default=M5_CONFLUENCE_N_POINTS_DEFAULT,
                         help=f"M5 price radius for SS qualification, clustering and entry "
                              f"selection (default {M5_CONFLUENCE_N_POINTS_DEFAULT}pt).")
+    parser.add_argument("--confl-untested-until", choices=CONFL_UNTESTED_UNTIL_CHOICES,
+                        default=CONFL_UNTESTED_UNTIL_DEFAULT,
+                        help="how long a same-side confluence partner must have stayed "
+                             "untouched: 'p1' (default) at the traded level's own P1 candle; "
+                             "'leg-start' until the latest leg into the retest began (the most "
+                             "recent confirmed zigzag trough for an LLPB / crest for an LHPB "
+                             "after P1, else the lowest low / highest high since P1).")
     parser.add_argument("--min-r", type=float, default=MIN_R_DEFAULT,
                         help=f"Reward:risk (target pts / stop pts) below which a trade is "
                              f"TAGGED 'r_below_min' (default {MIN_R_DEFAULT}). The trade is "

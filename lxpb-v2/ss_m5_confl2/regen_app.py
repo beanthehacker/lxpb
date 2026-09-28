@@ -25,8 +25,10 @@ RENDER = os.path.join(HERE, "render_m5_confl2_report.py")
 REPORTS_DIR = os.path.join(REPO, "public", "reports")
 
 # Variant: every P0 kind is traded (plain-P0s tracked to their retest like any
-# other P0) and same-side confluence must lie within +/-2pt. Own folder.
-ALL_P0_2PT = ["--p0-kinds", "all", "--m5-confluence-points", "2"]
+# other P0), same-side confluence must lie within +/-2pt, and the partner must
+# still be untouched when the last leg into the retest began. Own folder.
+ALL_P0_2PT = ["--p0-kinds", "all", "--m5-confluence-points", "2",
+              "--confl-untested-until", "leg-start"]
 
 # (label, output file under public/reports, extra args, also write .html.gz)
 REPORTS = [

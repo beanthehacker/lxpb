@@ -27,7 +27,7 @@ const GROUP_ORDER: { key: string; title: string; description: string; test: (rel
   {
     key: "m5_allp0_2pt",
     title: "M5 Confluence v2 -- all P0 kinds, ±2pt",
-    description: "Same strategy, but every P0 kind (spike, swing and plain) is tracked to its retest and traded, and same-side confluence must lie within ±2pt.",
+    description: "Same strategy, but every P0 kind (spike, swing and plain) is tracked to its retest and traded, same-side confluence must lie within ±2pt, and the partner must still be untouched when the last leg into the retest began.",
     test: (rel) => rel.startsWith("ss_m5_allp0_2pt/"),
   },
   {
