@@ -34,23 +34,51 @@ when it is committed and smoke-tested; the regen waits for the user.
   the next change.
 - When a change needs a regen before its results show, say so and stop.
 
-# Data convention: TradingView continuous series only
+# Data convention: TradingView exports confirm, Sierra Chart ticks extend
 
-**H1 and M5 bars come from TradingView's own continuous ES1! exports and from
-nothing else. `.scid` data is NEVER resampled into H1 or M5 bars.** Not to
-extend history further back, not to fill a hole mid-series, not "just for this
-one range". Where the exports stop, the series stops, and that range is simply
-absent — an empty range is a correct answer, a spliced-in second feed is not.
+**H1 and M5 history comes from TradingView's own continuous ES1! exports.
+Past the exports' last bar, the series is extended with bars resampled from
+the CURRENT front month's Sierra Chart `.scid` ticks, up to that contract's
+roll and no further.** (User decision 2026-09-28: TradingView exports are
+needed to confirm each roll's offset, not to supply every bar.)
+
+The exports stay in charge of everything that needs them:
+
+- **Confirming the offset.** The front month's offset is measured against the
+  exports alone (`_tv_m5()`, never the extended series, which would confirm
+  any offset). It needs >= 100 of that contract's front-month M5 bars in an
+  export (`_SCID_OFFSET_MIN_OVERLAP`, ~8 trading hours).
+- **History and holes.** Ticks never fill a hole inside the exported range,
+  never reach back before the exports' last bar, and never cross a roll.
+  Where no export reaches, that range is simply absent.
+
+`_extend_with_scid` also: rebuilds the exports' last bar from ticks (an export
+taken mid-bar leaves it partial); appends only bars that traded (no
+forward-filled empty slots -- that is what made 70% of the old .scid M5
+retests phantoms); leaves out the bar still forming at load time; and first
+proves ticks rebuild the exports' own last 10 days of bars (same bar times,
+opens/closes exact on >= 98%, every price within a tick on >= 99%), raising
+otherwise. `LXPB_SCID_EXTEND=0` turns it off (the levels runtime, which has no
+ticks, sets it).
 
 The two loaders are `render_labels_report._display_h1()` and `_display_m5()`
-(merged from `DISPLAY_H1_PATHS` / `DISPLAY_M5_PATHS`). To extend or repair
-coverage, add another TradingView export to those lists. That is the only
-supported fix.
+(TradingView-only: `_tv_h1()` / `_tv_m5()`, merged from `DISPLAY_H1_PATHS` /
+`DISPLAY_M5_PATHS`). To repair or deepen history, add another TradingView
+export to those lists.
 
-**This rule is repo-wide, not just `lxpb-v2`.** `label-review` and
+**Next roll: Z26 -> H27, Mon 2026-12-14 3:00 PM PT.** The tick extension stops
+there and every load prints `stops at the EPZ26 roll`. From 7 days before it,
+loads print a reminder. When either appears, or the current date is past the
+roll, **ask the user for fresh post-roll TradingView exports (H1 and M5)
+before relying on any bar after the roll**, then follow the rollover
+checklist below. The same holds at every later roll.
+
+**The export rule is repo-wide, not just `lxpb-v2`.** `label-review` and
 `retest-vol-scalp` follow it too, through `../es_h1_display.py` — a smaller
 loader over the same export list, for subprojects that deliberately avoid
-importing lxpb-v2's report modules. Keep the two export lists in step.
+importing lxpb-v2's report modules. Keep the two export lists in step. That
+loader does NOT apply the tick extension yet: those two subprojects stop at
+the H1 export's last bar.
 `data/es-h1-continuous-backadjusted.csv` and its builder
 `data/build_es_h1_continuous.py` are retired; nothing reads them.
 
@@ -86,7 +114,9 @@ reads the old population, and says so at the call site:
 Letting a consumer see tracked plain-P0s is a strategy change: the user
 decides it, one consumer at a time.
 
-## `.scid` is for ticks, and the mapping is one-way
+## `.scid` for ticks, and for extending the current front month
+
+Apart from `_extend_with_scid` (above), `.scid` is only for tick-level work.
 
 Per-contract `.scid` files remain the right source for second- and
 tick-level work: real fills, exit resolution, the 1s/1min panes, bid/ask
@@ -170,10 +200,12 @@ exactly +67.75pt on every bar back to Jul 2023). So after each roll:
    constant offset, bars after it the incoming contract's at +0.00.
 5. Level caches need no manual step: a pure re-anchor is shifted in place,
    anything else (new depth, revised last bar) rebuilds on first use.
+6. Update the "Next roll" line in the data convention above.
 
 The new front month's ticks cannot be mapped until an export holds at least
 100 of its front-month M5 bars (`_SCID_OFFSET_MIN_OVERLAP`, ~8 trading hours);
-`_measure_scid_offset` raises before then.
+`_measure_scid_offset` raises before then. Once it does, the tick extension
+takes over from that export's last bar until the following roll.
 
 # Spike candles (hammer / shooting star): patterns-pure only
 

@@ -4,15 +4,16 @@ LXPB level ledger + on-disk cache (H1 and M5)
 
 CONVENTION -- continuous contracts only (see CLAUDE.md): every level ledger
 built here comes from ONE continuous, back-adjusted series spanning every
-contract rollover, sourced from TradingView's own continuous exports and
-nothing else. Both h1_levels() (one run over R._display_h1()) and
+contract rollover: TradingView's own continuous exports, extended past their
+last bar with the current front month's ticks up to its roll (see
+R._extend_with_scid). Both h1_levels() (one run over R._display_h1()) and
 m5_levels() (one run over m5_bars_continuous()) follow this, and neither
 takes a contract or segment argument -- there is one ledger per timeframe,
 not one per contract.
 
-Raw .scid data is never resampled into H1 or M5 bars here, not even to fill
-a hole an export doesn't cover: where the exports stop, the ledger stops.
-.scid remains the source for second- and tick-level work (fills, exits,
+Raw .scid data is never resampled here to fill a hole inside the exported
+range or to reach past a roll no export has confirmed. Otherwise .scid is the
+source for second- and tick-level work (fills, exits,
 footprints, the 1s/1min panes), where prices are mapped ONTO this scale via
 R._offset_for_ts and never the other way round.
 
@@ -542,15 +543,13 @@ _M5_BARS_CONTINUOUS = None
 def m5_bars_continuous():
     """The M5 equivalent of R._display_h1(): one continuous, back-adjusted
     series spanning every rollover, straight from TradingView's own ES1! M5
-    exports (R._display_m5()) and nothing else.
+    exports, extended past their last bar with the current front month's
+    ticks up to its roll (R._display_m5(); "Data convention" in CLAUDE.md).
 
-    There is deliberately no .scid fallback. Resampling a contract's raw
-    ticks into M5 bars and shifting them by a measured per-segment constant
-    looks equivalent, but it is a different vendor's feed joined to
-    TradingView's at an arbitrary date, and that constant is one average for
-    a whole segment, so it carries a few points of error near a roll. Where
-    the exports stop, the series stops -- see the "continuous contracts only"
-    convention in CLAUDE.md. R._display_m5 reports any hole it does contain,
+    Ticks never fill a hole inside the exported range and never cross a roll:
+    a contract's offset is only trusted once an export has confirmed it, and
+    tick bars are only appended once they reproduce the exports' own recent
+    bars. R._display_m5 reports any hole it does contain,
     and validates both the splice at every roll and the scale against the H1
     series, before any of this is handed to the state machine.
 

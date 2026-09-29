@@ -107,17 +107,17 @@ CONTRACTS = [("EPU23", 2023, 9), ("EPZ23", 2023, 12),
 sys.path.insert(0, r"D:\acheron\AcheronUtils")  # scidReader.py lives there
 from scidReader import get_scid_df  # noqa: E402
 
-# H1 bars come from _display_h1() -- TradingView's own continuous ES1! export
-# and nothing else (see "continuous contracts only" in CLAUDE.md). `--data`
-# stays available for pointing this report at some other CSV, but it defaults
-# to None, meaning "the display series".
+# H1 bars come from _display_h1() -- TradingView's own continuous ES1! export,
+# extended past its last bar with Sierra Chart ticks from the current front
+# month only (see "Data convention" in CLAUDE.md). `--data` stays available for
+# pointing this report at some other CSV, but it defaults to None, meaning "the
+# display series".
 #
 # The old default here was ../data/es-h1-continuous-backadjusted.csv, a hybrid
 # that took a frozen TradingView export as its historical base and extended it
-# with resampled front-month .scid bars. That is exactly the construction the
-# convention now forbids: the two halves are different feeds spliced at an
-# arbitrary date, so the state machine saw a vendor change mid-history. It is
-# no longer read by anything here.
+# with resampled front-month .scid bars across whole quarters, at hardcoded
+# offsets and with forward-filled empty slots. It is no longer read by anything
+# here; _extend_with_scid replaces it with a checked, one-contract version.
 DEFAULT_DATA = None
 DEFAULT_OUTPUT = os.path.join(_HERE, "public", "reports", "lxpb_labels_report.html")
 
@@ -307,12 +307,15 @@ def _segment_indices(idx):
     return np.minimum(rolls.searchsorted(idx, side="right"), len(CONTRACTS) - 1)
 
 
-# --- TradingView continuous exports: the ONE source of structural OHLC -------
-# Every H1/M5 series this repo runs the LXPB state machine over comes from
-# TradingView's own continuous ES1! exports and nothing else. See the "data
-# convention: continuous contracts only" section in CLAUDE.md: .scid data is
-# never resampled into H1 or M5 structural bars, not even to fill a hole --
-# where an export stops, the series stops, and the range is simply absent.
+# --- TradingView continuous exports: the base of every structural series ----
+# Every H1/M5 series this repo runs the LXPB state machine over is
+# TradingView's own continuous ES1! exports, extended past their last bar with
+# bars resampled from the current front month's Sierra Chart ticks
+# (_extend_with_scid). See "Data convention" in CLAUDE.md. The exports stay the
+# only source of history and the only thing that confirms a contract's offset:
+# ticks never fill a hole inside the exported range, never reach past the
+# front month whose offset an export confirmed, and so stop at the next roll
+# until a post-roll export exists.
 #
 # A merged series must sit on ONE back-adjustment scale. TradingView
 # recomputes its back-adjustment at every roll -- the U26->Z26 roll
@@ -357,6 +360,10 @@ DISPLAY_M5_PATHS = [
     ],
     [  # exported after the U26->Z26 roll (EPZ26 front month)
         os.path.join(_DATA_DIR, "31may2026-14Sep2026-CME_MINI_ES1!, 5_7d463.csv"),
+        # Two weeks of EPZ26 front month: confirms the U26->Z26 offset on ~4,000
+        # bars. From here on the series is extended with EPZ26 ticks until the
+        # Z26->H27 roll (_extend_with_scid).
+        os.path.join(_DATA_DIR, "14jun2026-28Sep2026-CME_MINI_ES1!, 5_7d463.csv"),
     ],
 ]
 
@@ -566,18 +573,27 @@ def _merge_vintages(vintages, label):
 
 _DISPLAY_H1_CACHE = None
 _DISPLAY_M5_CACHE = None
+_TV_H1_CACHE = None
+_TV_M5_CACHE = None
+
+
+def _tv_h1():
+    """DISPLAY_H1_PATHS merged newest-wins -- TradingView's own continuous
+    ES1! H1 series and nothing else. The reference the M5 exports are checked
+    against; structural consumers want _display_h1()."""
+    global _TV_H1_CACHE
+    if _TV_H1_CACHE is None:
+        _TV_H1_CACHE = _merge_tv_exports(DISPLAY_H1_PATHS, "display H1 series")
+    return _TV_H1_CACHE
 
 
 def _display_h1():
-    """DISPLAY_H1_PATHS merged newest-wins -- TradingView's own continuous
-    ES1! H1 series, and the price scale every report shows and trades off.
-
-    This is the ONLY source of H1 structural bars (see "continuous contracts
-    only" in CLAUDE.md). Where the exports stop, H1 history stops; no .scid
-    extension fills in behind them."""
+    """The H1 series every report shows and trades off: the TradingView
+    exports (_tv_h1), extended past their last bar with Sierra Chart ticks
+    from the front month whose offset the exports confirmed (_extend_with_scid)."""
     global _DISPLAY_H1_CACHE
     if _DISPLAY_H1_CACHE is None:
-        _DISPLAY_H1_CACHE = _merge_tv_exports(DISPLAY_H1_PATHS, "display H1 series")
+        _DISPLAY_H1_CACHE = _extend_with_scid(_tv_h1(), "1h", "display H1 series")
     return _DISPLAY_H1_CACHE
 
 
@@ -594,7 +610,7 @@ def _assert_shares_h1_scale(m5):
     series may hold pre-roll history shifted by _merge_vintages, and this
     is what verifies that shift against a genuine post-roll export in every
     segment H1 covers, rather than assuming the roll moved them all alike."""
-    h1 = _display_h1()
+    h1 = _tv_h1()
     common = m5.index.intersection(h1.index)
     if len(common) < _SCALE_CHECK_MIN_OVERLAP:
         raise RuntimeError(
@@ -623,20 +639,173 @@ def _assert_shares_h1_scale(m5):
               "overlap, not per contract segment.")
 
 
-def _display_m5():
-    """DISPLAY_M5_PATHS merged onto the newest vintage -- TradingView's own continuous
-    ES1! M5 series, and the ONLY source of M5 structural bars (see
-    "continuous contracts only" in CLAUDE.md).
+def _tv_m5():
+    """DISPLAY_M5_PATHS merged onto the newest vintage -- TradingView's own
+    continuous ES1! M5 series and nothing else.
 
     Validated three ways before any caller sees it: one vintage across the
     exports, no unexplained jump at a roll, and the same back-adjusted scale
-    as the H1 series. Cached -- these are static files."""
-    global _DISPLAY_M5_CACHE
-    if _DISPLAY_M5_CACHE is None:
+    as the H1 export. Every .scid offset is measured against THIS series,
+    never the tick-extended one: measuring a contract against bars built from
+    its own ticks would agree with any offset at all. Cached -- static files."""
+    global _TV_M5_CACHE
+    if _TV_M5_CACHE is None:
         merged = _merge_vintages(DISPLAY_M5_PATHS, "display M5 series")
         _assert_shares_h1_scale(merged)
-        _DISPLAY_M5_CACHE = merged
+        _TV_M5_CACHE = merged
+    return _TV_M5_CACHE
+
+
+def _display_m5():
+    """The M5 series every structural consumer reads: the TradingView exports
+    (_tv_m5), extended past their last bar with Sierra Chart ticks from the
+    front month whose offset the exports confirmed (_extend_with_scid)."""
+    global _DISPLAY_M5_CACHE
+    if _DISPLAY_M5_CACHE is None:
+        _DISPLAY_M5_CACHE = _extend_with_scid(_tv_m5(), "5min", "display M5 series")
     return _DISPLAY_M5_CACHE
+
+
+# --- extending the exports with Sierra Chart ticks --------------------------
+# TradingView exports are needed to CONFIRM a roll's offset, not to supply
+# every bar. Once an export covers a front month for long enough to measure
+# that contract's offset (_measure_scid_offset, >= 100 front-month M5 bars),
+# the rest of that front month is built from its own ticks at that offset.
+# Everything else stays TradingView-only:
+#   - only bars AFTER the exports' last bar, which is itself rebuilt from ticks
+#     since an export taken mid-bar leaves it partial -- never a hole inside
+#     the exported range;
+#   - only the front month holding that last bar, up to its roll. Past the
+#     roll the series stops until a post-roll export confirms the new offset;
+#   - only bars that traded: an empty slot stays empty (the old .scid M5
+#     series forward-filled closed-market slots into phantom dojis, and 70% of
+#     its Jul-Aug 2026 retests formed on bars that never traded);
+#   - only COMPLETE bars: the one still forming at load time is left out;
+#   - never at all unless tick bars rebuilt over the exports' own recent bars
+#     reproduce them (_check_tick_bars), and never with LXPB_SCID_EXTEND=0 (the
+#     levels runtime, which has no tick data, sets it).
+SCID_EXTEND_ENV = "LXPB_SCID_EXTEND"
+_SCID_EXT_CHECK_DAYS = 10
+_SCID_EXT_MIN_CHECK_BARS = 100
+# Measured on the U26/Z26 overlap (2026-09): bar times identical, opens and
+# closes exact on 99.2-99.9% of bars and never more than one tick off, highs
+# and lows exact -- the misses are prints TradingView filters out.
+_SCID_EXT_MIN_EXACT = 0.98
+_SCID_EXT_MIN_WITHIN_TICK = 0.99
+# How far ahead of a roll every load starts reminding that a post-roll export
+# will be needed (CLAUDE.md: ask the user for one).
+_SCID_EXT_ROLL_WARN = pd.Timedelta(days=7)
+
+
+def _tick_bars(sym, offset, lo, hi, freq):
+    """`sym`'s raw ticks over [lo, hi) as `freq` OHLC bars on the continuous
+    scale (raw + offset). Left-labelled like TradingView's; a slot with no
+    trade has no bar."""
+    w = _scid_window(sym, lo, hi)
+    if w is None:
+        w = _slice_sorted(_load_contract(sym), lo, hi)
+    px = w["Close"].astype("float64") + offset
+    bars = (px.resample(freq, label="left", closed="left")
+            .agg(["first", "max", "min", "last"]).dropna().round(4))
+    bars.columns = ["open", "high", "low", "close"]
+    return bars
+
+
+def _tick_bars_spanning(lo, hi, freq):
+    """_tick_bars over [lo, hi), each contract segment from its own front
+    month's ticks at its own measured offset."""
+    rolls = [r for r in _own_roll() if r is not None and lo < r < hi]
+    edges = [lo] + rolls + [hi]
+    parts = []
+    for a, b in zip(edges[:-1], edges[1:]):
+        offset, sym = _offset_for_ts(a)
+        parts.append(_tick_bars(sym, offset, a, b, freq))
+    return pd.concat(parts)
+
+
+def _check_tick_bars(tv, freq, label):
+    """Raise unless ticks rebuild the exports' own recent bars.
+
+    Compares the last _SCID_EXT_CHECK_DAYS of exported bars (minus the last,
+    which may be partial) with bars built from ticks at the measured offsets:
+    the same bar times, opens and closes exact on >= _SCID_EXT_MIN_EXACT of
+    bars, every price within one tick on >= _SCID_EXT_MIN_WITHIN_TICK. A
+    failure means the resampling or the offset is wrong for this data, and
+    appending tick bars would put a seam into the series, so nothing is
+    appended until it is fixed. Returns the number of bars compared."""
+    hi = tv.index[-1]
+    ref = tv.loc[(tv.index >= hi - pd.Timedelta(days=_SCID_EXT_CHECK_DAYS)) & (tv.index < hi)]
+    if len(ref) < _SCID_EXT_MIN_CHECK_BARS:
+        raise RuntimeError(
+            f"{label}: only {len(ref)} exported bars in the last {_SCID_EXT_CHECK_DAYS} "
+            f"days to check tick bars against (need >= {_SCID_EXT_MIN_CHECK_BARS}).")
+    ticks = _tick_bars_spanning(ref.index[0], hi, freq)
+    union = ref.index.union(ticks.index)
+    common = ref.index.intersection(ticks.index)
+    same_times = len(common) / len(union)
+    problems = []
+    if same_times < _SCID_EXT_MIN_WITHIN_TICK:
+        problems.append(f"only {same_times:.1%} of bar times match "
+                        f"({len(ref.index.difference(ticks.index))} exported-only, "
+                        f"{len(ticks.index.difference(ref.index))} tick-only)")
+    for col in ("open", "high", "low", "close"):
+        d = (ticks.loc[common, col] - ref.loc[common, col]).abs().round(4)
+        exact, near = float((d == 0).mean()), float((d <= 0.25).mean())
+        if col in ("open", "close") and exact < _SCID_EXT_MIN_EXACT:
+            problems.append(f"{col} exact on only {exact:.1%}")
+        if near < _SCID_EXT_MIN_WITHIN_TICK:
+            problems.append(f"{col} within one tick on only {near:.1%}")
+    if problems:
+        raise RuntimeError(
+            f"{label}: bars rebuilt from Sierra Chart ticks do not reproduce the "
+            f"exported bars over {ref.index[0]} -> {hi} ({len(common)} compared): "
+            + "; ".join(problems) + " -- not extending the series with ticks. "
+            f"Set {SCID_EXTEND_ENV}=0 to run TradingView-only until this is fixed.")
+    return len(common)
+
+
+def _extend_with_scid(tv, freq, label):
+    """`tv` with complete `freq` bars appended from the current front month's
+    ticks, from the exports' last bar up to that contract's roll or now,
+    whichever is first. See the block comment above for what is never done."""
+    if os.environ.get(SCID_EXTEND_ENV) == "0":
+        return tv
+    start = tv.index[-1]
+    i = _contract_index_for(start)
+    sym = CONTRACTS[i][0]
+    if not os.path.exists(os.path.join(SCID_DIR, f"F.US.{sym}.scid")):
+        print(f"  [data] {label}: no {sym} tick file -- TradingView bars only, to {start}.")
+        return tv
+    step = pd.Timedelta(freq)
+    roll = _own_roll()[i]
+    now = pd.Timestamp.now(tz="UTC")
+    hi = now.floor(freq)                          # the bar forming now is left out
+    at_roll = roll is not None and roll <= hi
+    if roll is not None and now < roll <= now + _SCID_EXT_ROLL_WARN:
+        print(f"  [data] {label}: the {sym} roll is "
+              f"{roll.tz_convert('America/Los_Angeles'):%a %Y-%m-%d %H:%M} PT -- tick bars "
+              "stop there, and a post-roll TradingView export (H1 and M5) will be "
+              "needed to confirm the next contract's offset.")
+    if at_roll:
+        hi = roll
+    if hi <= start:
+        return tv
+    checked = _check_tick_bars(tv, freq, label)
+    offset, _sym = _offset_for_ts(start)
+    ext = _tick_bars(sym, offset, start, hi, freq)
+    if ext.empty:
+        return tv
+    out = _merge_newest_wins([tv, ext])           # ticks win only on the last exported bar
+    _report_series_gaps(out.loc[out.index >= start - step], label + " tick extension")
+    print(f"  [data] {label}: +{len(ext.index.difference(tv.index)):,} bars from {sym} ticks "
+          f"({offset:+.2f}pt, confirmed by the exports) after the last exported bar "
+          f"{start}, to {ext.index[-1]}; tick bars reproduced {checked:,} recent "
+          "exported bars.")
+    if at_roll:
+        print(f"  [data] {label}: stops at the {sym} roll "
+              f"({roll.tz_convert('America/Los_Angeles'):%a %Y-%m-%d %H:%M} PT) -- add a post-roll "
+              "TradingView export to confirm the next contract's offset.")
+    return out
 
 
 # --- mapping raw .scid ticks onto the TradingView scale ---------------------
@@ -678,7 +847,7 @@ def _display_m5_fingerprint():
     about as cheap."""
     global _DISPLAY_M5_FINGERPRINT
     if _DISPLAY_M5_FINGERPRINT is None:
-        tv = _display_m5()
+        tv = _tv_m5()
         h = hashlib.sha1(tv.index.values.tobytes())
         h.update(tv["close"].to_numpy("float64").tobytes())
         _DISPLAY_M5_FINGERPRINT = f"{len(tv)}-{h.hexdigest()[:16]}"
@@ -739,7 +908,7 @@ def _mode_offset(sym, lo, hi):
     to a whole segment, so the right answer is the value nearly every bar
     agrees on, and averaging would let a handful of cross-vendor tick
     discrepancies drag it off a real tick boundary."""
-    tv = _display_m5()
+    tv = _tv_m5()
     raw = _raw_closes_5min(sym, lo, hi)
     common = raw.index.intersection(tv.index)
     if len(common) < _SCID_OFFSET_MIN_OVERLAP:
@@ -810,7 +979,7 @@ def _stored_scid_offset(sym, lo, hi):
     entry = _load_scid_offsets().get(sym)
     if not isinstance(entry, dict) or not isinstance(entry.get("offset"), (int, float)):
         return None
-    tv = _display_m5()
+    tv = _tv_m5()
     check_hi = min(pd.Timestamp(hi), tv.index[-1] + pd.Timedelta(minutes=5))
     check_lo = max(pd.Timestamp(lo), check_hi - pd.Timedelta(days=_SCID_OFFSET_RECHECK_DAYS))
     if check_lo >= check_hi:

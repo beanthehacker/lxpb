@@ -12,6 +12,9 @@ Two things differ from running a report on the dev machine:
     render_labels_report imports `scidReader` at module level, so a stub that
     raises if anything ever calls it stands in for it -- on every machine, so
     the dashboard is proven tick-free wherever it runs.
+    For the same reason the display series are never extended with tick bars
+    here (LXPB_SCID_EXTEND=0): the live TradingView feed already reaches the
+    present, and the dashboard must build the same bars on every machine.
 
 Call `setup()` once, before importing any report module.
 """
@@ -48,4 +51,5 @@ def setup():
     # sibling, then the repo's own modules.
     sys.path[:0] = [VENDOR_DIR, ROOT, os.path.join(ROOT, "ss_m5_confl2")]
     _stub_scid_reader()
+    os.environ["LXPB_SCID_EXTEND"] = "0"
     _done = True

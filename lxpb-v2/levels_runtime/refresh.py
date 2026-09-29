@@ -78,7 +78,7 @@ def _do(store):
     import lxpb_levels_cache as LC
     R.DISPLAY_M5_PATHS = [[hist_path], [live_m5]]
     R.DISPLAY_H1_PATHS = [live_h1]
-    R._DISPLAY_H1_CACHE = R._DISPLAY_M5_CACHE = None
+    R._DISPLAY_H1_CACHE = R._DISPLAY_M5_CACHE = R._TV_H1_CACHE = R._TV_M5_CACHE = None
     m5 = R._display_m5()          # validated: one vintage per list, roll splices, H1 scale
     h1 = R._display_h1()
     store.put("m5_bars", _gz_csv(m5))
