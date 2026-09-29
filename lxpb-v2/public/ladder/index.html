@@ -9,8 +9,10 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%AE%3C/text%3E%3C/svg%3E">
 <link rel="manifest" href="/ladder/manifest.webmanifest">
 <!-- Replay data: built by ladder/build_ladder_data.py from the raw ES tick file.
-     A plain script (not fetch) so this page also works opened straight from disk. -->
-<script src="es-2026-09-28.js"></script>
+     A plain script (not fetch) so this page also works opened straight from disk.
+     Served, the page lives at /ladder (no trailing slash), where a relative src would
+     resolve to the site root, so the served path is absolute. -->
+<script>document.write('<script src="' + (location.protocol === "file:" ? "" : "/ladder/") + 'es-2026-09-28.js"><\/script>');</script>
 <style>
 :root { --bg:#0b0d10; --panel:#12151a; --line:#23262b; --dim:#6f7680; --text:#e6e8eb;
         --bull:#22c55e; --bear:#ef4444; --buy:#3b82f6; --sell:#f97316; --gold:#fbbf24; }
