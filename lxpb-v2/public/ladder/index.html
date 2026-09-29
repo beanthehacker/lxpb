@@ -84,6 +84,7 @@ table.log th { color:var(--dim); font-weight:500; }
     <div class="stat">Win %<b id="winTxt">–</b></div>
     <div class="grow"></div>
     <div id="streak"></div>
+    <button id="lvBtn" title="Which LXPB levels to show">Levels: std</button>
     <button id="helpBtn" title="How to play">?</button>
   </div>
   <canvas id="chart"></canvas>
@@ -354,6 +355,7 @@ function draw(now) {
       lx.strokeRect(1, y + 1, w - 2, ROW - 3);
     }
   }
+  drawLevels(now, top, bot);
   // column headers
   lx.fillStyle = "rgba(11,13,16,0.85)"; lx.fillRect(0, 0, w, 16);
   lx.font = "10px -apple-system,Segoe UI,sans-serif"; lx.fillStyle = "#6f7680"; lx.textAlign = "center";
@@ -364,6 +366,75 @@ function draw(now) {
   drawChart();
   document.getElementById("clock").textContent = ptTime(G.clock) + " PT";
   if (G.pos) updateOpen();
+}
+
+// ---- LXPB levels -----------------------------------------------------------------------
+// Each level appears once its formation bar has CLOSED, turns solid once its breakout bar
+// has closed, and ends at the first tick that retests it (or when the ledger drops it).
+// A retest glows and fades out over RETEST_FADE_MS of real time, whatever the replay
+// speed, so the level that was just touched stays readable; other endings fade quickly.
+const LEVELS = (D.levels || []).map((l) => ({ ...l, p: Math.round(l.price / TICK), fadeAt: null }));
+const LV_MODES = ["Levels: std", "Levels: all P0", "Levels: off"];
+const RETEST_FADE_MS = 4000, QUICK_FADE_MS = 600;
+// A level first seen dead more than this long (replay time) after its end -- skipped past
+// with the -> key, or a mode switch -- is dropped without the fade, so only real touches glow.
+const FADE_ONLY_WITHIN_MS = 20000;
+const LV_COLOR = { LHPB: "167,139,250", LLPB: "244,114,182" };   // violet / pink
+let lvMode = 0;
+// Standard population: a plain-P0 ends at its own breakout. "All P0": tracked to a retest.
+function lvEnd(l) {
+  if (lvMode === 0 && l.plain) return { ms: l.untrackedDeathMs, kind: "plain" };
+  return { ms: l.deathMs, kind: l.deathKind };
+}
+function resetLevels(markDead) {
+  for (const l of LEVELS) { const e = lvEnd(l); l.fadeAt = markDead && e.ms != null && G.clock >= e.ms ? -1e12 : null; }
+}
+function drawLevels(now, top, bot) {
+  if (lvMode === 2) return;
+  const { w, cols } = layout;
+  const rows = new Map();                                  // price -> [{l, alpha, retest, stage}]
+  for (const l of LEVELS) {
+    if (G.clock < l.knownMs || l.p < bot || l.p > top) continue;
+    const e = lvEnd(l);
+    let alpha = 1, retest = false;
+    if (e.ms != null && G.clock >= e.ms) {
+      if (l.fadeAt === null) {
+        l.fadeAt = G.clock - e.ms > FADE_ONLY_WITHIN_MS ? -1e12 : now;
+        if (e.kind === "retest" && l.fadeAt === now) beep(1568, 0.18, "triangle");
+      }
+      retest = e.kind === "retest";
+      alpha = 1 - (now - l.fadeAt) / (retest ? RETEST_FADE_MS : QUICK_FADE_MS);
+      if (alpha <= 0) continue;
+    }
+    const stage = l.breakMs != null && G.clock >= l.breakMs ? "broken" : "formed";
+    if (!rows.has(l.p)) rows.set(l.p, []);
+    rows.get(l.p).push({ l, alpha, retest, stage });
+  }
+  for (const [p, items] of rows) {
+    const y = yOf(p), top1 = items.reduce((a, b) => (b.retest && b.alpha > (a.retest ? a.alpha : 0) ? b : a), items[0]);
+    const h1 = items.some((it) => it.l.tf === "H1"), alpha = Math.max(...items.map((it) => it.alpha));
+    const rgb = LV_COLOR[top1.l.type];
+    // band + outline: solid once broken (awaiting retest), dashed while only formed
+    lx.fillStyle = `rgba(${rgb},${(top1.retest ? 0.45 : 0.13) * alpha})`;
+    lx.fillRect(0, y, w, ROW - 1);
+    lx.strokeStyle = `rgba(${rgb},${alpha})`;
+    lx.lineWidth = h1 ? 3 : 1.5;
+    lx.setLineDash(items.some((it) => it.stage === "broken") ? [] : [5, 4]);
+    lx.strokeRect(1, y + 1, w - 2, ROW - 3);
+    lx.setLineDash([]);
+    // two-line label in the BUY column ("M5 LHPB" / "sw +1" or "RETEST"), unless a buy
+    // order sits on this row -- the order chip wins
+    if (G.orders.some((o) => o.side > 0 && o.price === p)) continue;
+    const KIND = { "spike-P0": "spike", "swing-P0": "swing", "spike+swing-P0": "sp+sw", "plain-P0": "plain" };
+    const n = new Set(items.map((it) => `${it.l.tf} ${it.l.type} ${it.l.kind}`)).size;
+    const line2 = top1.retest ? "RETEST" : (top1.l.kind ? KIND[top1.l.kind] : "formed") + (n > 1 ? ` +${n - 1}` : "");
+    lx.font = `${top1.retest ? "bold " : ""}8.5px -apple-system,Segoe UI,sans-serif`;
+    lx.textAlign = "left"; lx.textBaseline = "top";
+    lx.fillStyle = `rgba(${rgb},${alpha})`;
+    lx.fillText(`${top1.l.tf} ${top1.l.type}`, 5, y + 1.5);
+    lx.fillText(line2, 5, y + ROW / 2);
+    lx.textBaseline = "middle";
+  }
 }
 
 function drawChart() {
@@ -450,6 +521,7 @@ $("fillBtn").onclick = () => { opts.touch = !opts.touch; $("fillBtn").textConten
 $("stopT").onchange = (e) => { opts.stopT = Math.max(1, +e.target.value || 8); };
 $("tgtT").onchange = (e) => { opts.tgtT = Math.max(1, +e.target.value || 8); };
 $("helpBtn").onclick = () => { togglePlay(false); showIntro(); };
+$("lvBtn").onclick = () => { lvMode = (lvMode + 1) % 3; $("lvBtn").textContent = LV_MODES[lvMode]; resetLevels(true); };
 
 // Ladder taps: BUY column -> buy limit below the ask / buy stop above it; SELL column the
 // mirror. Tapping a working order of your own cancels it. Dragging scrolls the ladder.
@@ -505,6 +577,7 @@ function showIntro() {
     <ul>
       <li>Price streams onto the ladder as it traded. The yellow row is the last trade, blue is the bid, orange the ask.</li>
       <li><b>Tap the BUY column</b> below the market for a buy limit, above it for a buy stop. <b>SELL column</b> is the mirror. Tap your order again to cancel. Drag to scroll.</li>
+      <li><b>LXPB levels</b> (H1 and M5, from the level ledgers): violet = LHPB, pink = LLPB, thick = H1. Dashed = formed, solid = broken out and awaiting retest. Each appears only once its bar has closed. When price retests one it glows, chimes and fades out over 4 seconds. <b>Levels: std</b> is the usual population (a plain-P0 ends at its breakout); <b>all P0</b> tracks every P0 to its retest.</li>
       <li><b>Cancel</b> pulls your working orders (not the bracket). <b>Bracket</b> on: every entry gets a stop and target (in ticks, 4 ticks = 1 point).</li>
       <li><b>Fill: thru</b> means a limit fills only once price trades past it. That's the honest default, since there's no queue data. <b>touch</b> is the generous version.</li>
       <li>Score is in points (1 ES point = $50). Anything open at ${ptTime(D.endMs).slice(0, 5)} is flattened.</li>
@@ -524,7 +597,7 @@ function showSummary() {
       over ${n} trade${n === 1 ? "" : "s"} · win rate ${n ? Math.round(100 * w.length / n) : 0}% · best ${sgn(best)} · worst ${sgn(worst)}</div>
     <div style="max-height:40vh;overflow:auto"><table class="log"><tr><th>#</th><th>In (PT)</th><th></th><th>Entry</th><th>Exit</th><th>Why</th><th>P&amp;L</th><th>MFE</th><th>MAE</th></tr>${rows}</table></div>
     <div class="muted">MFE / MAE: best and worst open profit during the trade, in points. Fills and exits are simulated with no fees.</div>`,
-    "Play again", () => { const sp = G.speed; reset(); setSpeed(sp); updateHud(); togglePlay(true); });
+    "Play again", () => { const sp = G.speed; reset(); resetLevels(false); setSpeed(sp); updateHud(); togglePlay(true); });
 }
 
 reset(); resize(); setSpeed(1); updateHud(); showIntro();
