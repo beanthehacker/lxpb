@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d10">
+<meta name="mobile-web-app-capable" content="yes">
+<title>ES Ladder Replay</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%AE%3C/text%3E%3C/svg%3E">
+<link rel="manifest" href="/ladder/manifest.webmanifest">
+<!-- Replay data: built by ladder/build_ladder_data.py from the raw ES tick file.
+     A plain script (not fetch) so this page also works opened straight from disk. -->
+<script src="es-2026-09-28.js"></script>
+<style>
+:root { --bg:#0b0d10; --panel:#12151a; --line:#23262b; --dim:#6f7680; --text:#e6e8eb;
+        --bull:#22c55e; --bear:#ef4444; --buy:#3b82f6; --sell:#f97316; --gold:#fbbf24; }
+* { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html, body { margin:0; height:100%; background:var(--bg); color:var(--text);
+             font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; overflow:hidden;
+             user-select:none; -webkit-user-select:none; touch-action:manipulation; }
+#app { display:flex; flex-direction:column; height:100%; max-width:720px; margin:0 auto;
+       padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+.bar { display:flex; align-items:center; gap:6px; padding:6px 8px; background:var(--panel);
+       border-bottom:1px solid var(--line); flex-wrap:wrap; }
+.bar.bottom { border-top:1px solid var(--line); border-bottom:none; }
+.clock { font-variant-numeric:tabular-nums; font-size:15px; font-weight:600; min-width:78px; }
+.stat { font-size:11px; color:var(--dim); line-height:1.15; font-variant-numeric:tabular-nums; }
+.stat b { display:block; font-size:14px; color:var(--text); }
+.grow { flex:1; }
+button { background:#1b1f26; color:var(--text); border:1px solid #2c313a; border-radius:7px;
+         font:inherit; font-size:13px; padding:7px 10px; cursor:pointer; }
+button:active { transform:scale(0.96); }
+button.on { background:#274060; border-color:#3b82f6; }
+button.buy { background:#16325c; border-color:var(--buy); font-weight:700; }
+button.sell { background:#4a2a10; border-color:var(--sell); font-weight:700; }
+button.big { flex:1; padding:11px 6px; font-size:14px; }
+.speeds { display:flex; gap:3px; }
+.speeds button { padding:6px 6px; font-size:12px; }
+@media (max-width:480px) { .bar { gap:4px; padding:5px 6px; } button { padding:7px 7px; font-size:12px; } .clock { font-size:14px; min-width:0; } .stat b { font-size:13px; } }
+#chart { width:100%; height:110px; display:block; border-bottom:1px solid var(--line); }
+#ladderWrap { position:relative; flex:1; min-height:0; }
+#ladder { width:100%; height:100%; display:block; touch-action:none; }
+#fx { position:absolute; inset:0; pointer-events:none; overflow:hidden; }
+.float { position:absolute; font-weight:800; font-size:26px; text-shadow:0 2px 8px #000;
+         animation:floatUp 1.4s ease-out forwards; left:50%; transform:translateX(-50%); }
+@keyframes floatUp { from { opacity:1; margin-top:0; } to { opacity:0; margin-top:-90px; } }
+.shake { animation:shake 0.35s; }
+@keyframes shake { 20%{transform:translateX(-7px)} 40%{transform:translateX(6px)} 60%{transform:translateX(-4px)} 80%{transform:translateX(3px)} }
+.flashG { animation:flashG 0.5s; } .flashR { animation:flashR 0.5s; }
+@keyframes flashG { from { box-shadow:inset 0 0 0 4px var(--bull); } to { box-shadow:inset 0 0 0 0 transparent; } }
+@keyframes flashR { from { box-shadow:inset 0 0 0 4px var(--bear); } to { box-shadow:inset 0 0 0 0 transparent; } }
+.brk { display:flex; align-items:center; gap:4px; font-size:12px; color:var(--dim); }
+.brk input { width:38px; background:#0f1216; color:var(--text); border:1px solid #2c313a; border-radius:5px;
+             padding:4px; font:inherit; text-align:center; }
+#overlay { position:fixed; inset:0; background:rgba(5,7,10,0.88); display:flex; align-items:center;
+           justify-content:center; z-index:10; padding:18px; }
+#overlay .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px;
+                 max-width:460px; font-size:13.5px; line-height:1.5; }
+#overlay h1 { margin:0 0 4px; font-size:20px; }
+#overlay ul { padding-left:18px; margin:8px 0; }
+#overlay .muted { color:var(--dim); font-size:12px; }
+#overlay button { margin-top:10px; width:100%; padding:12px; font-size:15px; background:#16325c; border-color:var(--buy); }
+table.log { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; font-variant-numeric:tabular-nums; }
+table.log td, table.log th { padding:3px 5px; border-bottom:1px solid var(--line); text-align:right; }
+table.log th { color:var(--dim); font-weight:500; }
+.pos { color:var(--bull); } .neg { color:var(--bear); }
+#streak { font-weight:700; color:var(--gold); min-width:0; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="bar">
+    <div class="clock" id="clock">--:--:--</div>
+    <button id="play" style="min-width:64px">▶ Play</button>
+    <div class="speeds" id="speeds"></div>
+  </div>
+  <div class="bar">
+    <div class="stat">Position<b id="posTxt">flat</b></div>
+    <div class="stat">Open P&amp;L<b id="openTxt">0.00</b></div>
+    <div class="stat">Realized<b id="realTxt">0.00</b></div>
+    <div class="stat">Trades<b id="tradesTxt">0</b></div>
+    <div class="stat">Win %<b id="winTxt">–</b></div>
+    <div class="grow"></div>
+    <div id="streak"></div>
+    <button id="helpBtn" title="How to play">?</button>
+  </div>
+  <canvas id="chart"></canvas>
+  <div id="ladderWrap"><canvas id="ladder"></canvas><div id="fx"></div></div>
+  <div class="bar bottom">
+    <button class="big buy" id="buyMkt">BUY MKT</button>
+    <button class="big" id="flat">FLATTEN</button>
+    <button class="big sell" id="sellMkt">SELL MKT</button>
+  </div>
+  <div class="bar bottom">
+    <button id="brkBtn" class="on">Bracket</button>
+    <label class="brk">stop <input id="stopT" type="number" min="1" max="80" value="8"> t</label>
+    <label class="brk">tgt <input id="tgtT" type="number" min="1" max="160" value="8"> t</label>
+    <button id="fillBtn" title="How limit orders fill">Fill: thru</button>
+    <div class="grow"></div>
+    <button id="cancelAll">Cancel</button>
+    <button id="centerBtn" class="on">Center</button>
+  </div>
+</div>
+<div id="overlay"></div>
+
+<script>
+"use strict";
+const D = window.LADDER_DATA;
+const TICK = D.tick, PV = D.pointValue;
+
+// ---- decode the replay: absolute time, price (in ticks), size, side, bid, ask -----------
+const N = D.events;
+const T = new Float64Array(N), P = new Int32Array(N), V = new Int32Array(N),
+      S = new Int8Array(N), BID = new Int32Array(N), ASK = new Int32Array(N);
+{
+  let t = D.startMs, p = Math.round(D.firstPrice / TICK);
+  for (let i = 0, k = 0; i < N; i++, k += D.stride) {
+    t += D.data[k]; p += D.data[k + 1];
+    T[i] = t; P[i] = p; V[i] = D.data[k + 2]; S[i] = D.data[k + 3];
+    const c = D.data[k + 4];
+    BID[i] = p - (c >> 4); ASK[i] = p + (c & 15);
+  }
+}
+const LO = Math.round(D.lo / TICK) - 40, HI = Math.round(D.hi / TICK) + 40, NP = HI - LO + 1;
+const fmt = (ticks) => (ticks * TICK).toFixed(2);
+const ptTime = (ms) => new Date(ms).toLocaleTimeString("en-US",
+  { timeZone: "America/Los_Angeles", hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+// ---- game state -----------------------------------------------------------------------
+let G;
+function reset() {
+  G = {
+    clock: D.startMs, cursor: 0, playing: false, speed: 1, done: false,
+    last: P[0], bid: BID[0], ask: ASK[0],
+    bidVol: new Int32Array(NP), askVol: new Int32Array(NP),
+    orders: [], nextId: 1,
+    pos: 0, avg: 0, realized: 0,                       // position in contracts, avg in ticks, P&L in points
+    trade: null, trades: [], streak: 0,
+    bars: [],                                          // 1-minute candles built as the replay runs
+    rowFlash: new Map(),                               // price -> {until, color}
+    centerOn: true, viewCenter: P[0],
+  };
+}
+const opts = { bracket: true, stopT: 8, tgtT: 8, touch: false };
+
+// ---- orders & fills -------------------------------------------------------------------
+// type: "limit" or "stop"; side +1 buy / -1 sell. Limits fill at their own price once a
+// trade prints THROUGH them (or AT them in touch mode); stops fill at the triggering
+// trade's price, so a fast market gives real slippage.
+function placeOrder(side, type, price, tag) {
+  G.orders.push({ id: G.nextId++, side, type, price, qty: 1, tag: tag || "" });
+  beep(side > 0 ? 660 : 520, 0.04);
+}
+function marketOrder(side) {
+  if (G.done) return;
+  if (!G.playing && G.clock === D.startMs) togglePlay(true);
+  fill(side, side > 0 ? G.ask : G.bid, 1, "mkt");
+}
+function flatten() {
+  cancelWhere(() => true);
+  if (G.pos) fill(-Math.sign(G.pos), G.pos > 0 ? G.bid : G.ask, Math.abs(G.pos), "flat");
+}
+function cancelWhere(fn) { G.orders = G.orders.filter((o) => !fn(o)); }
+
+function fill(side, price, qty, why) {
+  const before = G.pos;
+  if (before === 0) G.trade = { side, entryMs: G.clock, entry: price, qty: 0, pnl: 0, mae: 0, mfe: 0 };
+  // Realize P&L on whatever part of the fill closes existing exposure.
+  if (before !== 0 && Math.sign(before) !== side) {
+    const closing = Math.min(qty, Math.abs(before));
+    const pts = (price - G.avg) * Math.sign(before) * closing * TICK;
+    G.realized += pts; G.trade.pnl += pts;
+  }
+  const after = before + side * qty;
+  if (before === 0 || Math.sign(before) === side) {
+    G.avg = (G.avg * Math.abs(before) + price * qty) / Math.abs(after);
+    G.trade.qty = Math.max(G.trade.qty, Math.abs(after));
+  } else if (after !== 0 && Math.sign(after) !== Math.sign(before)) {
+    G.avg = price;                                    // reversed through flat
+  }
+  G.pos = after;
+  flashRow(price, side > 0 ? "#3b82f6" : "#f97316");
+  beep(side > 0 ? 880 : 440, 0.07);
+
+  if (after === 0 || Math.sign(after) !== Math.sign(before) && before !== 0) closeTrade(price, why);
+  if (after !== 0 && before !== 0 && Math.sign(after) !== Math.sign(before))
+    G.trade = { side: Math.sign(after), entryMs: G.clock, entry: price, qty: Math.abs(after), pnl: 0, mae: 0, mfe: 0 };
+
+  cancelWhere((o) => o.tag === "brk");
+  if (G.pos !== 0 && opts.bracket) {
+    const d = Math.sign(G.pos), a = Math.round(G.avg);
+    G.orders.push({ id: G.nextId++, side: -d, type: "stop", price: a - d * opts.stopT, qty: Math.abs(G.pos), tag: "brk" });
+    G.orders.push({ id: G.nextId++, side: -d, type: "limit", price: a + d * opts.tgtT, qty: Math.abs(G.pos), tag: "brk" });
+  }
+  updateHud();
+}
+
+function closeTrade(exitPx, why) {
+  const t = G.trade; if (!t) return;
+  t.exitMs = G.clock; t.exit = exitPx; t.why = why;
+  t.r = opts.bracket ? t.pnl / (opts.stopT * TICK * t.qty) : null;
+  G.trades.push(t); G.trade = null;
+  const win = t.pnl > 0;
+  G.streak = win ? Math.max(1, G.streak + 1) : t.pnl < 0 ? Math.min(-1, G.streak - 1) : 0;
+  floatText((t.pnl >= 0 ? "+" : "") + t.pnl.toFixed(2), win ? "var(--bull)" : t.pnl < 0 ? "var(--bear)" : "var(--dim)");
+  const wrap = document.getElementById("ladderWrap");
+  wrap.classList.remove("shake", "flashG", "flashR"); void wrap.offsetWidth;
+  wrap.classList.add(win ? "flashG" : t.pnl < 0 ? "shake" : "flashG");
+  if (t.pnl < 0) wrap.classList.add("flashR");
+  if (win) { beep(988, 0.08); setTimeout(() => beep(1318, 0.12), 90); } else if (t.pnl < 0) beep(160, 0.25, "sawtooth");
+}
+
+function checkOrders(px) {
+  // One pass per printed trade; a filled order may cancel its bracket sibling.
+  for (let i = 0; i < G.orders.length; i++) {
+    const o = G.orders[i];
+    let hit = false, at = o.price;
+    if (o.type === "limit") hit = o.side > 0 ? (opts.touch ? px <= o.price : px < o.price) : (opts.touch ? px >= o.price : px > o.price);
+    else { hit = o.side > 0 ? px >= o.price : px <= o.price; at = px; }
+    if (!hit) continue;
+    G.orders.splice(i, 1);
+    const qty = o.tag === "brk" ? Math.abs(G.pos) : o.qty;
+    if (qty > 0) fill(o.side, at, qty, o.tag === "brk" ? (o.type === "stop" ? "stop" : "target") : o.type);
+    return checkOrders(px);                           // order list changed; rescan
+  }
+}
+
+// ---- replay ---------------------------------------------------------------------------
+function advanceTo(ms) {
+  while (G.cursor < N && T[G.cursor] <= ms) {
+    const i = G.cursor++;
+    const p = P[i], ix = p - LO;
+    if (S[i] > 0) G.askVol[ix] += V[i]; else G.bidVol[ix] += V[i];
+    G.last = p; G.bid = BID[i]; G.ask = ASK[i];
+    const m = Math.floor(T[i] / 60000) * 60000;
+    let b = G.bars[G.bars.length - 1];
+    if (!b || b.t !== m) G.bars.push(b = { t: m, o: p, h: p, l: p, c: p, v: 0 });
+    b.h = Math.max(b.h, p); b.l = Math.min(b.l, p); b.c = p; b.v += V[i];
+    if (V[i] >= 40) G.rowFlash.set(p, { until: T[i] + 900, color: S[i] > 0 ? "#22c55e" : "#ef4444", big: V[i] });
+    if (G.trade) {
+      const ex = (p - G.avg) * Math.sign(G.pos) * TICK;
+      G.trade.mfe = Math.max(G.trade.mfe, ex); G.trade.mae = Math.min(G.trade.mae, ex);
+    }
+    G.clock = T[i];
+    if (G.orders.length) checkOrders(p);
+  }
+  G.clock = ms;
+  if (G.clock >= D.endMs && !G.done) endGame();
+}
+
+let lastFrame = 0;
+function frame(now) {
+  const dt = lastFrame ? Math.min(now - lastFrame, 250) : 0;
+  lastFrame = now;
+  if (G.playing && !G.done) advanceTo(Math.min(D.endMs, G.clock + dt * G.speed));
+  draw(now);
+  requestAnimationFrame(frame);
+}
+
+function endGame() {
+  G.done = true; G.playing = false;
+  if (G.pos) flatten();
+  updateHud(); showSummary();
+}
+
+// ---- drawing --------------------------------------------------------------------------
+const lc = document.getElementById("ladder"), lx = lc.getContext("2d");
+const cc = document.getElementById("chart"), cx = cc.getContext("2d");
+let ROW = 22, dpr = 1, layout = null;
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  for (const c of [lc, cc]) { const r = c.getBoundingClientRect(); c.width = r.width * dpr; c.height = r.height * dpr; }
+  const w = lc.width / dpr;
+  // columns: buy orders | sold@bid | price | bought@ask | sell orders
+  const oc = Math.max(52, w * 0.17), vc = Math.max(54, w * 0.2);
+  const pc = w - 2 * oc - 2 * vc;
+  layout = { w, h: lc.height / dpr, cols: [0, oc, oc + vc, oc + vc + pc, oc + 2 * vc + pc, w] };
+}
+window.addEventListener("resize", resize);
+
+function priceAtY(y) { const rows = layout.h / ROW; return Math.ceil(G.viewCenter + rows / 2 - 0.5 - y / ROW); }
+function yOf(p) { const rows = layout.h / ROW; return (G.viewCenter + rows / 2 - 0.5 - p) * ROW; }
+
+function draw(now) {
+  const { w, h, cols } = layout;
+  const rows = h / ROW;
+  if (G.centerOn && Math.abs(G.last - G.viewCenter) > rows * 0.28) G.viewCenter = G.last;
+  lx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  lx.fillStyle = "#0b0d10"; lx.fillRect(0, 0, w, h);
+  const top = Math.ceil(G.viewCenter + rows / 2), bot = Math.floor(G.viewCenter - rows / 2) - 1;
+
+  let maxV = 1;
+  for (let p = bot; p <= top; p++) { const ix = p - LO; if (ix >= 0 && ix < NP) maxV = Math.max(maxV, G.bidVol[ix] + G.askVol[ix]); }
+
+  // Recent prints (last 3 replay seconds) per price, for the flash column.
+  const recent = new Map();
+  for (let i = G.cursor - 1; i >= 0 && T[i] > G.clock - 3000; i--) {
+    const r = recent.get(P[i]) || { b: 0, s: 0 }; if (S[i] > 0) r.b += V[i]; else r.s += V[i]; recent.set(P[i], r);
+  }
+  const orderAt = new Map();
+  for (const o of G.orders) { const k = o.price * 2 + (o.side > 0 ? 0 : 1); orderAt.set(k, (orderAt.get(k) || []).concat(o)); }
+
+  lx.font = `${Math.min(13, ROW * 0.6)}px ui-monospace,Menlo,Consolas,monospace`;
+  lx.textBaseline = "middle";
+  for (let p = bot; p <= top; p++) {
+    const y = yOf(p), ix = p - LO, mid = y + ROW / 2;
+    if (y > h || y + ROW < 0) continue;
+    // row background: spread, bid, ask, position avg
+    let bg = p % 4 === 0 ? "#10141a" : "#0d1014";
+    if (p === G.bid) bg = "#12233d"; else if (p === G.ask) bg = "#3a2211";
+    if (p < G.bid) bg = p % 4 === 0 ? "#0e1726" : "#0c1420";
+    if (p > G.ask) bg = p % 4 === 0 ? "#1f160e" : "#1a130c";
+    lx.fillStyle = bg; lx.fillRect(0, y, w, ROW - 1);
+
+    const f = G.rowFlash.get(p);
+    if (f && f.until > G.clock) { lx.globalAlpha = Math.min(1, (f.until - G.clock) / 900) * 0.35; lx.fillStyle = f.color; lx.fillRect(0, y, w, ROW - 1); lx.globalAlpha = 1; }
+    else if (f) G.rowFlash.delete(p);
+
+    const bv = ix >= 0 && ix < NP ? G.bidVol[ix] : 0, av = ix >= 0 && ix < NP ? G.askVol[ix] : 0;
+    // volume profile behind the price column
+    const pw = cols[3] - cols[2];
+    if (bv + av) {
+      const tot = (bv + av) / maxV * pw;
+      lx.fillStyle = "rgba(239,68,68,0.22)"; lx.fillRect(cols[2], y + 2, tot * bv / (bv + av), ROW - 5);
+      lx.fillStyle = "rgba(34,197,94,0.22)"; lx.fillRect(cols[2] + tot * bv / (bv + av), y + 2, tot * av / (bv + av), ROW - 5);
+    }
+    // sold @ bid / bought @ ask (session totals), recent prints brighter
+    const r = recent.get(p);
+    lx.textAlign = "right";
+    if (bv) { lx.fillStyle = r && r.s ? "#ff8a8a" : "#b45a5a"; lx.fillText(r && r.s ? `${r.s} · ${bv}` : bv, cols[2] - 6, mid); }
+    lx.textAlign = "left";
+    if (av) { lx.fillStyle = r && r.b ? "#7ef0a6" : "#4f9d6b"; lx.fillText(r && r.b ? `${av} · ${r.b}` : av, cols[3] + 6, mid); }
+    // price
+    lx.textAlign = "center";
+    lx.fillStyle = p === G.last ? "#fbbf24" : p % 4 === 0 ? "#e6e8eb" : "#9aa1ab";
+    if (p === G.last) { lx.fillStyle = "#3a2f0c"; lx.fillRect(cols[2], y, pw, ROW - 1); lx.fillStyle = "#fbbf24"; }
+    lx.fillText(fmt(p), (cols[2] + cols[3]) / 2, mid);
+    // working orders
+    for (const [side, x0, x1] of [[1, cols[0], cols[1]], [-1, cols[4], cols[5]]]) {
+      const os = orderAt.get(p * 2 + (side > 0 ? 0 : 1));
+      if (!os) continue;
+      const o = os[0];
+      lx.fillStyle = o.tag === "brk" ? (o.type === "stop" ? "#7f1d1d" : "#14532d") : side > 0 ? "#1d4ed8" : "#c2410c";
+      lx.fillRect(x0 + 3, y + 2, x1 - x0 - 6, ROW - 5);
+      lx.fillStyle = "#fff";
+      const q = os.reduce((s, o) => s + (o.tag === "brk" ? Math.abs(G.pos) : o.qty), 0);
+      lx.fillText(`${o.tag === "brk" ? (o.type === "stop" ? "SL" : "TP") : o.type === "stop" ? "STP" : "LMT"} ${q}`, (x0 + x1) / 2, mid);
+    }
+    // average entry marker
+    if (G.pos && p === Math.round(G.avg)) {
+      lx.strokeStyle = G.pos > 0 ? "#3b82f6" : "#f97316"; lx.lineWidth = 2;
+      lx.strokeRect(1, y + 1, w - 2, ROW - 3);
+    }
+  }
+  // column headers
+  lx.fillStyle = "rgba(11,13,16,0.85)"; lx.fillRect(0, 0, w, 16);
+  lx.font = "10px -apple-system,Segoe UI,sans-serif"; lx.fillStyle = "#6f7680"; lx.textAlign = "center";
+  ["BUY", "SOLD@BID", "PRICE", "BOT@ASK", "SELL"].forEach((t, i) => lx.fillText(t, (cols[i] + cols[i + 1]) / 2, 8));
+  lx.strokeStyle = "#23262b"; lx.lineWidth = 1;
+  for (const x of cols.slice(1, -1)) { lx.beginPath(); lx.moveTo(x + 0.5, 16); lx.lineTo(x + 0.5, h); lx.stroke(); }
+
+  drawChart();
+  document.getElementById("clock").textContent = ptTime(G.clock) + " PT";
+  if (G.pos) updateOpen();
+}
+
+function drawChart() {
+  const w = cc.width / dpr, h = cc.height / dpr;
+  cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cx.fillStyle = "#0b0d10"; cx.fillRect(0, 0, w, h);
+  const bars = G.bars, n = 50, bw = w / n;
+  if (!bars.length) return;
+  let lo = Infinity, hi = -Infinity;
+  for (const b of bars) { lo = Math.min(lo, b.l); hi = Math.max(hi, b.h); }
+  lo -= 2; hi += 2;
+  const y = (p) => 6 + (hi - p) / (hi - lo) * (h - 12);
+  bars.forEach((b, i) => {
+    const x = i * bw + bw / 2, up = b.c >= b.o;
+    cx.strokeStyle = cx.fillStyle = up ? "#22c55e" : "#ef4444";
+    cx.beginPath(); cx.moveTo(x, y(b.h)); cx.lineTo(x, y(b.l)); cx.stroke();
+    const t = y(Math.max(b.o, b.c)), bt = y(Math.min(b.o, b.c));
+    cx.fillRect(x - bw * 0.35, t, bw * 0.7, Math.max(1, bt - t));
+  });
+  if (G.pos) {
+    cx.strokeStyle = G.pos > 0 ? "#3b82f6" : "#f97316"; cx.setLineDash([4, 3]);
+    cx.beginPath(); cx.moveTo(0, y(G.avg)); cx.lineTo(w, y(G.avg)); cx.stroke(); cx.setLineDash([]);
+  }
+  cx.fillStyle = "#6f7680"; cx.font = "10px -apple-system,Segoe UI,sans-serif"; cx.textAlign = "right";
+  cx.fillText(fmt(hi - 2), w - 3, 9); cx.fillText(fmt(lo + 2), w - 3, h - 4);
+  cx.textAlign = "left"; cx.fillText("1-min, " + D.contract + " " + D.date, 4, 9);
+}
+
+// ---- HUD ------------------------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+function sgn(x) { return (x > 0 ? "+" : "") + x.toFixed(2); }
+function cls(el, x) { el.className = x > 0 ? "pos" : x < 0 ? "neg" : ""; }
+function updateOpen() {
+  const o = G.pos ? ((G.pos > 0 ? G.bid : G.ask) - G.avg) * G.pos * TICK : 0;
+  $("openTxt").textContent = sgn(o) + " pt"; cls($("openTxt"), o);
+}
+function updateHud() {
+  $("posTxt").textContent = G.pos ? `${G.pos > 0 ? "LONG" : "SHORT"} ${Math.abs(G.pos)} @ ${fmt(G.avg)}` : "flat";
+  $("posTxt").className = G.pos > 0 ? "pos" : G.pos < 0 ? "neg" : "";
+  updateOpen();
+  $("realTxt").textContent = `${sgn(G.realized)} pt ($${Math.round(G.realized * PV)})`; cls($("realTxt"), G.realized);
+  const n = G.trades.length, w = G.trades.filter((t) => t.pnl > 0).length;
+  $("tradesTxt").textContent = n; $("winTxt").textContent = n ? Math.round(100 * w / n) + "%" : "–";
+  $("streak").textContent = G.streak >= 2 ? `🔥 ${G.streak} wins` : G.streak <= -2 ? `🧊 ${-G.streak} losses` : "";
+}
+function floatText(txt, color) {
+  const el = document.createElement("div");
+  el.className = "float"; el.textContent = txt; el.style.color = color; el.style.top = "40%";
+  $("fx").appendChild(el); setTimeout(() => el.remove(), 1500);
+}
+function flashRow(p, color) { G.rowFlash.set(p, { until: G.clock + 700, color }); }
+
+let audio = null;
+function beep(freq, dur, type) {
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.type = type || "sine"; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.08, audio.currentTime); g.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + dur);
+    o.connect(g).connect(audio.destination); o.start(); o.stop(audio.currentTime + dur);
+  } catch (e) { /* no audio */ }
+}
+
+// ---- controls -------------------------------------------------------------------------
+const SPEEDS = [1, 2, 5, 10, 30, 60];
+SPEEDS.forEach((s, i) => {
+  const b = document.createElement("button"); b.textContent = s + "×"; b.dataset.s = s;
+  b.onclick = () => setSpeed(s); $("speeds").appendChild(b);
+});
+function setSpeed(s) { G.speed = s; for (const b of $("speeds").children) b.classList.toggle("on", +b.dataset.s === s); }
+function togglePlay(force) {
+  if (G.done) return;
+  G.playing = force === undefined ? !G.playing : force;
+  $("play").textContent = G.playing ? "❚❚ Pause" : "▶ Play";
+}
+$("play").onclick = () => togglePlay();
+$("buyMkt").onclick = () => marketOrder(1);
+$("sellMkt").onclick = () => marketOrder(-1);
+$("flat").onclick = flatten;
+$("cancelAll").onclick = () => cancelWhere((o) => o.tag !== "brk");
+$("centerBtn").onclick = () => { G.centerOn = !G.centerOn; if (G.centerOn) G.viewCenter = G.last; $("centerBtn").classList.toggle("on", G.centerOn); };
+$("brkBtn").onclick = () => { opts.bracket = !opts.bracket; $("brkBtn").classList.toggle("on", opts.bracket); };
+$("fillBtn").onclick = () => { opts.touch = !opts.touch; $("fillBtn").textContent = "Fill: " + (opts.touch ? "touch" : "thru"); };
+$("stopT").onchange = (e) => { opts.stopT = Math.max(1, +e.target.value || 8); };
+$("tgtT").onchange = (e) => { opts.tgtT = Math.max(1, +e.target.value || 8); };
+$("helpBtn").onclick = () => { togglePlay(false); showIntro(); };
+
+// Ladder taps: BUY column -> buy limit below the ask / buy stop above it; SELL column the
+// mirror. Tapping a working order of your own cancels it. Dragging scrolls the ladder.
+let drag = null;
+lc.addEventListener("pointerdown", (e) => { drag = { y: e.clientY, c: G.viewCenter, moved: false }; lc.setPointerCapture(e.pointerId); });
+lc.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const dy = e.clientY - drag.y;
+  if (Math.abs(dy) > 8) { drag.moved = true; G.centerOn = false; $("centerBtn").classList.remove("on"); G.viewCenter = drag.c + Math.round(dy / ROW); }
+});
+lc.addEventListener("pointerup", (e) => {
+  const d = drag; drag = null;
+  if (!d || d.moved || G.done) return;
+  const r = lc.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  if (y < 16) return;
+  const p = priceAtY(y), c = layout.cols;
+  const side = x < c[1] ? 1 : x >= c[4] ? -1 : 0;
+  if (!side) return;
+  const mine = G.orders.find((o) => o.price === p && o.side === side && o.tag !== "brk");
+  if (mine) { cancelWhere((o) => o === mine); beep(300, 0.04); return; }
+  if (!G.playing && G.clock === D.startMs) togglePlay(true);
+  if (side > 0) { if (p >= G.ask) p === G.ask ? fill(1, G.ask, 1, "mkt") : placeOrder(1, "stop", p); else placeOrder(1, "limit", p); }
+  else { if (p <= G.bid) p === G.bid ? fill(-1, G.bid, 1, "mkt") : placeOrder(-1, "stop", p); else placeOrder(-1, "limit", p); }
+});
+lc.addEventListener("wheel", (e) => {
+  e.preventDefault(); G.centerOn = false; $("centerBtn").classList.remove("on");
+  G.viewCenter += e.deltaY > 0 ? -2 : 2;
+}, { passive: false });
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT") return;
+  const k = e.key.toLowerCase();
+  if (k === " ") { e.preventDefault(); togglePlay(); }
+  else if (k === "b") marketOrder(1);
+  else if (k === "s") marketOrder(-1);
+  else if (k === "f") flatten();
+  else if (k === "x") $("cancelAll").onclick();
+  else if (k === "c") $("centerBtn").onclick();
+  else if (k >= "1" && k <= "6") setSpeed(SPEEDS[+k - 1]);
+  else if (k === "arrowright") advanceTo(Math.min(D.endMs, G.clock + 60000));
+});
+
+// ---- intro & summary ------------------------------------------------------------------
+function overlay(html, btn, onBtn) {
+  const o = $("overlay"); o.style.display = "flex";
+  o.innerHTML = `<div class="card">${html}<button id="ovBtn">${btn}</button></div>`;
+  $("ovBtn").onclick = () => { o.style.display = "none"; onBtn && onBtn(); };
+}
+function showIntro() {
+  overlay(`<h1>🎮 ES Ladder Replay</h1>
+    <div class="muted">${D.contract} · ${D.date} · ${ptTime(D.startMs).slice(0, 5)}–${ptTime(D.endMs).slice(0, 5)} PT ·
+      ${D.totalVolume.toLocaleString()} contracts, real ticks</div>
+    <ul>
+      <li>Price streams onto the ladder as it traded. The yellow row is the last trade, blue is the bid, orange the ask.</li>
+      <li><b>Tap the BUY column</b> below the market for a buy limit, above it for a buy stop. <b>SELL column</b> is the mirror. Tap your order again to cancel. Drag to scroll.</li>
+      <li><b>Cancel</b> pulls your working orders (not the bracket). <b>Bracket</b> on: every entry gets a stop and target (in ticks, 4 ticks = 1 point).</li>
+      <li><b>Fill: thru</b> means a limit fills only once price trades past it. That's the honest default, since there's no queue data. <b>touch</b> is the generous version.</li>
+      <li>Score is in points (1 ES point = $50). Anything open at ${ptTime(D.endMs).slice(0, 5)} is flattened.</li>
+    </ul>
+    <div class="muted">Keys: space play/pause · B/S market · F flatten · X cancel · 1–6 speed · → skip 1 min · C center</div>`,
+    G.clock === D.startMs ? "Start" : "Resume", () => togglePlay(true));
+}
+function showSummary() {
+  const ts = G.trades, n = ts.length, w = ts.filter((t) => t.pnl > 0);
+  const best = n ? Math.max(...ts.map((t) => t.pnl)) : 0, worst = n ? Math.min(...ts.map((t) => t.pnl)) : 0;
+  const grade = G.realized >= 8 ? "S" : G.realized >= 4 ? "A" : G.realized >= 1 ? "B" : G.realized >= -1 ? "C" : "D";
+  const rows = ts.map((t, i) => `<tr><td>${i + 1}</td><td>${ptTime(t.entryMs).slice(0, 8)}</td><td>${t.side > 0 ? "L" : "S"}</td>
+    <td>${fmt(t.entry)}</td><td>${fmt(t.exit)}</td><td>${t.why}</td><td class="${t.pnl > 0 ? "pos" : t.pnl < 0 ? "neg" : ""}">${sgn(t.pnl)}</td>
+    <td>${t.mfe.toFixed(2)}</td><td>${t.mae.toFixed(2)}</td></tr>`).join("");
+  overlay(`<h1>Session over · grade ${grade}</h1>
+    <div>Net <b class="${G.realized > 0 ? "pos" : G.realized < 0 ? "neg" : ""}">${sgn(G.realized)} pt ($${Math.round(G.realized * PV)})</b>
+      over ${n} trade${n === 1 ? "" : "s"} · win rate ${n ? Math.round(100 * w.length / n) : 0}% · best ${sgn(best)} · worst ${sgn(worst)}</div>
+    <div style="max-height:40vh;overflow:auto"><table class="log"><tr><th>#</th><th>In (PT)</th><th></th><th>Entry</th><th>Exit</th><th>Why</th><th>P&amp;L</th><th>MFE</th><th>MAE</th></tr>${rows}</table></div>
+    <div class="muted">MFE / MAE: best and worst open profit during the trade, in points. Fills and exits are simulated with no fees.</div>`,
+    "Play again", () => { const sp = G.speed; reset(); setSpeed(sp); updateHud(); togglePlay(true); });
+}
+
+reset(); resize(); setSpeed(1); updateHud(); showIntro();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

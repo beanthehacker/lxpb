@@ -1,0 +1,11 @@
+{
+  "name": "ES Ladder Replay",
+  "short_name": "ES Ladder",
+  "start_url": "/ladder",
+  "scope": "/ladder",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0d10",
+  "theme_color": "#0b0d10",
+  "icons": [{ "src": "/ladder/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

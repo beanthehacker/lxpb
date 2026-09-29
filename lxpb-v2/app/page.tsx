@@ -176,6 +176,26 @@ export default function HomePage() {
           <span>Trade explorer -- combine M5 Confluence v2 filters (AND / OR / unless) across 2025, 2026 and Jul-Aug</span>
           <span style={{ color: "#6f7680", fontSize: 11, whiteSpace: "nowrap" }}>/explorer</span>
         </a>
+        <a
+          href="/ladder"
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "baseline",
+            gap: 12,
+            marginTop: 8,
+            padding: "10px 14px",
+            border: "1px solid #23262b",
+            borderRadius: 8,
+            background: "#12151a",
+            color: "#e6e8eb",
+            textDecoration: "none",
+            fontSize: 13,
+          }}
+        >
+          <span>ES ladder replay -- trade real ES ticks on a price ladder, game-style (28 Sep 2026, 09:20-10:10 PT)</span>
+          <span style={{ color: "#6f7680", fontSize: 11, whiteSpace: "nowrap" }}>/ladder</span>
+        </a>
       </section>
 
       {groups.map((g) => (

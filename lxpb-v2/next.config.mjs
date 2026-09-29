@@ -8,6 +8,8 @@ const nextConfig = {
       // /levels is a static page (public/levels/index.html) over the levels
       // runtime; the app's proxy.ts gates it like every other route.
       { source: "/levels", destination: "/levels/index.html" },
+      // /ladder is the static ES ladder-replay game (public/ladder/index.html).
+      { source: "/ladder", destination: "/ladder/index.html" },
     ];
     // Local development only: `next dev` does not run Vercel's Python
     // functions, so forward /api/levels to `python levels_runtime/dev_server.py`
