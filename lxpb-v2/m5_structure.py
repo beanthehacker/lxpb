@@ -63,13 +63,16 @@ def _as_utc(ts):
     return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
 
 
-def entry_cutoff(touch_time):
+def entry_cutoff(touch_time, bar_width=pd.Timedelta(minutes=5)):
     """The instant this strategy is allowed to see structure up to: the last
-    nanosecond before the entry's OWN M5 candle opened. Same convention (and
-    same reason) as render_ss_confl_finetune_report._live_m5_before_entry --
-    ledger/bar timestamps label bar STARTS, so querying at the tick itself
-    would expose the rest of an unfinished candle."""
-    return _as_utc(touch_time).floor("5min") - pd.Timedelta(nanoseconds=1)
+    nanosecond before the entry's OWN M5 (or `bar_width`) candle opened. Same
+    convention (and same reason) as
+    render_ss_confl_finetune_report._live_m5_before_entry -- ledger/bar
+    timestamps label bar STARTS, so querying at the tick itself would expose
+    the rest of an unfinished candle. `bar_width` defaults to the real M5
+    series' own 5 minutes; a caller running this against a different-
+    timeframe bars/ledger (e.g. an M1 one) passes its own width."""
+    return _as_utc(touch_time).floor(bar_width) - pd.Timedelta(nanoseconds=1)
 
 
 # Swing pivots (the "swerved" entry rule)
@@ -121,22 +124,25 @@ def _scan_pivots(bars, k):
     return (times[is_high], highs[is_high], times[is_low], lows[is_low])
 
 
-def swings_near(price, tol, lo_ts, hi_ts, is_low, k=SWING_K_DEFAULT, bars=None):
+def swings_near(price, tol, lo_ts, hi_ts, is_low, k=SWING_K_DEFAULT, bars=None,
+                bar_width=pd.Timedelta(minutes=5)):
     """Every confirmed swing pivot within +/-`tol` points of `price` whose
     own bar falls in [lo_ts, hi_ts), as a list of (time, pivot_price).
 
     `is_low` picks lows (the side that matters for a LONG entry) or highs
     (for a SHORT). CONFIRMED means the pivot's own `k` right-hand bars had
     all closed before `hi_ts` -- a pivot whose right side is still forming
-    was not visible to anyone at `hi_ts` and must not move an entry."""
+    was not visible to anyone at `hi_ts` and must not move an entry.
+    `bar_width` defaults to the real M5 series' own 5 minutes; pass the
+    bars' own width when `bars` is a different timeframe."""
     hi_times, hi_prices, lo_times, lo_prices = swing_pivots(bars, k)
     times, prices = (lo_times, lo_prices) if is_low else (hi_times, hi_prices)
     if len(times) == 0:
         return []
     lo_ts, hi_ts = _as_utc(lo_ts), _as_utc(hi_ts)
     # A pivot at time t is only confirmed once its k-th right-hand bar has
-    # closed, i.e. at t + (k + 1) * 5min.
-    confirm_by = hi_ts - pd.Timedelta(minutes=5 * (k + 1))
+    # closed, i.e. at t + (k + 1) * bar_width.
+    confirm_by = hi_ts - bar_width * (k + 1)
     idx = np.flatnonzero((times >= lo_ts.to_datetime64()) &
                          (times <= confirm_by.to_datetime64()) &
                          (np.abs(prices - float(price)) <= float(tol)))

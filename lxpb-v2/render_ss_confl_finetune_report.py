@@ -709,17 +709,21 @@ def build_fill_window_chart(window_start, alt_price, level_type, max_hours, fail
     return {"title": title, "candles": candles, "markers": [], "priceLines": price_lines, "precision": 2}
 
 
-def _live_m5_before_entry(m5_ledger, level_type, touch_time, min_breakout_levels=1):
-    """Live, confirmed structure from completed M5 bars only.
+def _live_m5_before_entry(m5_ledger, level_type, touch_time, min_breakout_levels=1,
+                          bar_width=pd.Timedelta(minutes=5)):
+    """Live, confirmed structure from completed M5 (or `bar_width`) bars only.
 
     Ledger event times label bar STARTS, so querying at the exact tick
     would expose the rest of its unfinished M5 candle. Shared-P1 counts
     describe the historical breakout and are computed before filtering
-    out peers that have since died.
+    out peers that have since died. `bar_width` defaults to the real M5
+    ledger's own 5 minutes; a caller running this same query against a
+    different-timeframe ledger (e.g. an M1 one) passes its own bar width
+    so the "completed bar" cutoff lands on the right boundary.
     """
     if m5_ledger is None or m5_ledger.empty:
         return pd.DataFrame()
-    as_of = pd.to_datetime(touch_time, utc=True).floor("5min") - pd.Timedelta(nanoseconds=1)
+    as_of = pd.to_datetime(touch_time, utc=True).floor(bar_width) - pd.Timedelta(nanoseconds=1)
     # Pre-narrowed to rows still alive at as_of (LC.select_levels); the
     # liveness query below re-applies its own rules, so nothing changes.
     confirmed = LC.select_levels(m5_ledger, level_type, confirmed_by=as_of, alive_at=as_of,
