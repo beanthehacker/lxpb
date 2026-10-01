@@ -456,56 +456,71 @@ def _strong_breakout_filter(ledger, bars, range_mult, body_frac, atr_period):
 
 # M1-variant-only "strong run-in" TRADE-qualifying filter (unlike the two
 # ledger-level filters above, this runs per-trade, on the actual tick-level
-# touch, after a fill is found -- see process_cluster). The move toward the
-# level over the --run-in-minutes whole M1 bars immediately before the
-# touch's own bar -- from that window's own first candle's open to the
-# LEVEL PRICE itself (the touch, point-in-time: the touch bar is part of
-# the move but contributes only this one point, never its own OHLC range,
-# since by definition price reached the level exactly then and anything
-# the touch bar does afterward is not yet knowable) -- must be >=
-# --run-in-mult times the median M1 bar range (high-low) over a trailing,
-# non-overlapping --run-in-baseline-bars window ending right before the
-# run-in window -- a causal baseline, never informed by the run-in itself.
-# Bar-count based (like every other lookback in this file), not strict
-# wall-clock minutes: a gap minute with no trade simply isn't counted.
-# Fails -> the trade does not qualify at all (fail_reason "weak_run_in"),
-# same standing as news_pull_blocked/eod_entry_blocked.
-RUN_IN_MINUTES_DEFAULT = 3
+# touch, after a fill is found -- see process_cluster). The run-in is the
+# whole leg into the level: from the most recent CONFIRMED zigzag TROUGH
+# (LLPB) / CREST (LHPB) formed after the level's own P1 breakout, up to the
+# LEVEL PRICE itself (point-in-time: the touch bar contributes only this one
+# point, never its own range). Only completed M1 bars before the touch's own
+# minute count, and the pivot must have been both formed and confirmed by
+# then (m5_structure.most_recent_pivot, the same zigzag, parameters and
+# causality as the target rules). With no confirmed pivot yet, the leg starts
+# at the lowest low / highest high of the completed bars after P1, confirmed
+# or not (like _leg_start_time); with none at all, at P1's own bar. The move
+# must be >= --run-in-mult times the median M1 bar range (high-low) over the
+# --run-in-baseline-bars bars ending right before the pivot's bar -- a causal
+# baseline never informed by the leg itself. Bar-count based, not strict
+# wall-clock minutes. Fails -> the trade does not qualify at all (fail_reason
+# "weak_run_in"), same standing as news_pull_blocked/eod_entry_blocked.
 RUN_IN_MULT_DEFAULT = 4.0
 RUN_IN_BASELINE_BARS_DEFAULT = 30
 
 
-def _is_strong_run_in(bars, touch_time, level_price, is_long, minutes, mult, baseline_bars):
-    """True if the touch's own run-in (see module comment above) is strong.
+def _is_strong_run_in(bars, pivots, touch_time, p1_time, level_price, is_long, mult,
+                      baseline_bars):
+    """True if the leg into the touch (see module comment above) is strong.
 
-    The move's starting point is the run-in window's own first candle's
-    open (`minutes` whole M1 bars before the touch's own bar); its END
-    point is `level_price` itself -- NOT the close of the bar before touch
-    -- since the touch, by definition, is the instant price reached the
-    level: using the level price is the exact point-in-time value at the
-    touch, with nothing from the still-forming touch bar (which could run
-    on well past it) leaking in. This is what "the touch bar is included,
-    but only point-in-time" means in practice: the touch bar itself never
-    contributes an OHLC range to the move, only this one point.
+    `bars` is the M1 series and `pivots` its zigzag (MS.zigzag_pivots). The
+    leg's start is a TROUGH's low for an LLPB (price rose into the level) /
+    a CREST's high for an LHPB (price fell into it); the move is measured
+    from that price to `level_price`, never from a candle open.
 
-    False whenever there isn't enough history before the touch for both the
-    run-in window and a full baseline (e.g. the first ~33 minutes of this
-    report's own 3-trading-day window)."""
+    False whenever there is no leg to measure or not enough history before
+    its start for a full baseline (e.g. the first ~30 minutes of this
+    report's own window)."""
     t0 = pd.Timestamp(touch_time).floor("1min")
-    pos = int(bars.index.searchsorted(t0, side="left"))
-    run_start = pos - minutes
-    base_start = run_start - baseline_bars
-    if base_start < 0 or run_start < 0 or pos <= run_start:
+    if t0.tzinfo is None:
+        t0 = t0.tz_localize("UTC")
+    p1 = pd.Timestamp(p1_time)
+    if p1.tzinfo is None:
+        p1 = p1.tz_localize("UTC")
+    kind = "high" if is_long else "low"
+    pivot_time, pivot_price = MS.most_recent_pivot(pivots, kind, t0, after=p1)
+    if pivot_time is None:
+        lo = int(bars.index.searchsorted(p1, side="right"))
+        hi = int(bars.index.searchsorted(t0, side="left"))
+        col = "high" if is_long else "low"
+        if hi > lo:
+            seg = bars[col].to_numpy(float)[lo:hi]
+            ext = seg.max() if is_long else seg.min()
+            pivot_time = pd.Timestamp(bars.index[lo + int(np.flatnonzero(seg == ext)[-1])])
+            pivot_price = float(ext)
+        else:
+            at = int(bars.index.searchsorted(p1, side="left"))
+            if at >= len(bars) or bars.index[at] != p1:
+                return False
+            pivot_time = p1
+            pivot_price = float(bars[col].iloc[at])
+    pos = int(bars.index.searchsorted(pivot_time, side="left"))
+    base_start = pos - baseline_bars
+    if base_start < 0:
         return False
-    run_window = bars.iloc[run_start:pos]
-    base_window = bars.iloc[base_start:run_start]
-    if run_window.empty or len(base_window) < baseline_bars:
+    base_window = bars.iloc[base_start:pos]
+    if len(base_window) < baseline_bars:
         return False
-    comb_open = float(run_window["open"].iloc[0])
-    move = (comb_open - level_price) if is_long else (level_price - comb_open)
     median_range = float((base_window["high"] - base_window["low"]).median())
     if median_range <= 0:
         return False
+    move = (pivot_price - level_price) if is_long else (level_price - pivot_price)
     return move >= mult * median_range
 
 
@@ -1820,8 +1835,10 @@ def process_cluster(cluster, args):
     # the touch itself must have been approached with real conviction, not a
     # drift into the level.
     if args.run_in_mult > 0 and not _is_strong_run_in(
-            LC.m5_bars_continuous(), touch_time_alt, alt_price, is_long,
-            args.run_in_minutes, args.run_in_mult, args.run_in_baseline_bars):
+            LC.m5_bars_continuous(),
+            MS.zigzag_pivots(threshold_pts=args.zz_threshold_pts, min_bars=args.zz_min_bars),
+            touch_time_alt, row_d["breakout_time"], alt_price, is_long,
+            args.run_in_mult, args.run_in_baseline_bars):
         result["fail_reason"] = "weak_run_in"
         result["touch_time_alt"] = touch_time_alt
         return result
@@ -5526,20 +5543,18 @@ if __name__ == "__main__":
                              "repo-wide ATR convention is 21 -- this is a deliberate M1-variant "
                              "deviation per the user's own spec).")
     parser.add_argument("--run-in-mult", type=float, default=RUN_IN_MULT_DEFAULT,
-                        help="M1-variant-only STRONG RUN-IN trade qualifier: the move toward "
-                             "the level over --run-in-minutes immediately before the tick-level "
-                             "touch must be >= this many times the median M1 bar range over a "
-                             "trailing, causal --run-in-baseline-bars window ending right before "
-                             "the run-in (default %(default)g); a touch that fails this is NOT A "
-                             "TRADE (fail_reason weak_run_in), same standing as "
+                        help="M1-variant-only STRONG RUN-IN trade qualifier: the leg into the "
+                             "level, from the most recent confirmed zigzag trough (LLPB) / "
+                             "crest (LHPB) after the level's P1 up to the level price, must be "
+                             ">= this many times the median M1 bar range over a causal "
+                             "--run-in-baseline-bars window ending right before that pivot "
+                             "(default %(default)g); a touch that fails this is NOT A TRADE "
+                             "(fail_reason weak_run_in), same standing as "
                              "news_pull_blocked/eod_entry_blocked. Set 0 to disable.")
-    parser.add_argument("--run-in-minutes", type=int, default=RUN_IN_MINUTES_DEFAULT,
-                        help="Width (in M1 bars) of the run-in window immediately before the "
-                             "touch for --run-in-mult (default %(default)s).")
     parser.add_argument("--run-in-baseline-bars", type=int, default=RUN_IN_BASELINE_BARS_DEFAULT,
-                        help="Width (in M1 bars) of the trailing baseline window for "
-                             "--run-in-mult's median bar range, ending right before the run-in "
-                             "window (default %(default)s).")
+                        help="Width (in M1 bars) of the baseline window for --run-in-mult's "
+                             "median bar range, ending right before the leg's start pivot "
+                             "(default %(default)s).")
     parser.add_argument("--m1-confluence-points", type=float, default=M1_CONFLUENCE_N_POINTS_DEFAULT,
                         help=f"M5 price radius for SS qualification, clustering and entry "
                              f"selection (default {M1_CONFLUENCE_N_POINTS_DEFAULT}pt).")
