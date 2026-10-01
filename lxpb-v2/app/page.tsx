@@ -27,7 +27,7 @@ const GROUP_ORDER: { key: string; title: string; description: string; test: (rel
   {
     key: "m1_confl",
     title: "M1 Confluence",
-    description: "M1-timeframe LXPB confluence variant -- rolling last-3-trading-days snapshot (zigzag run-in rule, all filters on \"any\").",
+    description: "M1-timeframe LXPB confluence variant -- September 2026 (from 28 Sep), zigzag run-in rule, swing-extreme target, ATR-boundary review filter.",
     test: (rel) => rel.startsWith("ss_m1_confl/"),
   },
   {

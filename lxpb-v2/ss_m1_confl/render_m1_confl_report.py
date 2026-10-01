@@ -5794,6 +5794,11 @@ if __name__ == "__main__":
                              "TradingView M1 export, so this window is built straight from "
                              "Sierra Chart ticks (render_labels_report._tick_bars_spanning) -- "
                              "keep it short and inside the current front month (default 3).")
+    parser.add_argument("--since-day", default=None,
+                        help="YYYY-MM-DD trading-day label (Globex/ETH reopen to reopen) the "
+                             "window starts at, instead of the last --trading-days. The "
+                             "window runs from that day's 15:00 PT reopen the evening before "
+                             "up to now.")
     parser.add_argument("--max-rows", type=int, default=None,
                         help="process only the first N SS-Confl-qualifying candidates (smoke test)")
     parser.add_argument("--workers", type=int, default=1,
@@ -5816,7 +5821,7 @@ if __name__ == "__main__":
     args.default_target_modes = (DEFAULT_TARGET_MODES_BOTH if args.target_mode == "both"
                                  else (args.target_mode,))
     args.output = args.output or os.path.join(
-        _REPO_ROOT, "public", "reports", "ss_m1_confl", "last3d.html"
+        _REPO_ROOT, "public", "reports", "ss_m1_confl", "sep.html"
     )
 
     # -------------------------------------------------------------------
@@ -5839,10 +5844,16 @@ if __name__ == "__main__":
     now_utc = pd.Timestamp.now(tz="UTC")
     today_label = TM.trading_day_label(now_utc)
     labels = cal[cal <= today_label]
-    if len(labels) < args.trading_days:
-        raise RuntimeError(
-            f"only {len(labels)} trading days on record, need --trading-days={args.trading_days}")
-    first_label = labels[-args.trading_days]
+    if args.since_day:
+        first_label = pd.Timestamp(args.since_day)
+        if first_label not in labels:
+            raise RuntimeError(f"--since-day {args.since_day} is not a trading-day label on record")
+        args.trading_days = int((labels >= first_label).sum())
+    else:
+        if len(labels) < args.trading_days:
+            raise RuntimeError(
+                f"only {len(labels)} trading days on record, need --trading-days={args.trading_days}")
+        first_label = labels[-args.trading_days]
     lo_utc = (pd.Timestamp(first_label) - pd.Timedelta(days=1) + TM.SESSION_REOPEN_PT
               ).tz_localize("America/Los_Angeles").tz_convert("UTC")
     hi_utc = now_utc
