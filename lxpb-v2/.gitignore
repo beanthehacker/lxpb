@@ -20,6 +20,11 @@ public/reports/ss_m5_allp0_2pt/jul-aug.html
 public/reports/ss_m5_allp0_2pt/jul.html
 public/reports/range_breakout/2025.html
 public/reports/range_breakout/2026.html
+# ss_m1_confl/last3d.html is a ROLLING "last N trading days ending now"
+# snapshot, not a fixed historical window like the reports above -- it's
+# stale again the moment it's regenerated, so it's never committed at all
+# (not even gzipped); this just keeps it from showing up as untracked.
+public/reports/ss_m1_confl/last3d.html
 .vercel
 .env*
 
@@ -30,3 +35,10 @@ npm_install.log
 
 # per-machine cache of which .scid files were checked to be in time order
 /data/scid_order_verified.json
+
+# ss_m1_confl's M1 ledger cache: unlike h1_levels/m5_levels_continuous
+# (the full persistent historical ledger, meant to be committed and
+# extended incrementally), this is built fresh over whatever rolling
+# "last N trading days" window happened to be current when it last ran --
+# never worth versioning.
+/data/levels_cache/m1_levels_recent.*

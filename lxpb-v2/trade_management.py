@@ -262,6 +262,26 @@ def _norm_utc(ts):
     return ts.tz_localize("UTC") if ts.tzinfo is None else ts
 
 
+_BAR_WIDTH_CACHE = {}
+
+
+def _bar_width(m5_bars):
+    """`m5_bars`' own typical spacing (5min for the real M5 series; 1min for
+    an M1 one), memoised by object identity -- LC.m5_bars_continuous() (or
+    any swapped-in equivalent) is a per-process singleton, so the same
+    object is handed to every call in a run. Read from the data rather than
+    hardcoded so this module's internal "one bar" math (the thrust bar's own
+    close, the once-per-candle RR-floor check) keeps working if it is ever
+    run against a different bar timeframe's ledger/bars, with the mode (not
+    bars[1]-bars[0]) so one gap at the series' own start can't skew it."""
+    key = id(m5_bars)
+    width = _BAR_WIDTH_CACHE.get(key)
+    if width is None:
+        width = m5_bars.index.to_series().diff().dropna().mode().iloc[0]
+        _BAR_WIDTH_CACHE[key] = width
+    return width
+
+
 def _p0_wick_ratio(m5_bars, formation_time, level_type):
     """The P0's own level-side wick (upper wick for LHPB) as a fraction of
     its own candle's total range. None if the formation bar isn't in
@@ -329,7 +349,7 @@ def thrust_trail_events(level_type, start_time, end_time, ledger=None, m5_bars=N
     # closes AFTER it, and that close is a perfectly good trail. Filtering
     # on `breakout_time` would silently drop every event in the first M5
     # bar of the trade.
-    sub["trigger_time"] = sub["breakout_time"] + pd.Timedelta(minutes=5)
+    sub["trigger_time"] = sub["breakout_time"] + _bar_width(m5_bars)
     sub = sub[(sub["trigger_time"] > start_time) & (sub["trigger_time"] <= end_time)]
     if sub.empty:
         return []
@@ -341,7 +361,7 @@ def thrust_trail_events(level_type, start_time, end_time, ledger=None, m5_bars=N
         row0 = group.iloc[0]
         new_stop = (float(row0["breakout_low"]) - TICK_SIZE if level_type == "LHPB"
                    else float(row0["breakout_high"]) + TICK_SIZE)
-        trigger_time = breakout_time + pd.Timedelta(minutes=5)
+        trigger_time = breakout_time + _bar_width(m5_bars)
         events.append((trigger_time, new_stop))
     events.sort(key=lambda e: e[0])
     return events
@@ -439,11 +459,16 @@ def resolve_managed_trade(trade, bars, level_type, ledger=None, m5_bars=None, eo
                 break
             continue  # no qualifying fill this minute -- keep scanning forward
 
-        # Rule 2: RR floor, evaluated once per M5 candle close (bar_time
-        # lands exactly on a 5-minute boundary) -- and only once stop/target
-        # have already been ruled out for this same bar.
-        if m5_bars is not None and bar_time.minute % 5 == 0 and bar_time > touch_time:
-            m5_close_time = bar_time - pd.Timedelta(minutes=5)
+        # Rule 2: RR floor, evaluated once per ledger candle close (bar_time
+        # lands exactly on that bar width's own boundary, 5-minute for the
+        # real M5 ledger) -- and only once stop/target have already been
+        # ruled out for this same bar.
+        if m5_bars is not None and bar_time > touch_time:
+            bw = _bar_width(m5_bars)
+            bw_minutes = int(bw / pd.Timedelta(minutes=1))
+            if bar_time.minute % bw_minutes != 0:
+                continue
+            m5_close_time = bar_time - bw
             if m5_close_time in m5_bars.index:
                 close_adj = float(m5_bars.loc[m5_close_time, "close"])
                 remaining_reward = sign * (target_price_adj - close_adj)
