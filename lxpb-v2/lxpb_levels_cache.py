@@ -789,7 +789,7 @@ def m5_levels_for_ts(ts, **kw):
     return m5_levels(**kw)
 
 
-def m1_levels(bars, rebuild=False, verbose=True, *, plain_p0):
+def m1_levels(bars, rebuild=False, verbose=True, *, plain_p0, cache_name="m1_levels_recent"):
     """Level ledger over a 1-minute bars window the CALLER supplies (unlike
     h1_levels/m5_levels there is no continuous multi-year M1 series -- no
     TradingView M1 export exists to confirm a roll offset against, so M1 is
@@ -804,7 +804,7 @@ def m1_levels(bars, rebuild=False, verbose=True, *, plain_p0):
     resumes instead of replaying from bar zero; a window that doesn't share
     a prefix with what's cached triggers a full rebuild, same as any other
     ledger would."""
-    df, meta, _ = _reconcile("m1_levels_recent", bars, "M1", "", rebuild, verbose)
+    df, meta, _ = _reconcile(cache_name, bars, "M1", "", rebuild, verbose)
     return _plain_p0_view(_to_current_scale(df, meta, bars, verbose, "M1"), plain_p0)
 
 

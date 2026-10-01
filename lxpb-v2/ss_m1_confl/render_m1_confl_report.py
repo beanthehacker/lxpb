@@ -487,7 +487,7 @@ def _is_strong_run_in(bars, pivots, touch_time, p1_time, level_price, is_long, m
     False whenever there is no leg to measure or not enough history before
     its start for a full baseline (e.g. the first ~30 minutes of this
     report's own window)."""
-    t0 = pd.Timestamp(touch_time).floor("1min")
+    t0 = pd.Timestamp(touch_time).floor(BAR_FREQ)
     if t0.tzinfo is None:
         t0 = t0.tz_localize("UTC")
     p1 = pd.Timestamp(p1_time)
@@ -578,7 +578,9 @@ VOL_SPIKE_RATIO_DEFAULT = VS.RATIO_THRESHOLD_DEFAULT
 VOL_SPIKE_MIN_PEAK_DEFAULT = VS.MIN_PEAK_CONTRACTS_DEFAULT
 PEG_STEP_DEFAULT = SF.PEG_STEP_DEFAULT
 PEG_CAP_DEFAULT = SF.PEG_CAP_DEFAULT
-P1_BAR_WIDTH = pd.Timedelta(minutes=1)  # this strategy's own P1 is an M1 bar, not H1/M5
+BAR_MIN = 1  # bar size in minutes (--bar-minutes); main sets it before anything runs
+BAR_FREQ = "1min"
+P1_BAR_WIDTH = pd.Timedelta(minutes=1)  # this strategy's own P1 is one bar of BAR_MIN minutes, not H1/M5
 CANDIDATE_COLOR = "#7dd3fc"  # light blue -- every C1..Cn marker (dot + label), chosen or not;
                              # plain-P0s are distinguished by their " pl." text suffix, not color
 
@@ -861,7 +863,7 @@ def _wider_stop_p1(m5_ledger, level_type, alt_price, is_long, touch_time_alt):
     Detector pairing is irrelevant: no spike test is made here."""
     if m5_ledger is None or m5_ledger.empty:
         return None
-    as_of = pd.to_datetime(touch_time_alt, utc=True).floor("1min") - pd.Timedelta(nanoseconds=1)
+    as_of = pd.to_datetime(touch_time_alt, utc=True).floor(BAR_FREQ) - pd.Timedelta(nanoseconds=1)
     bt = m5_ledger["breakout_time"]
     cand = m5_ledger[(m5_ledger["type"] == level_type) & (bt <= as_of)
                      & (bt >= as_of - WIDER_STOP_LOOKBACK)
@@ -1053,7 +1055,7 @@ def _live_m5_target_candidates(m5_ledger, level_type, touch_time, min_breakout_l
     every single trade."""
     if m5_ledger is None or m5_ledger.empty:
         return pd.DataFrame()
-    as_of = pd.to_datetime(touch_time, utc=True).floor("1min") - pd.Timedelta(nanoseconds=1)
+    as_of = pd.to_datetime(touch_time, utc=True).floor(BAR_FREQ) - pd.Timedelta(nanoseconds=1)
     # Pre-narrowed with LC.select_levels -- spike/swing P0s to the ones still
     # alive at as_of, plain-P0s to the distance band -- and then run through
     # exactly the same filters as the full-ledger fallback, so the rows kept
@@ -1338,7 +1340,7 @@ def _crest_refine_table(k, baseline, is_long_side):
         out = {"rate": {}, "z": {}, "crest_price": {}, "crest_time": {}}
         _CREST_REFINE_TABLES[key] = out
         return out
-    confirm_lag = pd.Timedelta(minutes=1 * k)
+    confirm_lag = pd.Timedelta(minutes=BAR_MIN * k)
     piv_times = pd.DatetimeIndex(piv_t, tz="UTC")
     confirm_times = piv_times + confirm_lag
     order = confirm_times.argsort()
@@ -1568,7 +1570,7 @@ def _approach_by_k(touch_time, fill_price, is_long, max_k=APPR_MAX_K):
     if touch_time is None or fill_price is None:
         return [None] * max_k
     bars = LC.m5_bars_continuous()
-    fill_bar = pd.Timestamp(touch_time).tz_convert("UTC").floor("1min")
+    fill_bar = pd.Timestamp(touch_time).tz_convert("UTC").floor(BAR_FREQ)
     pos = int(bars.index.searchsorted(fill_bar))   # first bar at/after the fill's own bar
     w = SETUP_AVG_RANGE_WINDOW
     if pos < max(w, max_k):
@@ -1671,7 +1673,7 @@ def _m5_sfp_offsets(touch_time, is_long, max_back=SFP_MAX_BACK):
     if touch_time is None:
         return []
     bars = LC.m5_bars_continuous()
-    pos = int(bars.index.searchsorted(pd.Timestamp(touch_time).tz_convert("UTC").floor("1min")))
+    pos = int(bars.index.searchsorted(pd.Timestamp(touch_time).tz_convert("UTC").floor(BAR_FREQ)))
     flags = _m5_sfp_flags()[0 if is_long else 1]
     return [k for k in range(1, max_back + 1) if pos - k >= 0 and flags[pos - k]]
 
@@ -2534,7 +2536,7 @@ def build_chart_stack_for_row(res, m5_only=False):
     chart_m5 = SR.build_m5_chart(
         row_for_chart, resolved, stop_pts, target_pts,
         level_price=res["own_price"], entry_level=res["entry_m5_level"],
-        p1_bar_width=P1_BAR_WIDTH, p1_label="M1",
+        p1_bar_width=P1_BAR_WIDTH, p1_label=f"M{BAR_MIN}",
         # This M5 pane IS the primary structural chart here (no H1 pane
         # exists), and now also carries the C1/C2/... candidate markers
         # (_annotate_candidates) -- double the shared defaults so the
@@ -2598,7 +2600,7 @@ def _build_unfilled_chart_stack(res, args):
     chart_m5 = SR.build_m5_chart(
         row_for_chart, resolved_stub, 1.0, 1.0,
         level_price=res["own_price"], entry_level=res["entry_m5_level"],
-        p1_bar_width=P1_BAR_WIDTH, p1_label="M1",
+        p1_bar_width=P1_BAR_WIDTH, p1_label=f"M{BAR_MIN}",
         bars_before_retest=2 * SR.M5_BARS_BEFORE_RETEST,
         bars_after_exit=2 * SR.M5_BARS_AFTER_EXIT,
         fill_window=(window_start, window_end), plain_p0=res["plain_p0"])
@@ -2859,7 +2861,7 @@ def _apply_atr_boundary(results, args):
             continue
         rt = pd.Timestamp(res["row"]["retest_time"])
         rt = rt.tz_localize("UTC") if rt.tzinfo is None else rt.tz_convert("UTC")
-        rt = rt.floor("1min")
+        rt = rt.floor(BAR_FREQ)
         day = labels[(labels == TM.trading_day_label(rt)) & (labels.index < rt)]
         pos = int(h1.index.searchsorted(rt.floor("1h"), side="left"))
         if day.empty or pos < ATR_BOUNDARY_PERIOD + 2:
@@ -4719,17 +4721,18 @@ other row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" class="f-dyn-isolate" data-tag="{tag}"> only</label>
     </div>
 """
-    storage_key = f"lxpb_m1_confl{args.ss_confl_min}_review_v1{storage_suffix}"
+    storage_key = (f"lxpb_m1_confl{args.ss_confl_min}_review_v1{storage_suffix}" if BAR_MIN == 1
+                   else f"lxpb_m{BAR_MIN}_confl{args.ss_confl_min}_review_v1{storage_suffix}")
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<title>M1-native SS Confl report{title_suffix}</title>
+<title>M{BAR_MIN}-native SS Confl report{title_suffix}</title>
 {CSS}
 </head><body>
-<h1>M1-native SS Confl. &ge; {args.ss_confl_min} strategy report{title_suffix}</h1>
-<p class="lead"><strong>M1 variant notice:</strong> this is the ss_m5_confl2 strategy
+<h1>M{BAR_MIN}-native SS Confl. &ge; {args.ss_confl_min} strategy report{title_suffix}</h1>
+<p class="lead"><strong>M{BAR_MIN} variant notice:</strong> this is the ss_m5_confl2 strategy
 (unmodified selection/entry/stop/target/management logic) with the LXPB state machine run
-on 1-minute bars instead of 5-minute bars. Every "M5"/"5-minute" mention below is the
-original strategy text, carried over verbatim -- read it as M1/1-minute throughout this
+on {BAR_MIN}-minute bars instead of 5-minute bars. Every "M5"/"5-minute" mention below is the
+original strategy text, carried over verbatim -- read it as M{BAR_MIN}/{BAR_MIN}-minute throughout this
 report. There is no TradingView M1 export, so the M1 series here is built straight from
 Sierra Chart ticks for the requested window only (see the module docstring). One extra,
 M1-only rule on top of --p0-kinds all: a plain-P0 (neither swing nor spike) stays tracked
@@ -5799,6 +5802,9 @@ if __name__ == "__main__":
                              "window starts at, instead of the last --trading-days. The "
                              "window runs from that day's 15:00 PT reopen the evening before "
                              "up to now.")
+    parser.add_argument("--bar-minutes", type=int, default=1,
+                        help="bar size in minutes for the main series (1 = the M1 report, 2 = the M2 variant); "
+                             "everything else is unchanged (default %(default)s)")
     parser.add_argument("--max-rows", type=int, default=None,
                         help="process only the first N SS-Confl-qualifying candidates (smoke test)")
     parser.add_argument("--workers", type=int, default=1,
@@ -5818,10 +5824,13 @@ if __name__ == "__main__":
     # them at all rather than build-then-hide. --m5-charts-only is the
     # existing (already-tested) flag that does exactly this.
     args.m5_charts_only = True
+    BAR_MIN = args.bar_minutes
+    BAR_FREQ = f"{BAR_MIN}min"
+    P1_BAR_WIDTH = pd.Timedelta(minutes=BAR_MIN)
     args.default_target_modes = (DEFAULT_TARGET_MODES_BOTH if args.target_mode == "both"
                                  else (args.target_mode,))
     args.output = args.output or os.path.join(
-        _REPO_ROOT, "public", "reports", "ss_m1_confl", "sep.html"
+        _REPO_ROOT, "public", "reports", ("ss_m1_confl" if args.bar_minutes == 1 else f"ss_m{args.bar_minutes}_confl"), "sep.html"
     )
 
     # -------------------------------------------------------------------
@@ -5863,7 +5872,7 @@ if __name__ == "__main__":
           f"{lo_utc.tz_convert('America/Los_Angeles'):%a %Y-%m-%d %H:%M} PT -> "
           f"{hi_utc.tz_convert('America/Los_Angeles'):%a %Y-%m-%d %H:%M} PT", flush=True)
 
-    m1_bars = R._tick_bars_spanning(lo_utc, hi_utc, "1min")
+    m1_bars = R._tick_bars_spanning(lo_utc, hi_utc, BAR_FREQ)
     if m1_bars.empty:
         raise RuntimeError(f"no M1 bars built from ticks over [{lo_utc}, {hi_utc})")
     R._report_series_gaps(m1_bars, "M1 (tick-only, last-N-trading-days)")
@@ -5873,7 +5882,8 @@ if __name__ == "__main__":
         return m1_bars
 
     def _m1_levels(rebuild=False, verbose=True, *, plain_p0):
-        ledger = LC.m1_levels(m1_bars, rebuild=rebuild, verbose=verbose, plain_p0=plain_p0)
+        ledger = LC.m1_levels(m1_bars, rebuild=rebuild, verbose=verbose, plain_p0=plain_p0,
+                               cache_name=("m1_levels_recent" if BAR_MIN == 1 else f"m{BAR_MIN}_levels_recent"))
         if plain_p0 == LC.PLAIN_P0_TRACKED and args.plain_p0_min_wick_pts > 0:
             ledger = _plain_p0_wick_filter(ledger, m1_bars, args.plain_p0_min_wick_pts)
         if args.bo_range_atr > 0:
