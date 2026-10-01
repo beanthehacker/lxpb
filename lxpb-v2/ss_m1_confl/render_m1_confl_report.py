@@ -542,7 +542,10 @@ MAX_DYNAMIC_TARGET_PTS = 50.0   # own band (SF is 20); every target rule here sh
 DYNAMIC_STOP_RADIUS_PTS = SF.DYNAMIC_STOP_RADIUS_PTS
 MAX_ALT_FILL_HOURS_DEFAULT = SF.MAX_ALT_FILL_HOURS_DEFAULT
 MIN_R_DEFAULT = 1.0
-TARGET_MODE_DEFAULT = "both"   # both target rules on by default (see _pick_targets)
+TARGET_MODE_DEFAULT = "swing-extreme"   # only the zigzag swing-extreme target starts ticked (see _pick_targets)
+ATR_BOUNDARY_MULT_DEFAULT = 1.0   # review filter: retest level must sit >= this many H1 ATRs from the day's extreme so far
+ATR_BOUNDARY_PERIOD = 24          # H1 Wilder ATR period (same convention as trap_variants)
+ATR_BOUNDARY_WINDOW = 100         # closed H1 bars fed to findATR; Wilder settles well inside this
 ZZ_THRESHOLD_PTS_DEFAULT = MS.ZIGZAG_THRESHOLD_DEFAULT   # reversal that confirms a zigzag leg
 ZZ_MIN_BARS_DEFAULT = MS.ZIGZAG_MIN_BARS_DEFAULT          # bars required after the extreme to confirm
 SWERVE_TOL_PTS_DEFAULT = 1.0          # a swing this close to the planned entry triggers the move
@@ -2827,6 +2830,59 @@ def _apply_globex_open_filter(results):
     return results
 
 
+def _apply_atr_boundary(results, args):
+    """Dynamic-filter tag 'inside_atr_boundary' (see _apply_globex_open_filter
+    for the convention). A FILLED trade is tagged when, at the instant just
+    before its retest bar opened, the retest level did NOT sit at least
+    --atr-boundary-mult H1 ATRs beyond the trading day's extreme so far: for
+    an LLPB (short) the level must be >= mult x ATR ABOVE the day's low so far,
+    for an LHPB (long) >= mult x ATR BELOW the day's high so far. The day runs
+    from the 15:00 PT Globex reopen (TM.trading_day_label); ATR is Wilder
+    ATR(24) over the H1 bars closed before the retest bar; the level price is
+    the trade's own fill price. Everything is point-in-time: the day's extremes
+    use only M1 bars strictly before the retest bar, so nothing after it can
+    move the boundary. A trade with no earlier bar in its day or too little H1
+    history is left untagged. The tag only hides the row when its Exclude
+    checkbox is ticked; stats still carry every trade by default."""
+    mult = float(args.atr_boundary_mult)
+    if mult <= 0:
+        return results
+    bars = LC.m5_bars_continuous()
+    h1 = R._display_h1()
+    if bars.index.tz is None:
+        bars = bars.set_axis(bars.index.tz_localize("UTC"))
+    if h1.index.tz is None:
+        h1 = h1.set_axis(h1.index.tz_localize("UTC"))
+    labels = pd.Series([TM.trading_day_label(t) for t in bars.index], index=bars.index)
+    for res in results:
+        if not res["filled"]:
+            continue
+        rt = pd.Timestamp(res["row"]["retest_time"])
+        rt = rt.tz_localize("UTC") if rt.tzinfo is None else rt.tz_convert("UTC")
+        rt = rt.floor("1min")
+        day = labels[(labels == TM.trading_day_label(rt)) & (labels.index < rt)]
+        pos = int(h1.index.searchsorted(rt.floor("1h"), side="left"))
+        if day.empty or pos < ATR_BOUNDARY_PERIOD + 2:
+            continue
+        atr_val = float(findATR(h1.iloc[max(0, pos - ATR_BOUNDARY_WINDOW):pos],
+                                period=ATR_BOUNDARY_PERIOD))
+        if not atr_val > 0:
+            continue
+        window = bars.loc[day.index]
+        level = float(res["fill_price"])
+        if res["is_long"]:
+            extreme = float(window["high"].max())
+            stretch = (extreme - level) / atr_val
+        else:
+            extreme = float(window["low"].min())
+            stretch = (level - extreme) / atr_val
+        res["atr_boundary"] = {"stretch": stretch, "atr": atr_val, "extreme": extreme,
+                               "mult": mult}
+        if stretch < mult:
+            res.setdefault("dyn_tags", []).append("inside_atr_boundary")
+    return results
+
+
 H1_CONFL_RADIUS_PTS = 10.0  # this strategy is M5-only; this is a cross-timeframe REVIEW aid, not a rule input
 H1_CONFL_HOUR_TOLERANCE = pd.Timedelta(hours=1)  # see _apply_h1_p0_confluence: how far before the M5 retest's own hour an H1 P0 may have already died and still count
 
@@ -3241,6 +3297,7 @@ def render(args):
     results = _apply_h1_spike_confluence(results)
     results = _apply_h1_bias(results)
     results = _apply_trap_variants(results)
+    results = _apply_atr_boundary(results, args)
     tag_counts = {}
     for r in results:
         if not r["filled"]:
@@ -3501,6 +3558,15 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
                 f'The CLOSEST qualifying second’s offset is also its own live numeric '
                 f'filter (Volume spike offset, data-vspikeoffs) so a tight +/-10s read can be '
                 f'compared against a wider one.">VOL SPIKE {offs_label}</span>')
+    if "inside_atr_boundary" in dyn_tags:
+        ab = res["atr_boundary"]
+        side = "low" if level_type == "LLPB" else "high"
+        out += (f'<span class="dyn-tag-badge" title="Dynamic filter ‘inside_atr_boundary’: '
+                f'at the retest the level sat {ab["stretch"]:.2f} H1 ATRs ({ab["atr"]:.2f}pt) '
+                f'from the day&#39;s {side} so far ({ab["extreme"]:.2f}), inside the '
+                f'{ab["mult"]:g}x ATR boundary a mean-reversion entry needs to be beyond. '
+                f'Tick the Exclude box in the panel above to drop these rows.">'
+                f'INSIDE ATR {ab["stretch"]:.2f}x</span>')
     return out
 
 
@@ -4267,6 +4333,13 @@ row -- overrides every Exclude box. Click again to turn off.">
       <label class="chip chip-iso" title="Only: show ONLY rows tagged volume-spike, hiding every
 other row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" class="f-dyn-isolate" data-tag="volume-spike"> only</label>
+    </div>
+    <div class="chip-stack">
+      <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="inside_atr_boundary">
+        Exclude retests inside the ATR boundary</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged inside_atr_boundary (level less than the boundary multiple of H1 ATR(24) away from the day&#39;s low so far for LLPB shorts / high so far for LHPB longs, point in time at the retest), hiding every
+other row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" class="f-dyn-isolate" data-tag="inside_atr_boundary"> only</label>
     </div>
     <div class="chip-stack">
       <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="spike_confl">
@@ -5555,6 +5628,12 @@ if __name__ == "__main__":
                         help="Width (in M1 bars) of the baseline window for --run-in-mult's "
                              "median bar range, ending right before the leg's start pivot "
                              "(default %(default)s).")
+    parser.add_argument("--atr-boundary-mult", type=float, default=ATR_BOUNDARY_MULT_DEFAULT,
+                        help="Review filter (tag inside_atr_boundary, live Exclude checkbox in the "
+                             "report): a filled trade is tagged when, at its retest, the level was "
+                             "LESS than this many H1 ATR(24)s beyond the trading day's low so far "
+                             "(LLPB) / high so far (LHPB). Never removes a trade by itself "
+                             "(default %(default)g). Set 0 to skip tagging.")
     parser.add_argument("--m1-confluence-points", type=float, default=M1_CONFLUENCE_N_POINTS_DEFAULT,
                         help=f"M5 price radius for SS qualification, clustering and entry "
                              f"selection (default {M1_CONFLUENCE_N_POINTS_DEFAULT}pt).")
@@ -5576,13 +5655,14 @@ if __name__ == "__main__":
                         help="Which target rule(s) are ON BY DEFAULT in the rendered page. "
                              "Both rules are ALWAYS computed and both are live "
                              "checkboxes in the report itself, so this only sets the starting "
-                             "state. both (default): both start ticked; whichever ticked rule "
+                             "state. both: both start ticked; whichever ticked rule "
                              "offers the FARTHER target wins per trade. opposite-m5-zz: the "
                              "farthest live opposite-type M5 P0 (no shared-P1 confluence "
                              "required) formed after the most recent confirmed zigzag trough "
                              "(short) / crest (long) in that window -- see --zz-threshold-pts "
                              "/ --zz-min-bars. swing-extreme: the most recent confirmed zigzag "
-                             "trough (long) / crest (short) formed between P1 and P2, at its own price.")
+                             "trough (long) / crest (short) formed between P1 and P2, at its own price "
+                             "(default).")
     parser.add_argument("--zz-threshold-pts", type=float, default=ZZ_THRESHOLD_PTS_DEFAULT,
                         help=f"Point reversal off bar highs/lows that confirms a new zigzag leg "
                              f"for the opposite-m5-zz target rule (default "
