@@ -4116,10 +4116,10 @@ mechanism (f-num-op/f-num-val, data-target) already used for Confl./SS Confl. in
 render_stop_target_report.py's shared review panel (see numFilterOk/applyReviewFilters there).
 Unlike those, this one is also a DYNAMIC filter: changing it recomputes win rate / avg R / total
 R / total PnL above live, the same as the Dynamic filters row below, in addition to hiding rows.
-Defaults to &ge; 0.5 (only R &ge; 0.5 shown); pick any to show every row.">R</span>
+Defaults to any (every row shown); pick &ge; 0.5, say, to hide thin-R rows.">R</span>
     <select class="f-num-op" data-target="rr">
-      <option value="any">any</option>
-      <option value="gte" selected>&ge;</option>
+      <option value="any" selected>any</option>
+      <option value="gte">&ge;</option>
       <option value="gt">&gt;</option>
       <option value="eq">=</option>
       <option value="lte">&le;</option>
@@ -4153,11 +4153,11 @@ when both fall inside the same H1 bar or in two back-to-back bars (nothing close
 them), 1 when exactly one H1 bar's close sits between them, etc. Reads tr.dataset.h1gap, the
 SAME generic op/value numeric-filter mechanism (f-num-op/f-num-val, data-target) as R and the
 P1&rarr;P2 gap above, and is likewise a DYNAMIC filter: changing it recomputes win rate /
-avg R / total R / total PnL above live, not just which rows are shown. Defaults to &ge; 3
--- pick any to show every row.">P1&rarr;P2 gap (H1)</span>
+avg R / total R / total PnL above live, not just which rows are shown. Defaults to any
+(no filtering) -- pick &ge; 3, say, to keep only retests several H1 bars after the breakout.">P1&rarr;P2 gap (H1)</span>
     <select class="f-num-op" data-target="h1gap">
-      <option value="any">any</option>
-      <option value="gte" selected>&ge;</option>
+      <option value="any" selected>any</option>
+      <option value="gte">&ge;</option>
       <option value="gt">&gt;</option>
       <option value="eq">=</option>
       <option value="lte">&le;</option>
@@ -4194,17 +4194,17 @@ cutoff below are live in the browser -- changing either recomputes tr.dataset.er
 own precomputed k=2..__PRE_P1_MAX_K__ array (no ratio math client-side, no regen) and reads back
 through the SAME generic op/value numeric-filter mechanism (f-num-op/f-num-val, data-target) as
 R and the three gap filters above. Likewise a DYNAMIC filter: changing k or the cutoff recomputes
-win rate / avg R / total R / total PnL live, not just which rows are shown. Defaults to &le;
-__PRE_P1_ER_MAX__ with k=__PRE_P1_K__ pre-filled (real consolidation just before P1) -- pick any
-to show every row.">Pre-P1 structure</span>
+win rate / avg R / total R / total PnL live, not just which rows are shown. Defaults to any
+(no filtering) with k=__PRE_P1_K__ pre-filled; pick &le; __PRE_P1_ER_MAX__ to keep only real
+consolidation just before P1.">Pre-P1 structure</span>
     <span class="filter-sublabel">k=</span>
     <input type="number" id="f-prep1-k" value="__PRE_P1_K__" min="2" max="__PRE_P1_MAX_K__" step="1">
     <select class="f-num-op" data-target="er">
-      <option value="any">any</option>
+      <option value="any" selected>any</option>
       <option value="gte">&ge;</option>
       <option value="gt">&gt;</option>
       <option value="eq">=</option>
-      <option value="lte" selected>&le;</option>
+      <option value="lte">&le;</option>
       <option value="lt">&lt;</option>
     </select>
     <input type="number" class="f-num-val" data-target="er" value="__PRE_P1_ER_MAX__" min="0" max="1" step="0.05">
@@ -4326,14 +4326,14 @@ row's own precomputed w=1..__WEAKP1_MAX_WINDOW__ array (data-p1-ratio-by-window;
 client-side, no regen) and its own 'P1 range ratio' column, and reads back through the SAME
 generic op/value numeric-filter mechanism (f-num-op/f-num-val, data-target) as R and the Pre-P1
 structure filter above. Likewise a DYNAMIC filter: changing the window or the cutoff recomputes
-win rate / avg R / total R / total PnL live, not just which rows are shown. Defaults to &ge;
-__WIDE_RATIO__x with window=__WEAKP1_WINDOW__ pre-filled -- pick, e.g., &lt; __WIDE_RATIO__x to
-keep only the thin, unconvincing breakouts instead.">P1 range ratio</span>
+win rate / avg R / total R / total PnL live, not just which rows are shown. Defaults to any
+(no filtering) with window=__WEAKP1_WINDOW__ pre-filled -- pick, e.g., &ge; __WIDE_RATIO__x to keep
+only wide breakouts, or &lt; __WIDE_RATIO__x for the thin, unconvincing ones.">P1 range ratio</span>
     <span class="filter-sublabel">window=</span>
     <input type="number" id="f-weakp1-window" value="__WEAKP1_WINDOW__" min="1" max="__WEAKP1_MAX_WINDOW__" step="1">
     <select class="f-num-op" data-target="p1ratio">
-      <option value="any">any</option>
-      <option value="gte" selected>&ge;</option>
+      <option value="any" selected>any</option>
+      <option value="gte">&ge;</option>
       <option value="gt">&gt;</option>
       <option value="eq">=</option>
       <option value="lte">&le;</option>
