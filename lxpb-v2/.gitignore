@@ -21,9 +21,8 @@ public/reports/ss_m5_allp0_2pt/jul.html
 public/reports/range_breakout/2025.html
 public/reports/range_breakout/2026.html
 # ss_m1_confl/last3d.html is a ROLLING "last N trading days ending now"
-# snapshot, not a fixed historical window like the reports above -- it's
-# stale again the moment it's regenerated, so it's never committed at all
-# (not even gzipped); this just keeps it from showing up as untracked.
+# snapshot: its committed .html.gz is only as fresh as the last time someone
+# re-gzipped it after a regen (the renderer writes just the .html).
 public/reports/ss_m1_confl/last3d.html
 .vercel
 .env*

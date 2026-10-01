@@ -25,6 +25,12 @@ const GROUP_ORDER: { key: string; title: string; description: string; test: (rel
     test: (rel) => rel.startsWith("ss_m5_confl2/"),
   },
   {
+    key: "m1_confl",
+    title: "M1 Confluence",
+    description: "M1-timeframe LXPB confluence variant -- rolling last-3-trading-days snapshot (zigzag run-in rule, all filters on \"any\").",
+    test: (rel) => rel.startsWith("ss_m1_confl/"),
+  },
+  {
     key: "m5_allp0_2pt",
     title: "M5 Confluence v2 -- all P0 kinds, ±2pt",
     description: "Same strategy, but every P0 kind (spike, swing and plain) is tracked to its retest and traded, same-side confluence must lie within ±2pt, and the partner must still be untouched when the last leg into the retest began.",
