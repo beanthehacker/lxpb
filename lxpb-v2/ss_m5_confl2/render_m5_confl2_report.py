@@ -2248,6 +2248,10 @@ def _build_context_charts(res, filled):
     return {"h1": h1_chart, "d1": d1_chart}
 
 
+# Bars always kept on each side of P0 and of P2 (retest) in the M5 pane; the rest may be compressed.
+P0_P2_PAD_BARS = 100
+
+
 def build_chart_stack_for_row(res, m5_only=False):
     """D1 + H1 context panes (_build_context_charts) + M5 + 1s-trio + 1min +
     footprint chart stack for a filled, in-R trade. Reuses
@@ -2300,6 +2304,7 @@ def build_chart_stack_for_row(res, m5_only=False):
         # more market structure instead of just more empty space.
         bars_before_retest=2 * SR.M5_BARS_BEFORE_RETEST,
         bars_after_exit=2 * SR.M5_BARS_AFTER_EXIT,
+        p0_p2_pad_bars=P0_P2_PAD_BARS,
         extra_context_times=extra_context_times, plain_p0=res["plain_p0"])
     if chart_m5 is not None:
         chart_m5["title"] += (f"  |  R {res['r_multiple']:.2f}  |  entry via "
@@ -2359,6 +2364,7 @@ def _build_unfilled_chart_stack(res, args):
         p1_bar_width=P1_BAR_WIDTH, p1_label="M5",
         bars_before_retest=2 * SR.M5_BARS_BEFORE_RETEST,
         bars_after_exit=2 * SR.M5_BARS_AFTER_EXIT,
+        p0_p2_pad_bars=P0_P2_PAD_BARS,
         fill_window=(window_start, window_end), plain_p0=res["plain_p0"])
     if chart_m5 is not None:
         chart_m5["priceLines"] = []

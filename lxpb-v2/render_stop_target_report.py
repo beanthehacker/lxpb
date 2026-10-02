@@ -1025,7 +1025,7 @@ _m5_bars = LC.m5_bars_continuous
 def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=None,
                    fill_window=None, p1_bar_width=pd.Timedelta(hours=1), p1_label="H1",
                    bars_before_retest=None, bars_after_exit=None, extra_context_times=None,
-                   plain_p0=LC.PLAIN_P0_UNTRACKED):
+                   plain_p0=LC.PLAIN_P0_UNTRACKED, p0_p2_pad_bars=None):
     """5-minute companion pane for build_trade_chart's H1 chart.
 
     Runs the SAME LXPB state machine (lxpb.detect_lxpb_h1 is timeframe
@@ -1099,6 +1099,12 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     spans every rollover, so the state machine can be walked from the H1
     breakout bar forward no matter how long ago that was, and the window is
     bounded only by the export's own coverage.
+
+    `p0_p2_pad_bars` -- when set (an int), the pane always shows that many
+    bars on EACH side of the subject level's own P0 (`row["formation_time"]`)
+    and of P2 (the retest), reaching the window back/forward as far as that
+    needs; only the bars outside those spans (and the other protected
+    segments) are compressed out. None keeps the old behaviour.
 
     `plain_p0` is the M5 ledger view the drawn levels come from (see
     lxpb_levels_cache's "Plain-P0 tracked or untracked"); a caller that
@@ -1216,6 +1222,15 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
         lo = min(lo, earliest - pd.Timedelta(minutes=5 * M5_CTX_BEFORE_FORMATION))
     a = int(all_bars.index.searchsorted(lo, side="left"))
     b = int(all_bars.index.searchsorted(hi, side="left"))
+    p0_time = None
+    if p0_p2_pad_bars is not None:
+        if "formation_time" in row and pd.notna(row["formation_time"]):
+            p0_time = pd.Timestamp(row["formation_time"])
+            p0_time = p0_time.tz_localize("UTC") if p0_time.tzinfo is None else p0_time.tz_convert("UTC")
+            a = min(a, int(all_bars.index.searchsorted(p0_time, side="right")) - 1 - p0_p2_pad_bars)
+        a = max(a, 0)
+        b = min(max(b, int(all_bars.index.searchsorted(retest_time, side="right")) + p0_p2_pad_bars + 1),
+                len(all_bars))
     bars = all_bars.iloc[a:b]
     if bars.empty:
         return None
@@ -1235,6 +1250,11 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     before = M5_BARS_BEFORE_RETEST if bars_before_retest is None else bars_before_retest
     after = M5_BARS_AFTER_EXIT if bars_after_exit is None else bars_after_exit
     segments = [(retest_pos - before, exit_pos + after)]
+    if p0_p2_pad_bars is not None:
+        segments.append((retest_pos - p0_p2_pad_bars, retest_pos + p0_p2_pad_bars))
+        if p0_time is not None:
+            p0_pos = _pos(p0_time)
+            segments.append((p0_pos - p0_p2_pad_bars, p0_pos + p0_p2_pad_bars))
     for lv in near_levels:
         fpos = _pos(lv["formation_time"])
         lv["form_pos"] = fpos
