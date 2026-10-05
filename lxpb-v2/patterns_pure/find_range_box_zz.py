@@ -139,31 +139,37 @@ def find_range_box_zz(data: pd.DataFrame,
   plus every widening confirmed before it). The allowable price is the starting
   edge pushed out by `widen_pct` of L, as for a break.
 
-    "ranging"        price is inside the box. A bar that closes beyond an edge
-                     but is NOT a strong breakout changes nothing.
+    "ranging"        price is inside the box.
+    "weak-breakout"  a bar closed beyond an edge but `lower_data` does not grade
+                     it strong. It stays weak until a later bar closes strong
+                     (then as below), a bar closes back inside (see "back
+                     inside"), or the read ends. Also the final state of a box
+                     the zigzag broke that never produced a strong breakout.
     breakout-up-waiting-for-retest / breakout-below-waiting-for-retest
                      a bar closed beyond the top / bottom edge and `lower_data`
                      grades it strong (as `find_range` does). It stays until
                      one of the following happens.
     "breakout-up-retested" / "breakout-below-retested"
-                     a level of the box was retested (see Retest). Final.
+                     a level of the box was retested (see Retest) on a bar AFTER
+                     the breakout was confirmed. Final.
     "breakout-up-no-level" / "breakout-below-no-level"
                      as waiting, but no level of the box was awaiting a retest
                      when the breakout closed. Leaves the same ways.
-    back inside      a bar closes back inside the box while the breakout was
-                     out. The highest high (lowest low) reached since the
-                     breakout decides:
+    back inside      a bar closes back inside the box while a breakout (weak or
+                     strong) was out. The highest high (lowest low) reached
+                     since the breakout decides:
                        - within the allowable price: back to "ranging", and the
                          box's edge in this read is pushed out to that extreme;
-                       - beyond it: the breakout FAILED (below).
+                       - beyond it, and THIS bar is the one that wicked beyond
+                         it: the breakout FAILED (below);
+                       - beyond it, but an EARLIER bar did that: nothing is
+                         decided, the breakout stays out.
     "breakout-above-failed" / "breakout-below-failed"
-                     a bar wicked beyond the allowable price and closed back
-                     inside the box. Reached from "ranging" (a single bar will
-                     do, no strong breakout needed) or by the "back inside"
-                     rule. Final.
-    "weak-breakout"  the zigzag broke the box (status "broken") and the read
-                     above never produced a strong breakout or a failure; the
-                     break candle was graded weak. Final.
+                     the SAME bar wicked beyond the allowable price and closed
+                     back inside the box. Reached from "ranging" (a single bar
+                     will do, no breakout needed) or while a breakout is out.
+                     A later bar returning inside does not make it failed.
+                     Final.
     "merged"         status "merged": not a range of its own.
     None             the answer needs something not supplied: no `lower_data`
                      (strong vs weak cannot be told, only a failure can), or no
@@ -185,7 +191,8 @@ def find_range_box_zz(data: pd.DataFrame,
   they pre-date the box. Only fates "retested" and "open_awaiting_retest"
   count, so a plain-P0 only appears if the ledger tracks them
   (PLAIN_P0_TRACKED). The first of them to be retested ends the wait. A retest
-  that completes on the same bar that closes back inside counts as a retest.
+  only counts on a bar after the breakout bar, and one that completes on the
+  bar closing back inside the box is ignored (the breakout is not confirmed).
   """
   cols = ["range_id", "status", "start_time", "start_kind", "trough_time", "confirm_time",
           "last_time", "end_time", "high", "low", "height", "seed_high",
@@ -286,19 +293,24 @@ def _read_states(b, idx, O, H, L, C, n, widen_pct, grader, levels, bo_grade):
   lim_up = sh + widen_pct / 100 * (sh - sl)
   lim_dn = sl - widen_pct / 100 * (sh - sl)
   hi, lo = sh, sl
-  wid = b["widen"]
-  w = 0
-  log = []
-  out = None                         # None while ranging, else dict of the open breakout
+  wid, w = b["widen"], 0
+  out = None            # None while ranging, else the open breakout: dict(up, ext, rt, strong)
   state, failed_t, retest_t = "ranging", pd.NaT, pd.NaT
+  log = [(idx[b["confirm_j"]], "ranging")]
   stop = b["end_j"] if b["end_j"] is not None else n - 1
-  log.append((idx[b["confirm_j"]], "ranging"))
 
   def label(up, kind):
     return f"breakout-{'up' if up else 'below'}-{kind}"
 
   def failed_label(up):
     return "breakout-above-failed" if up else "breakout-below-failed"
+
+  def strong_state(up, t):
+    """Open a strong breakout closing on the bar at `t`: (retest time, state)."""
+    if levels is None:
+      return pd.NaT, None
+    rt, nl = _waiting_levels(levels, up, hi, lo, t)
+    return rt, label(up, "no-level" if nl == 0 else "waiting-for-retest")
 
   for m in range(b["confirm_j"] + 1, n):
     if out is None and m > stop:
@@ -308,37 +320,47 @@ def _read_states(b, idx, O, H, L, C, n, widen_pct, grader, levels, bo_grade):
       hi, lo = (price, lo) if side == "high" else (hi, price)
       w += 1
     inside = lo <= C[m] <= hi
-    if out is None:
-      if H[m] > lim_up and inside:
-        state, failed_t = failed_label(True), idx[m]
-      elif L[m] < lim_dn and inside:
-        state, failed_t = failed_label(False), idx[m]
+    if out is not None:
+      up = out["up"]
+      if C[m] < lo if up else C[m] > hi:      # straight through to the far edge
+        out = None
       else:
-        up = C[m] > hi
-        if (up or C[m] < lo) and grader is not None and grader.grade(idx[m], up, hi, lo)[0] == "strong":
-          rt, nl = (pd.NaT, None) if levels is None else _waiting_levels(levels, up, hi, lo, idx[m])
-          out = dict(up=up, ext=H[m] if up else L[m], rt=rt)
-          state = (None if levels is None else
-                   label(up, "no-level" if nl == 0 else "waiting-for-retest"))
+        out["ext"] = max(out["ext"], H[m]) if up else min(out["ext"], L[m])
+        if inside and (H[m] > lim_up if up else L[m] < lim_dn):
+          state, failed_t = failed_label(up), idx[m]
+          log.append((idx[m], state))
+          break
+        if inside and (out["ext"] <= lim_up if up else out["ext"] >= lim_dn):
+          hi, lo = (max(hi, out["ext"]), lo) if up else (hi, min(lo, out["ext"]))
+          out, state = None, "ranging"
           log.append((idx[m], state))
           continue
-        else:
-          continue
+        if out["strong"]:
+          if pd.notna(out["rt"]) and out["rt"] <= idx[m]:
+            state, retest_t = label(up, "retested"), out["rt"]
+            log.append((idx[m], state))
+            break
+        elif (C[m] > hi if up else C[m] < lo) and grader is not None             and grader.grade(idx[m], up, hi, lo)[0] == "strong":
+          out["strong"] = True
+          out["rt"], state = strong_state(up, idx[m])
+          log.append((idx[m], state))
+        continue
+    if H[m] > lim_up and inside:
+      state, failed_t = failed_label(True), idx[m]
       log.append((idx[m], state))
       break
-    up = out["up"]
-    out["ext"] = max(out["ext"], H[m]) if up else min(out["ext"], L[m])
-    if pd.notna(out["rt"]) and out["rt"] <= idx[m]:
-      state, retest_t = label(up, "retested"), out["rt"]
+    if L[m] < lim_dn and inside:
+      state, failed_t = failed_label(False), idx[m]
       log.append((idx[m], state))
       break
-    if inside:
-      if (out["ext"] > lim_up) if up else (out["ext"] < lim_dn):
-        state, failed_t = failed_label(up), idx[m]
-        log.append((idx[m], state))
-        break
-      hi, lo = (max(hi, out["ext"]), lo) if up else (hi, min(lo, out["ext"]))
-      out, state = None, "ranging"
+    up = C[m] > hi
+    if (up or C[m] < lo) and grader is not None:
+      strong = grader.grade(idx[m], up, hi, lo)[0] == "strong"
+      out = dict(up=up, ext=H[m] if up else L[m], rt=pd.NaT, strong=strong)
+      if strong:
+        out["rt"], state = strong_state(up, idx[m])
+      else:
+        state = "weak-breakout"
       log.append((idx[m], state))
   if state == "ranging" and b["status"] == "broken":
     state = "weak-breakout" if bo_grade is not None else None
