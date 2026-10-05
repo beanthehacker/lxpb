@@ -124,65 +124,75 @@ def find_range_box_zz(data: pd.DataFrame,
                    range (x lower-TF ATR) and body share of the stretch that
                    was graded: the qualifying one if strong, else the first
                    candidate's (NaN if the lower bars held none)
-    failed_time    broken only: first `data` (higher-timeframe) bar after the
-                   box's last inside pivot that wicked past the allowable
-                   price (see State) and closed back inside the box; else NaT
-    retest_time    broken only, needs `levels`: the first retest, after the
-                   break candle, of an LHPB (up break) / LLPB (down break) level
-                   in the box that was awaiting it (see Retest); else NaT
-    state          see State
+    failed_time    when the breakout was taken back (see State); else NaT
+    retest_time    when a level of the box was retested after a strong breakout
+                   (see Retest); else NaT
+    state          where the box stands as of the last bar (see State)
+    state_log      list of (bar time, state): each change of state, stamped with
+                   the bar whose CLOSE brought it (like every other time here a
+                   bar is named by its open); [] for a merged box
 
-  State. Where the box stands as of the LAST bar of `data` (like the level
-  ledger's buckets; use the time columns to ask about an earlier moment):
+  State. A bar-by-bar read of `data` (the higher timeframe) once the box is
+  known, from the bar after `confirm_time`. It does not wait for the zigzag to
+  confirm a pivot, so a breakout is seen the moment its bar closes. The edges
+  it reads are the box's edges as they stood at that bar (the starting edges
+  plus every widening confirmed before it). The allowable price is the starting
+  edge pushed out by `widen_pct` of L, as for a break.
 
-    "ranging"                          status "open": price is still inside
-    "breakout-up-waiting-for-retest"   strong break up, no LHPB level of the box
-                                       retested yet
-    "breakout-below-waiting-for-retest"  strong break down, no LLPB level retested
-    "weak-breakout"                    broken, graded weak (either direction)
-    "breakout-above-failed"            an up break that was taken back (below)
-    "breakout-below-failed"            a down break that was taken back
-    "merged"                           status "merged" (not a range of its own)
+    "ranging"        price is inside the box. A bar that closes beyond an edge
+                     but is NOT a strong breakout changes nothing.
+    breakout-up-waiting-for-retest / breakout-below-waiting-for-retest
+                     a bar closed beyond the top / bottom edge and `lower_data`
+                     grades it strong (as `find_range` does). It stays until
+                     one of the following happens.
     "breakout-up-retested" / "breakout-below-retested"
-                                       strong break, one of those levels has
-                                       been retested (not in the brief; the
-                                       waiting state ends here)
+                     a level of the box was retested (see Retest). Final.
     "breakout-up-no-level" / "breakout-below-no-level"
-                                       strong break, but no level was awaiting
-                                       a retest in the box (not in the brief)
-    None                               broken, but the strong/weak grade
-                                       (no `lower_data`) or the retest
-                                       (no `levels`) cannot be told
+                     as waiting, but no level of the box was awaiting a retest
+                     when the breakout closed. Leaves the same ways.
+    back inside      a bar closes back inside the box while the breakout was
+                     out. The highest high (lowest low) reached since the
+                     breakout decides:
+                       - within the allowable price: back to "ranging", and the
+                         box's edge in this read is pushed out to that extreme;
+                       - beyond it: the breakout FAILED (below).
+    "breakout-above-failed" / "breakout-below-failed"
+                     a bar wicked beyond the allowable price and closed back
+                     inside the box. Reached from "ranging" (a single bar will
+                     do, no strong breakout needed) or by the "back inside"
+                     rule. Final.
+    "weak-breakout"  the zigzag broke the box (status "broken") and the read
+                     above never produced a strong breakout or a failure; the
+                     break candle was graded weak. Final.
+    "merged"         status "merged": not a range of its own.
+    None             the answer needs something not supplied: no `lower_data`
+                     (strong vs weak cannot be told, only a failure can), or no
+                     `levels` while a strong breakout is out.
 
-  Failed break. Failure is read on `data` (the higher timeframe), never on
-  `lower_data`: a bar that wicks beyond the ALLOWABLE price -- the starting
-  edge pushed out by `widen_pct` of L, the same limit that decides a break --
-  and CLOSES back inside the box (between its frozen edges). For a down break
-  the wick is below the allowable low, for an up break above the allowable
-  high. The first such bar after the box's last inside pivot is `failed_time`.
-  A failure outranks "weak-breakout" and "waiting-for-retest", and a strong
-  break whose retest completed BEFORE `failed_time` stays "...-retested"
-  (a later return to the box is not a failure of a break that already played
-  out). For a weak or ungraded break the search runs to the end of `data`.
+  The read stops at the bar that confirms the zigzag break (`end_time`) unless
+  a strong breakout is still out then; that one is followed until it resolves
+  or the data ends. State is as of the last bar of `data`; `state_log` gives
+  every earlier moment. `high` / `low` stay the zigzag's edges; the state read
+  has its own (above), so after an expansion the two can differ.
 
   Retest. `levels` is the LXPB level ledger for the same timeframe and price
   scale as `data` (columns type, price, breakout_time, retest_time, death_time,
   fate; e.g. lxpb_levels_cache.h1_levels / m5_levels). This module does not
-  import it. Once the break candle is complete, the levels that are waiting
-  are: LHPB for an up break, LLPB for a down break, priced within the box's
-  frozen edges, ALREADY BROKEN (breakout_time <= break_time) and not yet
-  retested or otherwise dead (death_time after break_time). When they formed
-  does not matter, nor does it matter that they pre-date the box. Only fates
-  "retested" and "open_awaiting_retest" count, so a plain-P0 only appears if
-  the ledger tracks them (PLAIN_P0_TRACKED). `retest_time` is the earliest
-  completed retest among them; the state stays "waiting" until one happens.
+  import it. When a strong breakout closes, the levels waiting are: LHPB for an
+  up breakout, LLPB for a down one, priced within the box's edges at that
+  moment, ALREADY BROKEN (breakout_time <= that bar) and not yet retested or
+  otherwise dead. When they formed does not matter, nor does it matter that
+  they pre-date the box. Only fates "retested" and "open_awaiting_retest"
+  count, so a plain-P0 only appears if the ledger tracks them
+  (PLAIN_P0_TRACKED). The first of them to be retested ends the wait. A retest
+  that completes on the same bar that closes back inside counts as a retest.
   """
   cols = ["range_id", "status", "start_time", "start_kind", "trough_time", "confirm_time",
           "last_time", "end_time", "high", "low", "height", "seed_high",
           "seed_low", "seed_height", "n_pivots", "n_top_edge", "n_bottom_edge",
           "merged_into", "break_dir",
           "break_pivot_time", "break_price", "break_time", "breakout",
-          "breakout_range_atr", "breakout_body", "failed_time", "retest_time", "state"]
+          "breakout_range_atr", "breakout_body", "failed_time", "retest_time", "state", "state_log"]
   grader = None
   if lower_data is not None:
     tf_min, lsp = _spacing_minutes(data.index), _spacing_minutes(lower_data.index)
@@ -209,8 +219,6 @@ def find_range_box_zz(data: pd.DataFrame,
     if broken and min(n_top, n_bot) < min_edge_touches:
       continue
     bo, k = (None, np.nan, np.nan), None
-    failed_t = retest_t = pd.NaT
-    n_lv = None
     if broken:
       up = b["break_dir"] == "up"
       k = b["break_i"]
@@ -220,19 +228,11 @@ def find_range_box_zz(data: pd.DataFrame,
           break
       if grader is not None:
         bo = grader.grade(idx[k], up, b["high"], b["low"])
-      seed_len = b["seed_high"] - b["seed_low"]
-      for m in range(b["last_i"] + 1, n):
-        if up:
-          out_ = H[m] > b["seed_high"] + widen_pct / 100 * seed_len and b["low"] <= C[m] <= b["high"]
-        else:
-          out_ = L[m] < b["seed_low"] - widen_pct / 100 * seed_len and b["low"] <= C[m] <= b["high"]
-        if out_:
-          failed_t = idx[m]
-          break
-      if levels is not None:
-        retest_t, n_lv = _retest_state(levels, up, b, idx[k])
-    state = _box_state(b["status"], b["break_dir"], bo[0], failed_t, retest_t,
-                       graded=grader is not None, n_lv=n_lv)
+    if b["status"] == "merged":
+      state, log, failed_t, retest_t = "merged", [], pd.NaT, pd.NaT
+    else:
+      state, log, failed_t, retest_t = _read_states(
+        b, idx, O, H, L, C, n, widen_pct, grader, levels, bo_grade=bo[0])
     rows.append({
       "range_id": b["id"],
       "status": b["status"],
@@ -254,6 +254,7 @@ def find_range_box_zz(data: pd.DataFrame,
       "break_time": idx[k] if broken else pd.NaT,
       "breakout": bo[0], "breakout_range_atr": bo[1], "breakout_body": bo[2],
       "failed_time": failed_t, "retest_time": retest_t, "state": state,
+      "state_log": log,
     })
   if not rows:
     return pd.DataFrame(columns=data.columns.tolist() + cols)
@@ -262,41 +263,88 @@ def find_range_box_zz(data: pd.DataFrame,
   return out.assign(**{c: found[c].to_numpy() for c in cols})
 
 
-def _retest_state(levels, up, b, break_t):
-  """(earliest retest, number of waiting-or-retested levels) for the LHPB (up)
-  / LLPB (down) levels whose price lies in the box's frozen edges and that, as
-  the break candle completed, were broken and still awaiting their retest
-  (breakout_time <= break_t < death_time). Formation time is irrelevant."""
+def _waiting_levels(levels, up, hi, lo, bar_t):
+  """(earliest retest time, count) of the LHPB (up) / LLPB (down) levels priced
+  in [lo, hi] that, as the bar opening at `bar_t` closed, were broken and still
+  awaiting their retest (breakout_time <= bar_t < death_time). Formation time is
+  irrelevant."""
   lv = levels
   sel = ((lv["type"] == ("LHPB" if up else "LLPB"))
          & lv["fate"].isin(["retested", "open_awaiting_retest"])
-         & (lv["price"] >= b["low"]) & (lv["price"] <= b["high"])
-         & (lv["breakout_time"] <= break_t)
-         & (lv["death_time"].isna() | (lv["death_time"] > break_t)))
+         & (lv["price"] >= lo) & (lv["price"] <= hi)
+         & (lv["breakout_time"] <= bar_t)
+         & (lv["death_time"].isna() | (lv["death_time"] > bar_t)))
   hit = lv[sel]
   done = hit.loc[hit["fate"] == "retested", "retest_time"]
   return (done.min() if len(done) else pd.NaT), len(hit)
 
 
-def _box_state(status, break_dir, grade, failed_t, retest_t, graded, n_lv):
-  if status == "open":
-    return "ranging"
-  if status == "merged":
-    return "merged"
-  up = break_dir == "up"
-  strong = grade == "strong"
-  if pd.notna(failed_t) and not (strong and pd.notna(retest_t) and retest_t < failed_t):
+def _read_states(b, idx, O, H, L, C, n, widen_pct, grader, levels, bo_grade):
+  """The bar-by-bar State read of one box (see find_range_box_zz). Returns
+  (final state, [(bar time, state), ...], failed_time, retest_time)."""
+  sh, sl = b["seed_high"], b["seed_low"]
+  lim_up = sh + widen_pct / 100 * (sh - sl)
+  lim_dn = sl - widen_pct / 100 * (sh - sl)
+  hi, lo = sh, sl
+  wid = b["widen"]
+  w = 0
+  log = []
+  out = None                         # None while ranging, else dict of the open breakout
+  state, failed_t, retest_t = "ranging", pd.NaT, pd.NaT
+  stop = b["end_j"] if b["end_j"] is not None else n - 1
+  log.append((idx[b["confirm_j"]], "ranging"))
+
+  def label(up, kind):
+    return f"breakout-{'up' if up else 'below'}-{kind}"
+
+  def failed_label(up):
     return "breakout-above-failed" if up else "breakout-below-failed"
-  if not graded:
-    return None
-  if not strong:
-    return "weak-breakout"
-  if n_lv is None:
-    return None
-  d = "up" if up else "below"
-  if n_lv == 0:
-    return f"breakout-{d}-no-level"
-  return f"breakout-{d}-retested" if pd.notna(retest_t) else f"breakout-{d}-waiting-for-retest"
+
+  for m in range(b["confirm_j"] + 1, n):
+    if out is None and m > stop:
+      break
+    while w < len(wid) and wid[w][0] < m:
+      _, side, price = wid[w]
+      hi, lo = (price, lo) if side == "high" else (hi, price)
+      w += 1
+    inside = lo <= C[m] <= hi
+    if out is None:
+      if H[m] > lim_up and inside:
+        state, failed_t = failed_label(True), idx[m]
+      elif L[m] < lim_dn and inside:
+        state, failed_t = failed_label(False), idx[m]
+      else:
+        up = C[m] > hi
+        if (up or C[m] < lo) and grader is not None and grader.grade(idx[m], up, hi, lo)[0] == "strong":
+          rt, nl = (pd.NaT, None) if levels is None else _waiting_levels(levels, up, hi, lo, idx[m])
+          out = dict(up=up, ext=H[m] if up else L[m], rt=rt)
+          state = (None if levels is None else
+                   label(up, "no-level" if nl == 0 else "waiting-for-retest"))
+          log.append((idx[m], state))
+          continue
+        else:
+          continue
+      log.append((idx[m], state))
+      break
+    up = out["up"]
+    out["ext"] = max(out["ext"], H[m]) if up else min(out["ext"], L[m])
+    if pd.notna(out["rt"]) and out["rt"] <= idx[m]:
+      state, retest_t = label(up, "retested"), out["rt"]
+      log.append((idx[m], state))
+      break
+    if inside:
+      if (out["ext"] > lim_up) if up else (out["ext"] < lim_dn):
+        state, failed_t = failed_label(up), idx[m]
+        log.append((idx[m], state))
+        break
+      hi, lo = (max(hi, out["ext"]), lo) if up else (hi, min(lo, out["ext"]))
+      out, state = None, "ranging"
+      log.append((idx[m], state))
+  if state == "ranging" and b["status"] == "broken":
+    state = "weak-breakout" if bo_grade is not None else None
+    if state:
+      log.append((idx[b["end_j"]], state))
+  return state, log, failed_t, retest_t
 
 
 def _zigzag_pivots(H, L, atr, atr_mult, atr_period, order=None):
@@ -411,6 +459,7 @@ def _boxes_from_pivots(pivots, widen_pct, merge_tol):
           b["high"] = price
         else:
           b["low"] = price
+        b["widen"].append((j, "high" if kind == "crest" else "low", price))
       b["n"] += 1
       b["crests" if kind == "crest" else "troughs"].append(price)
       b["last_i"] = i
@@ -429,7 +478,7 @@ def _boxes_from_pivots(pivots, widen_pct, merge_tol):
       b = dict(id=len(boxes), start_i=i0, start_kind=k0, crest_i=ci, trough_i=ti,
                confirm_j=j, last_i=i,
                high=chi, low=tlo, seed_high=chi, seed_low=tlo, n=2,
-               crests=[chi], troughs=[tlo],
+               crests=[chi], troughs=[tlo], widen=[],
                status="open", end_j=None, merged_into=None,
                break_dir=None, break_i=None, break_price=None)
       boxes.append(b)
