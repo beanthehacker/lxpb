@@ -127,9 +127,9 @@ def find_range_box_zz(data: pd.DataFrame,
     failed_time    broken only: first `data` (higher-timeframe) bar after the
                    box's last inside pivot that wicked past the allowable
                    price (see State) and closed back inside the box; else NaT
-    retest_time    broken only, needs `levels`: the retest of the first
-                   LHPB (up break) / LLPB (down break) level of the box to
-                   complete after the break; else NaT
+    retest_time    broken only, needs `levels`: the first retest, after the
+                   break candle, of an LHPB (up break) / LLPB (down break) level
+                   in the box that was awaiting it (see Retest); else NaT
     state          see State
 
   State. Where the box stands as of the LAST bar of `data` (like the level
@@ -144,9 +144,12 @@ def find_range_box_zz(data: pd.DataFrame,
     "breakout-below-failed"            a down break that was taken back
     "merged"                           status "merged" (not a range of its own)
     "breakout-up-retested" / "breakout-below-retested"
-                                       strong break whose level retest has
-                                       completed (not in the brief; the
+                                       strong break, one of those levels has
+                                       been retested (not in the brief; the
                                        waiting state ends here)
+    "breakout-up-no-level" / "breakout-below-no-level"
+                                       strong break, but no level was awaiting
+                                       a retest in the box (not in the brief)
     None                               broken, but the strong/weak grade
                                        (no `lower_data`) or the retest
                                        (no `levels`) cannot be told
@@ -163,13 +166,16 @@ def find_range_box_zz(data: pd.DataFrame,
   out). For a weak or ungraded break the search runs to the end of `data`.
 
   Retest. `levels` is the LXPB level ledger for the same timeframe and price
-  scale as `data` (columns type, price, formation_time, retest_time, fate; e.g.
-  lxpb_levels_cache.h1_levels / m5_levels). This module does not import it. A
-  level belongs to the box when it formed between the box's first pivot and its
-  break candle and its price lies within the box's frozen edges; an up break
-  looks at LHPB levels, a down break at LLPB. Only fate "retested" counts, and
-  only a retest that completes after the break candle. The earliest is
-  `retest_time`.
+  scale as `data` (columns type, price, breakout_time, retest_time, death_time,
+  fate; e.g. lxpb_levels_cache.h1_levels / m5_levels). This module does not
+  import it. Once the break candle is complete, the levels that are waiting
+  are: LHPB for an up break, LLPB for a down break, priced within the box's
+  frozen edges, ALREADY BROKEN (breakout_time <= break_time) and not yet
+  retested or otherwise dead (death_time after break_time). When they formed
+  does not matter, nor does it matter that they pre-date the box. Only fates
+  "retested" and "open_awaiting_retest" count, so a plain-P0 only appears if
+  the ledger tracks them (PLAIN_P0_TRACKED). `retest_time` is the earliest
+  completed retest among them; the state stays "waiting" until one happens.
   """
   cols = ["range_id", "status", "start_time", "start_kind", "trough_time", "confirm_time",
           "last_time", "end_time", "high", "low", "height", "seed_high",
@@ -204,6 +210,7 @@ def find_range_box_zz(data: pd.DataFrame,
       continue
     bo, k = (None, np.nan, np.nan), None
     failed_t = retest_t = pd.NaT
+    n_lv = None
     if broken:
       up = b["break_dir"] == "up"
       k = b["break_i"]
@@ -223,9 +230,9 @@ def find_range_box_zz(data: pd.DataFrame,
           failed_t = idx[m]
           break
       if levels is not None:
-        retest_t = _first_retest(levels, up, b, idx[b["start_i"]], idx[k])
+        retest_t, n_lv = _retest_state(levels, up, b, idx[k])
     state = _box_state(b["status"], b["break_dir"], bo[0], failed_t, retest_t,
-                       graded=grader is not None, levels_given=levels is not None)
+                       graded=grader is not None, n_lv=n_lv)
     rows.append({
       "range_id": b["id"],
       "status": b["status"],
@@ -255,18 +262,23 @@ def find_range_box_zz(data: pd.DataFrame,
   return out.assign(**{c: found[c].to_numpy() for c in cols})
 
 
-def _first_retest(levels, up, b, start_t, break_t):
-  """Earliest completed retest after `break_t` among the box's LHPB (up) /
-  LLPB (down) levels, or NaT."""
+def _retest_state(levels, up, b, break_t):
+  """(earliest retest, number of waiting-or-retested levels) for the LHPB (up)
+  / LLPB (down) levels whose price lies in the box's frozen edges and that, as
+  the break candle completed, were broken and still awaiting their retest
+  (breakout_time <= break_t < death_time). Formation time is irrelevant."""
   lv = levels
-  sel = ((lv["type"] == ("LHPB" if up else "LLPB")) & (lv["fate"] == "retested")
+  sel = ((lv["type"] == ("LHPB" if up else "LLPB"))
+         & lv["fate"].isin(["retested", "open_awaiting_retest"])
          & (lv["price"] >= b["low"]) & (lv["price"] <= b["high"])
-         & (lv["formation_time"] >= start_t) & (lv["formation_time"] <= break_t)
-         & (lv["retest_time"] > break_t))
-  return lv.loc[sel, "retest_time"].min() if sel.any() else pd.NaT
+         & (lv["breakout_time"] <= break_t)
+         & (lv["death_time"].isna() | (lv["death_time"] > break_t)))
+  hit = lv[sel]
+  done = hit.loc[hit["fate"] == "retested", "retest_time"]
+  return (done.min() if len(done) else pd.NaT), len(hit)
 
 
-def _box_state(status, break_dir, grade, failed_t, retest_t, graded, levels_given):
+def _box_state(status, break_dir, grade, failed_t, retest_t, graded, n_lv):
   if status == "open":
     return "ranging"
   if status == "merged":
@@ -279,11 +291,12 @@ def _box_state(status, break_dir, grade, failed_t, retest_t, graded, levels_give
     return None
   if not strong:
     return "weak-breakout"
-  if pd.notna(retest_t):
-    return "breakout-up-retested" if up else "breakout-below-retested"
-  if not levels_given:
+  if n_lv is None:
     return None
-  return "breakout-up-waiting-for-retest" if up else "breakout-below-waiting-for-retest"
+  d = "up" if up else "below"
+  if n_lv == 0:
+    return f"breakout-{d}-no-level"
+  return f"breakout-{d}-retested" if pd.notna(retest_t) else f"breakout-{d}-waiting-for-retest"
 
 
 def _zigzag_pivots(H, L, atr, atr_mult, atr_period, order=None):
