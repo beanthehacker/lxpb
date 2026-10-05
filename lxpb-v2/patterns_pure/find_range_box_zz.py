@@ -141,23 +141,24 @@ def find_range_box_zz(data: pd.DataFrame,
 
     "ranging"        price is inside the box.
     "weak-breakout"  a bar closed beyond an edge but `lower_data` does not grade
-                     it strong. It stays weak until a later bar closes strong
-                     (then as below), a bar closes back inside (see "back
-                     inside"), or the read ends. Also the final state of a box
-                     the zigzag broke that never produced a strong breakout.
+                     it strong. A later bar can still close strong (then as
+                     below), or close back inside (see "back inside"). Also the
+                     final state of a box the zigzag broke that never produced
+                     a strong breakout.
     breakout-up-waiting-for-retest / breakout-below-waiting-for-retest
                      a bar closed beyond the top / bottom edge and `lower_data`
-                     grades it strong (as `find_range` does). It stays until
-                     one of the following happens.
+                     grades it strong (as `find_range` does). The breakout is
+                     now CONFIRMED: it can no longer fail or return to
+                     "ranging", whatever price does next. Only a retest ends it.
     "breakout-up-retested" / "breakout-below-retested"
                      a level of the box was retested (see Retest) on a bar AFTER
                      the breakout was confirmed. Final.
     "breakout-up-no-level" / "breakout-below-no-level"
                      as waiting, but no level of the box was awaiting a retest
-                     when the breakout closed. Leaves the same ways.
-    back inside      a bar closes back inside the box while a breakout (weak or
-                     strong) was out. The highest high (lowest low) reached
-                     since the breakout decides:
+                     when the breakout closed. Stays so (nothing can retest).
+    back inside      (weak breakouts only) a bar closes back inside the box. The
+                     highest high (lowest low) reached since the breakout
+                     decides:
                        - within the allowable price: back to "ranging", and the
                          box's edge in this read is pushed out to that extreme;
                        - beyond it, and THIS bar is the one that wicked beyond
@@ -167,17 +168,16 @@ def find_range_box_zz(data: pd.DataFrame,
     "breakout-above-failed" / "breakout-below-failed"
                      the SAME bar wicked beyond the allowable price and closed
                      back inside the box. Reached from "ranging" (a single bar
-                     will do, no breakout needed) or while a breakout is out.
-                     A later bar returning inside does not make it failed.
-                     Final.
+                     will do) or from a weak breakout, never from a confirmed
+                     strong one. Final.
     "merged"         status "merged": not a range of its own.
     None             the answer needs something not supplied: no `lower_data`
                      (strong vs weak cannot be told, only a failure can), or no
                      `levels` while a strong breakout is out.
 
   The read stops at the bar that confirms the zigzag break (`end_time`) unless
-  a strong breakout is still out then; that one is followed until it resolves
-  or the data ends. State is as of the last bar of `data`; `state_log` gives
+  a breakout is still out then; that one is followed until it resolves or the
+  data ends. State is as of the last bar of `data`; `state_log` gives
   every earlier moment. `high` / `low` stay the zigzag's edges; the state read
   has its own (above), so after an expansion the two can differ.
 
@@ -322,7 +322,13 @@ def _read_states(b, idx, O, H, L, C, n, widen_pct, grader, levels, bo_grade):
     inside = lo <= C[m] <= hi
     if out is not None:
       up = out["up"]
-      if C[m] < lo if up else C[m] > hi:      # straight through to the far edge
+      if out["strong"]:       # confirmed: only a retest can end it
+        if pd.notna(out["rt"]) and out["rt"] <= idx[m]:
+          state, retest_t = label(up, "retested"), out["rt"]
+          log.append((idx[m], state))
+          break
+        continue
+      if C[m] < lo if up else C[m] > hi:      # weak one ran through to the far edge
         out = None
       else:
         out["ext"] = max(out["ext"], H[m]) if up else min(out["ext"], L[m])
@@ -335,12 +341,7 @@ def _read_states(b, idx, O, H, L, C, n, widen_pct, grader, levels, bo_grade):
           out, state = None, "ranging"
           log.append((idx[m], state))
           continue
-        if out["strong"]:
-          if pd.notna(out["rt"]) and out["rt"] <= idx[m]:
-            state, retest_t = label(up, "retested"), out["rt"]
-            log.append((idx[m], state))
-            break
-        elif (C[m] > hi if up else C[m] < lo) and grader is not None             and grader.grade(idx[m], up, hi, lo)[0] == "strong":
+        if (C[m] > hi if up else C[m] < lo) and grader is not None             and grader.grade(idx[m], up, hi, lo)[0] == "strong":
           out["strong"] = True
           out["rt"], state = strong_state(up, idx[m])
           log.append((idx[m], state))
