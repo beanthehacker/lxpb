@@ -1025,8 +1025,11 @@ _m5_bars = LC.m5_bars_continuous
 def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=None,
                    fill_window=None, p1_bar_width=pd.Timedelta(hours=1), p1_label="H1",
                    bars_before_retest=None, bars_after_exit=None, extra_context_times=None,
-                   plain_p0=LC.PLAIN_P0_UNTRACKED, p0_p2_pad_bars=None):
+                   plain_p0=LC.PLAIN_P0_UNTRACKED, p0_p2_pad_bars=None, bar_label="M5"):
     """5-minute companion pane for build_trade_chart's H1 chart.
+
+    `bar_label` is only the timeframe name shown on the pane (title, ray
+    labels, markers); the M1/M2 variant reports pass their own bar size.
 
     Runs the SAME LXPB state machine (lxpb.detect_lxpb_h1 is timeframe
     agnostic -- it just walks whatever bars it is handed) over TradingView's
@@ -1309,7 +1312,7 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
                 "time": R._to_epoch_utc(idx[lv["form_pos"]]),
                 "position": "aboveBar" if is_long else "belowBar",
                 "color": R.LEVEL_COLOR, "shape": "circle",
-                "text": f"M5 entry level {lv['price']:.2f}",
+                "text": f"{bar_label} entry level {lv['price']:.2f}",
             })
     outcome = resolved["outcome"]
     if outcome == "target":
@@ -1351,8 +1354,8 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
             "points": pts, "color": R.LEVEL_COLOR if is_entry else M5_COLOR,
             "lineWidth": 2 if is_entry else 1,
             "lineStyle": 0 if lv["stage"] == "broken" else 2,
-            "priceLabel": is_entry, "title": "M5 planned entry" if is_entry else "",
-            "label": (f"M5 {lv['type']} {lv['price']:.2f}"
+            "priceLabel": is_entry, "title": f"{bar_label} planned entry" if is_entry else "",
+            "label": (f"{bar_label} {lv['type']} {lv['price']:.2f}"
                       f"{' (planned entry)' if is_entry else ''}  &middot;  formed "
                       f"{R._to_pt_str(lv['formation_time'])}  &middot;  {lv['stage']}"
                       f"  &middot;  {lv['dist']:.2f}pt from entry"),
@@ -1371,19 +1374,19 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
                             "lineStyle": 0, "title": f"entry {price:.2f}"})
 
     if n_live_levels:
-        lvl_txt = (f"{n_live_levels} live M5 {level_type} ray(s) within "
+        lvl_txt = (f"{n_live_levels} live {bar_label} {level_type} ray(s) within "
                    f"{M5_NEAR_PTS:.0f}pt formed by {p1_label} breakout "
                    f"(solid = broken, dashed = unbroken; hover for details)")
     elif breakout_out_of_reach:
         lvl_txt = (f"{p1_label} breakout bar predates this contract's tick data -- "
-                   f"cannot tell which M5 {level_type} levels existed by then")
+                   f"cannot tell which {bar_label} {level_type} levels existed by then")
     else:
-        lvl_txt = (f"no live M5 {level_type} level within {M5_NEAR_PTS:.0f}pt "
+        lvl_txt = (f"no live {bar_label} {level_type} level within {M5_NEAR_PTS:.0f}pt "
                    f"formed by {p1_label} breakout")
-    title = (f"M5  |  {lvl_txt}  |  {R._to_pt_str(window.index[0])} \u2192 "
+    title = (f"{bar_label}  |  {lvl_txt}  |  {R._to_pt_str(window.index[0])} \u2192 "
              f"{R._to_pt_str(window.index[-1])}")
     if entry_level is not None:
-        title += f"  |  M5 planned entry {float(entry_level['price']):.2f}"
+        title += f"  |  {bar_label} planned entry {float(entry_level['price']):.2f}"
     if total_skipped:
         title += f"  [{total_skipped} bars compressed out of view]"
     return {"title": title, "candles": candles, "markers": markers,

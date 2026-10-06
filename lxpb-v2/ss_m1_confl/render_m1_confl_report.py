@@ -165,6 +165,22 @@ the target are ALL M5 LXPB structure:
          V1-V4/V2.5 -> H1, H1 variants V6-V9 -> M5). Display only: no tag,
          no filter.
 
+       * RANGE-BOX TAGS (range_box_tags.py). patterns-pure `find_range_box_zz`
+         is run on the REAL M5 bars with the real 1-minute bars as its lower
+         timeframe (also for the M2 report), re-run per trade as of the retest
+         touch; the M5 bar holding the touch is built from ticks up to the touch
+         and treated as if it closed there (point in time). Only boxes with >= 2
+         pivots at each edge count. Both tags read the detector's bar-by-bar box
+         state breakout-up/below-waiting-for-retest (strong breakout, not yet
+         retested on the real M5 ledger). `retest-into-range`: the retested
+         level lies inside such a box. `breakout-from-range`: an LLPB short with
+         a breakout-up box below the level, or an LHPB long with a
+         breakout-below box above it, and the box's breakout bar falls inside
+         the run-in leg into the level (the same leg broke the box and ran into
+         the level; a long-ago breakout does not count). Both are
+         Dynamic filter chips (Exclude +
+         Only), NOT excluded from the headline stats by default.
+
        * NEWS PULL (`--news-pull-window`, on by default). The level's first
          tick-level touch (the retest itself, from
          `render_ss_confl_finetune_report.find_alt_fill`) is the ONE retest
@@ -293,6 +309,7 @@ import liquidity as LQ                            # noqa: E402
 import volume_spike as VS                         # noqa: E402
 import h1_bias as HB                              # noqa: E402
 import trap_variants as TV                        # noqa: E402
+import range_box_tags as RB                       # noqa: E402  (this folder; find_range_box_zz via patterns_pure)
 from find_sfp import find_sfp                     # noqa: E402  (vendored patterns_pure, on sys.path via R)
 from find_ATR import findATR                       # noqa: E402  (vendored patterns_pure, on sys.path via R)
 
@@ -475,18 +492,9 @@ RUN_IN_MULT_DEFAULT = 4.0
 RUN_IN_BASELINE_BARS_DEFAULT = 30
 
 
-def _is_strong_run_in(bars, pivots, touch_time, p1_time, level_price, is_long, mult,
-                      baseline_bars):
-    """True if the leg into the touch (see module comment above) is strong.
-
-    `bars` is the M1 series and `pivots` its zigzag (MS.zigzag_pivots). The
-    leg's start is a TROUGH's low for an LLPB (price rose into the level) /
-    a CREST's high for an LHPB (price fell into it); the move is measured
-    from that price to `level_price`, never from a candle open.
-
-    False whenever there is no leg to measure or not enough history before
-    its start for a full baseline (e.g. the first ~30 minutes of this
-    report's own window)."""
+def _run_in_start(bars, pivots, touch_time, p1_time, is_long):
+    """(time, price) where the leg into the touch starts, or None when there is
+    no leg (see the module comment above for the rule)."""
     t0 = pd.Timestamp(touch_time).floor(BAR_FREQ)
     if t0.tzinfo is None:
         t0 = t0.tz_localize("UTC")
@@ -507,9 +515,28 @@ def _is_strong_run_in(bars, pivots, touch_time, p1_time, level_price, is_long, m
         else:
             at = int(bars.index.searchsorted(p1, side="left"))
             if at >= len(bars) or bars.index[at] != p1:
-                return False
+                return None
             pivot_time = p1
             pivot_price = float(bars[col].iloc[at])
+    return pivot_time, pivot_price
+
+
+def _is_strong_run_in(bars, pivots, touch_time, p1_time, level_price, is_long, mult,
+                      baseline_bars):
+    """True if the leg into the touch (see module comment above) is strong.
+
+    `bars` is the M1 series and `pivots` its zigzag (MS.zigzag_pivots). The
+    leg's start is a TROUGH's low for an LLPB (price rose into the level) /
+    a CREST's high for an LHPB (price fell into it); the move is measured
+    from that price to `level_price`, never from a candle open.
+
+    False whenever there is no leg to measure or not enough history before
+    its start for a full baseline (e.g. the first ~30 minutes of this
+    report's own window)."""
+    start = _run_in_start(bars, pivots, touch_time, p1_time, is_long)
+    if start is None:
+        return False
+    pivot_time, pivot_price = start
     pos = int(bars.index.searchsorted(pivot_time, side="left"))
     base_start = pos - baseline_bars
     if base_start < 0:
@@ -1839,9 +1866,14 @@ def process_cluster(cluster, args):
     # Strong run-in (M1-variant-only trade qualifier -- see _is_strong_run_in):
     # the touch itself must have been approached with real conviction, not a
     # drift into the level.
+    run_in_bars = LC.m5_bars_continuous()
+    run_in_pivots = MS.zigzag_pivots(threshold_pts=args.zz_threshold_pts,
+                                     min_bars=args.zz_min_bars)
+    _ri = _run_in_start(run_in_bars, run_in_pivots, touch_time_alt,
+                        row_d["breakout_time"], is_long)
+    result["run_in_start"] = None if _ri is None else pd.Timestamp(_ri[0])
     if args.run_in_mult > 0 and not _is_strong_run_in(
-            LC.m5_bars_continuous(),
-            MS.zigzag_pivots(threshold_pts=args.zz_threshold_pts, min_bars=args.zz_min_bars),
+            run_in_bars, run_in_pivots,
             touch_time_alt, row_d["breakout_time"], alt_price, is_long,
             args.run_in_mult, args.run_in_baseline_bars):
         result["fail_reason"] = "weak_run_in"
@@ -2304,7 +2336,7 @@ def _rayify_trade_lines(chart_m5, res, row_for_chart):
     stop_t = R._to_epoch_utc(stop_ts) if stop_ts is not None else entry_t
     entry_line_t = R._to_epoch_utc(entry_ts) if entry_ts is not None else entry_t
     starts = (("target", target_t), ("stop", stop_t), ("entry", entry_line_t),
-              (f"M5 {res['level_type']}", own_t))
+              (f"M{BAR_MIN} {res['level_type']}", own_t))
 
     kept = []
     for pl in chart_m5.get("priceLines", []):
@@ -2540,7 +2572,7 @@ def build_chart_stack_for_row(res, m5_only=False):
     chart_m5 = SR.build_m5_chart(
         row_for_chart, resolved, stop_pts, target_pts,
         level_price=res["own_price"], entry_level=res["entry_m5_level"],
-        p1_bar_width=P1_BAR_WIDTH, p1_label=f"M{BAR_MIN}",
+        p1_bar_width=P1_BAR_WIDTH, p1_label=f"M{BAR_MIN}", bar_label=f"M{BAR_MIN}",
         # This M5 pane IS the primary structural chart here (no H1 pane
         # exists), and now also carries the C1/C2/... candidate markers
         # (_annotate_candidates) -- double the shared defaults so the
@@ -2605,7 +2637,7 @@ def _build_unfilled_chart_stack(res, args):
     chart_m5 = SR.build_m5_chart(
         row_for_chart, resolved_stub, 1.0, 1.0,
         level_price=res["own_price"], entry_level=res["entry_m5_level"],
-        p1_bar_width=P1_BAR_WIDTH, p1_label=f"M{BAR_MIN}",
+        p1_bar_width=P1_BAR_WIDTH, p1_label=f"M{BAR_MIN}", bar_label=f"M{BAR_MIN}",
         bars_before_retest=2 * SR.M5_BARS_BEFORE_RETEST,
         bars_after_exit=2 * SR.M5_BARS_AFTER_EXIT,
         p0_p2_pad_bars=P0_P2_PAD_BARS,
@@ -2889,6 +2921,99 @@ def _apply_atr_boundary(results, args):
         if stretch < mult:
             res.setdefault("dyn_tags", []).append("inside_atr_boundary")
     return results
+
+
+RANGE_BOX_M5 = None   # real M5 bars (set by main before the M1 swap)
+RANGE_BOX_M1 = None   # real 1-minute bars, even for the M2 report
+RANGE_BOX_LEVELS = None  # real M5 LXPB ledger: decides when a broken box stops waiting for its retest
+
+
+def _apply_range_box_tags(results):
+    """Dynamic-filter tags 'breakout-from-range' and 'retest-into-range' (see
+    _apply_globex_open_filter for the convention; both informational, shipped
+    unchecked). Boxes are patterns-pure's find_range_box_zz on real M5 bars
+    with 1-minute bars as the lower timeframe, read point in time at each
+    trade's touch -- the rules live in range_box_tags.py. A FILLED trade is
+    tagged retest-into-range when the retested level lies inside a box in state
+    breakout-up/below-waiting-for-retest (old untested boxes count), and
+    breakout-from-range when it fades a FRESH one: an LLPB with a breakout-up
+    box below the level, an LHPB with a breakout-below box above it, where the
+    box's breakout bar falls inside the run-in leg into the level. Ships res['range_box'] = {'from', 'into'} (the boxes
+    behind each tag) for the badge tooltips. No data loaded -> no tags."""
+    if RANGE_BOX_M5 is None or RANGE_BOX_M1 is None:
+        return results
+    cache = {}
+    for res in results:
+        if not res["filled"]:
+            continue
+        touch = pd.Timestamp(res["touch_time_alt"])
+        touch = touch.tz_localize("UTC") if touch.tzinfo is None else touch.tz_convert("UTC")
+        if touch not in cache:
+            cache[touch] = RB.boxes_as_of(RANGE_BOX_M5, RANGE_BOX_M1, touch,
+                                          R._tick_bars_spanning, levels=RANGE_BOX_LEVELS)
+        from_range, into_range = RB.classify(cache[touch], res["level_type"], res["own_price"],
+                                              res.get("run_in_start"), touch)
+        res["range_box"] = {"from": from_range, "into": into_range}
+        if from_range:
+            res["dyn_tags"].append(RB.TAG_FROM_RANGE)
+        if into_range:
+            res["dyn_tags"].append(RB.TAG_INTO_RANGE)
+    return results
+
+
+RANGE_DRAW = (("from", "#fde68a", "#d97706", "breakout range"),
+              ("into", "#67e8f9", "#0e7490", "retested range"))
+
+
+def _mark_range_box(chart, b, color, tint_dn, label, tint):
+    """High/low rays from the box start to the pane's last bar, a start marker, a
+    breakout marker (when the box has one in view) and, with `tint`, coloured
+    candles over start..breakout. Display only."""
+    if chart is None or not chart.get("candles"):
+        return
+    times = [c["time"] for c in chart["candles"]]
+    e0 = R._to_epoch_utc(b["start"])
+    bt = b.get("break_time")
+    e1 = R._to_epoch_utc(bt) if bt is not None and pd.notna(bt) else times[-1]
+    hi, lo = b["high"], b["low"]
+    if tint:
+        for c in chart["candles"]:
+            if e0 <= c["time"] <= e1:
+                col = color if c["close"] >= c["open"] else tint_dn
+                c.update(color=col, borderColor=col, wickColor=col)
+    for px, name in ((hi, "high"), (lo, "low")):
+        pts = [{"time": t, "value": px} for t in times if t >= e0]
+        if pts:
+            title = f"{label} {name} {px:.2f}"
+            chart.setdefault("rays", []).append({
+                "points": pts, "color": color, "lineWidth": 1, "lineStyle": 1,
+                "priceLabel": True, "title": title, "label": title})
+    hm = lambda e: pd.Timestamp(e, unit="s", tz="UTC").tz_convert("America/Los_Angeles").strftime("%H:%M")
+    for e, shape, pos, text in ((e0, "arrowDown", "aboveBar", f"{label} start {hm(e0)}"),
+                                (e1, "arrowUp", "belowBar", f"{label} breakout {hm(e1)}")):
+        if e == e1 and (bt is None or pd.isna(bt)):
+            continue
+        i = bisect.bisect_left(times, e)
+        if i < len(times) and times[i] < e + 300 and e >= times[0] - 300:
+            chart.setdefault("markers", []).append({"time": times[i], "position": pos, "color": color,
+                                                    "shape": shape, "text": text})
+    chart.get("markers", []).sort(key=lambda m: m["time"])
+    chart["title"] += (f"  |  {label} {R._to_pt_str(b['start'])} → "
+                       f"{R._to_pt_str(bt) if bt is not None and pd.notna(bt) else 'open'}, "
+                       f"high {hi:.2f} / low {lo:.2f}")
+
+
+def _draw_range_boxes(results, chart_stacks):
+    """Mark the boxes behind each tag (res['range_box']) on the main pane
+    and on the M5 context pane."""
+    for res, stack in zip(results, chart_stacks):
+        rbx = res.get("range_box")
+        if not rbx or not stack:
+            continue
+        for key, color, tint_dn, label in RANGE_DRAW:
+            for b in rbx.get(key, ()):
+                _mark_range_box(stack.get("m5"), b, color, tint_dn, label, tint=False)
+                _mark_range_box(stack.get("h1"), b, color, tint_dn, label, tint=True)
 
 
 H1_CONFL_RADIUS_PTS = 10.0  # this strategy is M5-only; this is a cross-timeframe REVIEW aid, not a rule input
@@ -3306,6 +3431,16 @@ def render(args):
     results = _apply_h1_bias(results)
     results = _apply_trap_variants(results)
     results = _apply_atr_boundary(results, args)
+    results = _apply_range_box_tags(results)
+    _draw_range_boxes(results, chart_stacks)
+    if getattr(args, "range_box_only", False):
+        keep = [i for i, r in enumerate(results)
+                if r.get("range_box", {}).get("from") or r.get("range_box", {}).get("into")]
+        print(f"--range-box-only: keeping {len(keep)} of {len(results)} rows tagged "
+              f"{RB.TAG_FROM_RANGE} or {RB.TAG_INTO_RANGE}", flush=True)
+        results = [results[i] for i in keep]
+        chart_stacks = [chart_stacks[i] for i in keep]
+        fps = [fps[i] for i in keep]
     tag_counts = {}
     for r in results:
         if not r["filled"]:
@@ -3529,6 +3664,22 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
                 f'&plusmn;{SPIKE_CONFL_RADIUS_PTS:g}pt of the refined entry '
                 f'{res["alt_price"]:.2f}: {detail}. Purely informational; use the Only radio to '
                 f'isolate these trades.">SPIKE CONFL</span>')
+    for tag, key, label, meaning in (
+            (RB.TAG_FROM_RANGE, "from", "FROM RANGE",
+             "this trade fades a fresh breakout out of this range (the run-in leg into the level is the one that broke it), not retested yet"),
+            (RB.TAG_INTO_RANGE, "into", "INTO RANGE",
+             "the retested level lies inside this range, whose strong breakout is still waiting for its retest")):
+        if tag in dyn_tags:
+            boxes = (res.get("range_box") or {}).get(key) or []
+            detail = "; ".join(
+                f'{b["low"]:.2f}-{b["high"]:.2f} from {R._to_pt_str(b["start"])} '
+                f'({b["state"] or b["status"]}'
+                f'{", " + b["breakout"] + " breakout" if b["breakout"] else ""})'
+                for b in boxes[:4])
+            out += (f'<span class="dyn-tag-badge range-box-tag-badge" title="Dynamic filter '
+                    f'‘{tag}’: {meaning} (find_range_box_zz on M5, 1-minute lower '
+                    f'timeframe, read as of the touch): {detail}. Purely informational; not '
+                    f'excluded from the headline stats by default.">{label}</span>')
     if "fading_bias" in dyn_tags:
         faded = HB.fades(res.get("h1_bias") or [], level_type == "LHPB")
         detail = "; ".join(_bias_detail(b) for b in faded)
@@ -4357,6 +4508,22 @@ other row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" class="f-dyn-isolate" data-tag="spike_confl"> only</label>
     </div>
     <div class="chip-stack">
+      <label class="chip" title="Exclude every trade that fades a strong breakout whose range has not been retested yet: an LLPB short with such an upward breakout range below its level, or an LHPB long with such a downward breakout range above it (find_range_box_zz on M5, 1-minute lower timeframe, as of the touch).">
+        <input type="checkbox" class="f-dyn-exclude" data-tag="breakout-from-range">
+        Exclude breakout-from-range trades</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged breakout-from-range, hiding every
+other row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" class="f-dyn-isolate" data-tag="breakout-from-range"> only</label>
+    </div>
+    <div class="chip-stack">
+      <label class="chip" title="Exclude every trade whose retested level lies inside an M5 range whose strong breakout is still waiting for its retest (find_range_box_zz, 1-minute lower timeframe).">
+        <input type="checkbox" class="f-dyn-exclude" data-tag="retest-into-range">
+        Exclude retest-into-range trades</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged retest-into-range, hiding every
+other row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" class="f-dyn-isolate" data-tag="retest-into-range"> only</label>
+    </div>
+    <div class="chip-stack">
       <label class="chip" title="Exclude every trade that fades a live H1 bias (see the Bias column).
 Every bias-served trade is also fading-bias, so this drops the served ones too.">
         <input type="checkbox" class="f-dyn-exclude" data-tag="fading_bias">
@@ -4563,7 +4730,8 @@ the box is checked.">Trade management</span>
     head = (f"<th class=\"left\">Trade Id</th>"
             f"<th class=\"left\" title=\"Every dynamic-filter tag this row carries, in one "
             f"place: globex_eth_open, low_liquidity, swerved/swerve_blocked, crest_refined, "
-            f"spike_confl, fading_bias, bias_served, volume-spike "
+            f"spike_confl, breakout-from-range, retest-into-range, fading_bias, bias_served, "
+            f"volume-spike "
             f"(row-level, constant across target rules) plus r_below_min/eod_flat (the "
             f"ACTIVE target rule's own -- these swap along with Target/R/Outcome when you "
             f"toggle a Target rules checkbox above). Hover a badge for its own detail; the "
@@ -4739,7 +4907,8 @@ other row -- overrides every Exclude box. Click again to turn off.">
 (unmodified selection/entry/stop/target/management logic) with the LXPB state machine run
 on {BAR_MIN}-minute bars instead of 5-minute bars. Every "M5"/"5-minute" mention below is the
 original strategy text, carried over verbatim -- read it as M{BAR_MIN}/{BAR_MIN}-minute throughout this
-report. There is no TradingView M1 export, so the M1 series here is built straight from
+report. The one exception is the upper context chart, which is genuine 5-minute (M5) data and is
+labelled M5; the main chart below it is labelled M{BAR_MIN}. There is no TradingView M1 export, so the M1 series here is built straight from
 Sierra Chart ticks for the requested window only (see the module docstring). One extra,
 M1-only rule on top of --p0-kinds all: a plain-P0 (neither swing nor spike) stays tracked
 to its own retest only if its OWN formation candle also carries &ge;
@@ -4927,6 +5096,7 @@ tr.lvl-row.no-target-row td { color:var(--text-faint); font-style:italic; }
 .swerve-tag-badge { background:#1e3a2f; color:#86efac; }
 .vol-spike-tag-badge { background:#3f2d0e; color:#fdba74; }
 .spike-confl-tag-badge { background:#0e3a2f; color:#6ee7b7; }
+.range-box-tag-badge { background:#1f2a44; color:#93c5fd; }
 .fading-bias-tag-badge { background:#3a1030; color:#f0abfc; }
 .bias-served-tag-badge { background:#2a1a3a; color:#c4b5fd; }
 /* Notes box: this report is reviewed with long, written-out notes per trade,
@@ -5822,6 +5992,9 @@ if __name__ == "__main__":
                         help="build only the M5 pane per row -- no 1s trio, 1-minute, bid/ask "
                              "volume or footprint panes. Fills and exits are still resolved "
                              "on real ticks; only the charts are skipped.")
+    parser.add_argument("--range-box-only", action="store_true",
+                        help="keep only rows tagged breakout-from-range or retest-into-range "
+                             "(default output becomes sep_range_box.html)")
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
     # This report only ever shows M1 (the main pane) + a real M5 context
@@ -5836,7 +6009,8 @@ if __name__ == "__main__":
     args.default_target_modes = (DEFAULT_TARGET_MODES_BOTH if args.target_mode == "both"
                                  else (args.target_mode,))
     args.output = args.output or os.path.join(
-        _REPO_ROOT, "public", "reports", ("ss_m1_confl" if args.bar_minutes == 1 else f"ss_m{args.bar_minutes}_confl"), "sep.html"
+        _REPO_ROOT, "public", "reports", ("ss_m1_confl" if args.bar_minutes == 1 else f"ss_m{args.bar_minutes}_confl"),
+        "sep_range_box.html" if args.range_box_only else "sep.html"
     )
 
     # -------------------------------------------------------------------
@@ -5896,6 +6070,12 @@ if __name__ == "__main__":
             ledger = _strong_breakout_filter(ledger, m1_bars, args.bo_range_atr,
                                              args.bo_body, args.bo_atr_period)
         return ledger
+
+    RANGE_BOX_M5 = LC.m5_bars_continuous()
+    RANGE_BOX_LEVELS = LC.m5_levels(plain_p0=LC.PLAIN_P0_UNTRACKED, verbose=False)
+    rb_lo = lo_utc - pd.Timedelta(days=RB.LOOKBACK_DAYS)
+    RANGE_BOX_M1 = R._tick_bars_spanning(rb_lo, hi_utc, "1min")
+    print(f"[range-box] real M5 {len(RANGE_BOX_M5):,} bars, 1-min {len(RANGE_BOX_M1):,} bars", flush=True)
 
     LC.m5_bars_continuous = _m1_bars_continuous
     LC.m5_levels = _m1_levels
