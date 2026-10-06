@@ -312,6 +312,7 @@ import trap_variants as TV                        # noqa: E402
 import range_box_tags as RB                       # noqa: E402  (this folder; find_range_box_zz via patterns_pure)
 from find_sfp import find_sfp                     # noqa: E402  (vendored patterns_pure, on sys.path via R)
 from find_ATR import findATR                       # noqa: E402  (vendored patterns_pure, on sys.path via R)
+from find_range_box_zz import find_range_box_zz    # noqa: E402  (vendored patterns_pure, on sys.path via R)
 
 SS_CONFL_MIN_DEFAULT = 0  # M1 variant: no confluence partner required -- a single live P0 qualifies
 # Which P0s this report trades (--p0-kinds). "spike-or-swing" is the original
@@ -2481,6 +2482,99 @@ def _build_context_chart(bars, label, entry_t, exit_t, lo, hi, levels, is_long,
 CTX_M5_HOURS_BEFORE = 8
 CTX_M5_HOURS_AFTER = 2
 
+# Range box (find_range_box_zz) marked on both panes. Display only: no filter,
+# tag or trade rule reads it.
+RANGE_WARMUP = pd.Timedelta(days=14)    # M5 history before the report window the zigzag may start from
+RANGE_MAX_AGE = pd.Timedelta(hours=24)  # a box that ended earlier than this before the retest is not shown
+RANGE_MAX_BACK = pd.Timedelta(hours=24)  # most the M5 context pane is widened back to reach a box's start
+RANGE_COLOR = "#fde68a"
+RANGE_TINT_UP, RANGE_TINT_DOWN = "#fde68a", "#d97706"
+_RANGE_BOXES = None
+
+
+def _range_boxes():
+    """find_range_box_zz over the REAL M5 bars (higher timeframe) with this
+    report's own M1/M2 bars as `lower_data`, built once per process. M5 starts
+    RANGE_WARMUP before the first lower bar so the zigzag has history; boxes that
+    began before that are cut at it. The state/grade columns are not used, so no
+    level ledger is passed. Edges are the box's final ones (a box live at a
+    retest may have widened since)."""
+    global _RANGE_BOXES
+    if _RANGE_BOXES is None:
+        lower = LC.m5_bars_continuous()
+        m5 = R._display_m5()
+        m5 = m5.loc[lower.index[0] - RANGE_WARMUP:lower.index[-1]]
+        _RANGE_BOXES = find_range_box_zz(m5, lower_data=lower)
+    return _RANGE_BOXES
+
+
+def _range_box_for(res):
+    """(box row, 'live' | 'ended') for the trade's signal, or (None, None).
+    As of the M5 retest instant: the smallest non-merged box already confirmed
+    and still open then; failing that, the box that ended most recently within
+    RANGE_MAX_AGE before it (the range the level broke out of)."""
+    t = pd.Timestamp(res["row"]["retest_time"])
+    t = t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+    boxes = _range_boxes()
+    if boxes.empty:
+        return None, None
+    ok = boxes[(boxes["status"] != "merged") & (boxes["confirm_time"] <= t)]
+    live = ok[ok["end_time"].isna() | (ok["end_time"] > t)]
+    if not live.empty:
+        return live.sort_values("height").iloc[0], "live"
+    ended = ok[(ok["end_time"] <= t) & (t - ok["end_time"] <= RANGE_MAX_AGE)]
+    if not ended.empty:
+        return ended.sort_values("end_time").iloc[-1], "ended"
+    return None, None
+
+
+def _add_range_marks(chart, box, kind, tint, exact_markers):
+    """High/low rays, start/end markers (and, when `tint`, amber candles over
+    the box's span) on one pane. `exact_markers`: only mark a bar that opens
+    within the M5 bar starting at the instant (the compressed main pane, whose
+    bars may be compressed out), instead of snapping to the last bar at or
+    before the instant (the contiguous context pane)."""
+    if chart is None or not chart.get("candles") or box is None:
+        return
+    times = [c["time"] for c in chart["candles"]]
+    e0 = R._to_epoch_utc(box["start_time"])
+    ended = pd.notna(box["end_time"])
+    e1 = R._to_epoch_utc(box["end_time"]) if ended else times[-1]
+    hi, lo = float(box["high"]), float(box["low"])
+    if tint:
+        for c in chart["candles"]:
+            if e0 <= c["time"] <= e1:
+                col = RANGE_TINT_UP if c["close"] >= c["open"] else RANGE_TINT_DOWN
+                c.update(color=col, borderColor=col, wickColor=col)
+    for px, name in ((hi, "range high"), (lo, "range low")):
+        pts = [{"time": t, "value": px} for t in times if e0 <= t <= e1]
+        if pts:
+            title = f"{name} {px:.2f}"
+            chart.setdefault("rays", []).append({
+                "points": pts, "color": RANGE_COLOR, "lineWidth": 1, "lineStyle": 1,
+                "priceLabel": True, "title": title, "label": title})
+
+    def at(e):
+        if exact_markers:
+            pos = bisect.bisect_left(times, e)
+            return times[pos] if pos < len(times) and times[pos] < e + 300 else None
+        pos = bisect.bisect_right(times, e) - 1
+        return times[pos] if pos >= 0 and e >= times[0] else None
+
+    hm = lambda e: pd.Timestamp(e, unit="s", tz="UTC").tz_convert("America/Los_Angeles").strftime("%H:%M")
+    for e, shape, pos, text in ((e0, "arrowDown", "aboveBar", f"range start {hm(e0)}"),
+                                (e1, "arrowUp", "belowBar", f"range end {hm(e1)}")):
+        if e == e1 and not ended:
+            continue
+        tm = at(e)
+        if tm is not None:
+            chart["markers"].append({"time": tm, "position": pos, "color": RANGE_COLOR,
+                                     "shape": shape, "text": text})
+    chart["markers"].sort(key=lambda m: m["time"])
+    end_txt = R._to_pt_str(box["end_time"]) if ended else "still open"
+    chart["title"] += (f"  |  M5 range {R._to_pt_str(box['start_time'])} → {end_txt}"
+                       f" ({kind} at retest), high {hi:.2f} / low {lo:.2f}")
+
 
 def _build_context_charts(res, filled):
     """{'h1': ..., 'd1': ...} panes for the row -- 'd1' is unused and
@@ -2515,10 +2609,14 @@ def _build_context_charts(res, filled):
     end_t = exit_t if exit_t is not None else entry_t
 
     m5 = R._display_m5()  # the REAL M5 series -- never the patched M1 one (see LC.m5_bars_continuous)
+    lo = entry_t - pd.Timedelta(hours=CTX_M5_HOURS_BEFORE)
+    box, kind = _range_box_for(res)
+    if box is not None:
+        lo = min(lo, max(box["start_time"] - pd.Timedelta(minutes=30), entry_t - RANGE_MAX_BACK))
     h1_chart = _build_context_chart(
-        m5, "M5", entry_t, exit_t,
-        entry_t - pd.Timedelta(hours=CTX_M5_HOURS_BEFORE),
+        m5, "M5", entry_t, exit_t, lo,
         end_t + pd.Timedelta(hours=CTX_M5_HOURS_AFTER), levels, is_long)
+    _add_range_marks(h1_chart, box, kind, tint=True, exact_markers=False)
     # D1 is never shown (hidden by this report's own CSS, see .d1-cell) --
     # skip building it rather than compute a pane nobody sees.
     return {"h1": h1_chart, "d1": None}
@@ -2592,6 +2690,7 @@ def build_chart_stack_for_row(res, m5_only=False):
         _annotate_swerve(chart_m5, res, res["is_long"])
         _rayify_trade_lines(chart_m5, res, row_for_chart)
         _add_mode_views(chart_m5, res, res["is_long"])
+        _add_range_marks(chart_m5, *_range_box_for(res), tint=False, exact_markers=True)
     ctx = _build_context_charts(res, filled=True)
     if m5_only:
         return {**ctx, "m5": chart_m5, "trio": None, "oneMin": None}, {"narrow": M5_ONLY_NOTE,
@@ -2648,6 +2747,7 @@ def _build_unfilled_chart_stack(res, args):
                               f"({res['group_n']} in group)  |  "
                               f"{_fail_reason_label(res.get('fail_reason'))} "
                               f"(no stop/target -- never computed)")
+        _add_range_marks(chart_m5, *_range_box_for(res), tint=False, exact_markers=True)
 
     ctx = _build_context_charts(res, filled=False)
     if getattr(args, "m5_charts_only", False):

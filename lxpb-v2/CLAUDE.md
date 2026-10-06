@@ -73,21 +73,6 @@ roll, **ask the user for fresh post-roll TradingView exports (H1 and M5)
 before relying on any bar after the roll**, then follow the rollover
 checklist below. The same holds at every later roll.
 
-## Nightly refresh
-
-Windows Task Scheduler task **"lxpb nightly refresh"** runs
-`lxpb-v2/nightly_refresh.bat` in the MAIN checkout (`E:\lxpb`) every weekday at
-3:15 PM PT, just after the ES trading day changes (it also runs at next logon
-if the PC was off). It loads the display series (so the day's new Sierra
-Chart ticks enter through `_extend_with_scid`), reconciles the H1 and M5 level
-ledgers, and commits the refreshed caches to local `main` when that checkout
-is clean -- never pushed. It flags, in `lxpb-v2/data/nightly_refresh.log` and
-a Windows pop-up: Sierra Chart ticks that stop short of the last session close
-(Sierra Chart not running; a market holiday also trips it), and the roll
-reminder / post-roll export request above. Report regens are still only on
-request; the job never touches `public/reports/`. Run it by hand with
-`nightly_refresh.bat` (add `--no-commit` to skip the commit).
-
 **The export rule is repo-wide, not just `lxpb-v2`.** `label-review` and
 `retest-vol-scalp` follow it too, through `../es_h1_display.py` — a smaller
 loader over the same export list, for subprojects that deliberately avoid
