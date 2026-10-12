@@ -41,11 +41,14 @@ when it is committed and smoke-tested; the regen waits for the user.
 for every chart you build or touch:
 
 - The chart stack is one screen wide (`calc(100vw - 16px)`, at most 1164px) and sticky-left, so it
-  stays in view while the table is panned. Each pane is about 40% of the screen height
-  (`clamp(300px, 42vh, 460px)`): the M5 and M1 panes fit one above the other.
+  stays in view while the table is panned. Each pane is about two thirds of the screen
+  height (`clamp(400px, 68vh, 640px)`): tall enough for the axis tags of a trade with several range
+  boxes at the big font, which would otherwise stack off the bottom.
 - All chart text is large: the in-chart layout font is 18px (axis ticks, price tags, marker labels,
   `[N bars skipped]`), the OHLC readout 18px, the title bar and the ray hover tooltip 16-18px. A new
   label or tooltip follows suit; never ship the old 9-13px text.
+- Several range boxes on one trade are named A, B, ... in start order; chart labels stay short
+  ("A start 08:10", "A↓") and the ray hover text carries the times.
 - Candles keep the default grey. Never recolour candles (blue, orange, ...) to show a range, a
   level or anything else; use rays, markers and price tags.
 - A range box's candles, from its start to its breakout, are never compressed into a

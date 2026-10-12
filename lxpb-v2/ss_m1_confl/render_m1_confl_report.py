@@ -2718,10 +2718,12 @@ def _rebuild_range_panes(results, chart_stacks):
         stack["m5"], stack["h1"] = chart_m5, ctx["h1"]
 
 
-def _mark_range_box(chart, b, color, label):
+def _mark_range_box(chart, b, color, label, letter, tagged):
     """High/low rays from the box start to the pane's last bar, a start marker and a
     breakout marker (when the box has one in view). Display only: the candles keep
-    their own colours."""
+    their own colours. `letter` names the box when the trade has several (A, B, ...), so
+    the short chart labels tell them apart; `tagged` is the set of prices that already
+    carry an axis tag (boxes sharing an edge price get one tag, not two on top of each other)."""
     if chart is None or not chart.get("candles"):
         return
     times = [c["time"] for c in chart["candles"]]
@@ -2729,18 +2731,25 @@ def _mark_range_box(chart, b, color, label):
     bt = b.get("break_time")
     e1 = R._to_epoch_utc(bt) if bt is not None and pd.notna(bt) else times[-1]
     hi, lo = b["high"], b["low"]
-    for px, name in ((hi, "high"), (lo, "low")):
+    up = b.get("edge") == "upper"
+    way = "up" if up else "down"
+    hm = lambda e: pd.Timestamp(e, unit="s", tz="UTC").tz_convert("America/Los_Angeles").strftime("%H:%M")
+    name = f"range {letter}" if letter else "range"
+    broke = f"broke {way} {R._to_pt_str(bt)}" if bt is not None and pd.notna(bt) else "still open"
+    for px, edge in ((hi, "high"), (lo, "low")):
         pts = [{"time": t, "value": px} for t in times if t >= e0]
         if pts:
-            # The axis tag already prints the price; the hover text adds the box's start.
+            first = (id(chart), px) not in tagged
+            tagged.add((id(chart), px))
+            # The axis tag prints the price itself; the hover text adds the box's own times.
             chart.setdefault("rays", []).append({
                 "points": pts, "color": color, "lineWidth": 1, "lineStyle": 1,
-                "priceLabel": True, "title": f"range {name}",
-                "label": f"range {name} {px:.2f} (box from {R._to_pt_str(b['start'])})"})
-    hm = lambda e: pd.Timestamp(e, unit="s", tz="UTC").tz_convert("America/Los_Angeles").strftime("%H:%M")
-    way = "up" if b.get("state") == RB.STATE_UP else "down"
-    for e, shape, pos, text in ((e0, "arrowDown", "aboveBar", f"range start {hm(e0)}"),
-                                (e1, "arrowUp", "belowBar", f"broke {way} {hm(e1)}")):
+                "priceLabel": first, "title": f"{name} {edge}",
+                "label": f"{name} {edge} {px:.2f} (box from {R._to_pt_str(b['start'])}, {broke})"})
+    start_text = f"{letter} start {hm(e0)}" if letter else f"start {hm(e0)}"
+    break_text = (f"{letter}{'↑' if up else '↓'}" if letter else f"broke {way} {hm(e1)}")
+    for e, shape, pos, text in ((e0, "arrowDown", "aboveBar", start_text),
+                                (e1, "arrowUp", "belowBar", break_text)):
         if e == e1 and (bt is None or pd.isna(bt)):
             continue
         i = bisect.bisect_left(times, e)
@@ -2748,22 +2757,27 @@ def _mark_range_box(chart, b, color, label):
             chart.setdefault("markers", []).append({"time": times[i], "position": pos, "color": color,
                                                     "shape": shape, "text": text})
     chart.get("markers", []).sort(key=lambda m: m["time"])
-    chart["title"] += (f"  |  {label} range {R._to_pt_str(b['start'])} → "
+    chart["title"] += (f"  |  {label} {name} {R._to_pt_str(b['start'])} -> "
                        f"{R._to_pt_str(bt) if bt is not None and pd.notna(bt) else 'open'}, "
                        f"high {hi:.2f} / low {lo:.2f}")
 
 
 def _draw_range_boxes(results, chart_stacks):
     """Mark the boxes behind each tag (res['range_box']) on the main pane
-    and on the M5 context pane."""
+    and on the M5 context pane. A trade with several boxes names them A, B, ... in
+    start order: the chart labels stay short, the hover text has the times."""
     for res, stack in zip(results, chart_stacks):
         rbx = res.get("range_box")
         if not rbx or not stack:
             continue
-        for key, color, label in RANGE_DRAW:
-            for b in rbx.get(key, ()):
-                _mark_range_box(stack.get("m5"), b, color, label)
-                _mark_range_box(stack.get("h1"), b, color, label)
+        boxes = sorted(((b["start"], key, color, label, b)
+                        for key, color, label in RANGE_DRAW for b in rbx.get(key, ())),
+                       key=lambda t: (t[0], t[1]))
+        letters = [chr(ord("A") + k) for k in range(len(boxes))] if len(boxes) > 1 else [None]
+        tagged = set()
+        for (_, _, color, label, b), letter in zip(boxes, letters):
+            _mark_range_box(stack.get("m5"), b, color, label, letter, tagged)
+            _mark_range_box(stack.get("h1"), b, color, label, letter, tagged)
 
 
 H1_CONFL_RADIUS_PTS = 10.0  # this strategy is M5-only; this is a cross-timeframe REVIEW aid, not a rule input
@@ -4484,13 +4498,14 @@ tr.lvl-row.is-done:hover { opacity:0.6; }
 .d1-cell, .hidden-tick-panes, .footprint-outer-row { display:none; }
 /* CHART LAYOUT FOR AN 11-INCH iPAD AIR (1180x820 CSS px landscape, 820x1180 portrait), on every
    device: the chart stack is one screen wide and stays put while the table is panned sideways,
-   each pane is about 40% of the screen's height so M5 and M1 fit one above the other, and all
+   each pane is about two thirds of the screen's height (room for the axis tags of a trade with
+   several boxes), and all
    chart text -- axis ticks, price tags, marker labels, the OHLC readout, the ray hover tip -- is
    large enough to read at that size (18px; the layout font in the JS below drives the in-chart
    text). The M5 and M1 candles keep their own default grey: ranges are drawn with rays and
    markers only. */
 .chart-stack { width:calc(100vw - 16px); max-width:1164px; position:sticky; left:8px; }
-.chart-h1 { height:clamp(300px, 42vh, 460px); }
+.chart-h1 { height:clamp(400px, 68vh, 640px); }
 .chart-title { font-size:16px; }
 .chart-title-split .ct-ohlc { font-size:18px; }
 .chart-title-split + .chart-ph { height:calc(100% - 38px); }
