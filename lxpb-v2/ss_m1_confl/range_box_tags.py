@@ -39,6 +39,9 @@ M5_MIN = 5
 LOOKBACK_DAYS = 5   # M5 history fed to the detector before each touch
 TAG_FROM_RANGE = "breakout-from-range"
 TAG_INTO_RANGE = "retest-into-range"
+TAG_SLOT_LOST = "range-slot-lost"
+SLOT_FROM = "from"
+SLOT_INTO = "into"
 
 
 def _partial_bar(bars, start):
@@ -157,3 +160,69 @@ def classify(boxes, level_type, level_price, run_in_start=None, touch=None):
         elif level_type == "LHPB" and state == STATE_DOWN and b["low"] > price:
             from_range.append(_describe(b))
     return from_range, into_range
+
+
+# ---------------------------------------------------------------------------
+# One trade per slot
+#
+# A range box offers each trade type ONE slot: a single breakout-from-range
+# trade (fading the strong breakout) and a single retest-into-range trade. Up
+# and down breakouts are separate boxes, hence separate slots. Several LLPBs
+# can all fade the same fresh breakout-up, but a live algo holds one entry per
+# slot, so only one of them is taken; the others lose their range tag.
+# ---------------------------------------------------------------------------
+
+def box_key(box):
+    """Identity of a box for slot purposes: start time, both edges and the
+    breakout direction. Edges are frozen at the strong breakout, so a box seen
+    by an earlier trade and by a later one is the same key. The END time is
+    deliberately not part of it: an earlier trade sees the box still forming
+    with no end yet, and including it would make one box look like two. The
+    direction comes from the waiting state, because the detector's own
+    break_dir is empty while the breakout is still forming."""
+    direction = "up" if box["state"] == STATE_UP else "down"
+    return (pd.Timestamp(box["start"]), round(float(box["low"]), 4),
+            round(float(box["high"]), 4), direction)
+
+
+def claimed_box(slot, boxes, level_price):
+    """The ONE box a trade claims for `slot` out of the boxes that qualify.
+
+    from -- the box whose edge nearest the level: the top edge of a
+        breakout-up box below an LLPB, the bottom edge of a breakout-below box
+        above an LHPB.
+    into -- the tightest box that contains the level."""
+    if not boxes:
+        return None
+    price = float(level_price)
+    if slot == SLOT_FROM:
+        return min(boxes, key=lambda b: (min(abs(price - b["high"]), abs(b["low"] - price)),
+                                         b["high"] - b["low"]))
+    return min(boxes, key=lambda b: b["high"] - b["low"])
+
+
+def slot_rank(entry_is_spike, touch_time):
+    """Sort key for contenders on one slot (lowest wins): a trade whose entry
+    level is itself a spike (hammer for an LHPB / shooting star for an LLPB,
+    the detector pairing; patterns-pure) beats one that is not, otherwise the
+    earliest touch wins. A placeholder ranking: the spike preference is NOT
+    causal, since a live algo has already entered an earlier non-spike trade
+    before a later spike one appears. Replace it with the real candidate
+    ranking."""
+    return (0 if entry_is_spike else 1, pd.Timestamp(touch_time))
+
+
+def assign_slots(claims):
+    """Decide each slot's winner.
+
+    `claims` is a list of dicts with `id`, `slot` (SLOT_FROM / SLOT_INTO),
+    `key` (box_key), `spike` (bool) and `touch` (UTC Timestamp), one per
+    FILLED trade per slot it qualifies for. Unfilled candidates must not be
+    passed in: they never use a slot. Returns {(slot, key): winning id}."""
+    best = {}
+    for c in claims:
+        k = (c["slot"], c["key"])
+        r = slot_rank(c["spike"], c["touch"])
+        if k not in best or r < best[k][0]:
+            best[k] = (r, c["id"])
+    return {k: v[1] for k, v in best.items()}
