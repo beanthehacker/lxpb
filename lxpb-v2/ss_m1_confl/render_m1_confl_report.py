@@ -182,8 +182,8 @@ the target are ALL M5 LXPB structure:
          ONE TRADE PER SLOT: a box offers each trade type one slot (one
          breakout-from-range, one retest-into-range; up and down breakouts are
          separate boxes, keyed by start time + both frozen edges + direction).
-         A trade claims one box per slot (nearest edge when fading, tightest
-         containing box when retesting into it); of the FILLED trades claiming
+         A trade claims one box per slot (nearest breakout-side edge, then
+         the widest box: the same range after it extended its far edge); of the FILLED trades claiming
          the same box, a spike entry level (hammer LHPB / shooting star LLPB)
          wins, else the earliest touch. The others lose that range tag and get
          `range-slot-lost` (SLOT LOST badge naming the winner; Exclude + Only
@@ -213,7 +213,7 @@ the target are ALL M5 LXPB structure:
 
        * NOT IN THIS REPORT. The review panel of the other strategy reports
          has a few filters that were deliberately taken out of this one (and
-         only this one): Replayed (filter row), the P1->P2 gap filters (days,
+         only this one): Replayed (filter row and column), the P1->P2 gap filters (days,
          H1 candles, minutes), Pre-P1 structure, Volume spike offset, P1 range
          ratio, Tight box, Slow approach, Fresh price, M5 SFP and Quick exit
          -- together with their table columns, per-row readings and JS. The
@@ -2617,7 +2617,7 @@ def _apply_range_box_tags(results):
     ONE TRADE PER SLOT. Each box has one breakout-from-range slot and one
     retest-into-range slot (up and down breakouts are different boxes). A trade
     claims one box per slot -- the box whose edge is nearest the level when
-    fading, the tightest box containing the level when retesting into it -- and
+    the widest of those sharing that edge, i.e. the extended range -- and
     among the filled trades claiming the same box the winner (spike entry first,
     else earliest touch; RB.slot_rank) keeps the tag. The others lose that range
     tag and get 'range-slot-lost', with res['range_slot_lost'] naming the winner.
@@ -2667,8 +2667,10 @@ def _apply_range_box_tags(results):
     return results
 
 
-RANGE_DRAW = (("from", "#fde68a", "#d97706", "breakout range"),
-              ("into", "#67e8f9", "#0e7490", "retested range"))
+# (slot, colour, down-candle tint, chart-title prefix). On the chart itself the colour says
+# which playbook, so the rays and markers just read "range ...".
+RANGE_DRAW = (("from", "#fde68a", "#d97706", "fade"),
+              ("into", "#67e8f9", "#0e7490", "retest"))
 
 
 def _mark_range_box(chart, b, color, tint_dn, label, tint):
@@ -2690,13 +2692,14 @@ def _mark_range_box(chart, b, color, tint_dn, label, tint):
     for px, name in ((hi, "high"), (lo, "low")):
         pts = [{"time": t, "value": px} for t in times if t >= e0]
         if pts:
-            title = f"{label} {name} {px:.2f}"
+            title = f"range {name} {px:.2f}"
             chart.setdefault("rays", []).append({
                 "points": pts, "color": color, "lineWidth": 1, "lineStyle": 1,
                 "priceLabel": True, "title": title, "label": title})
     hm = lambda e: pd.Timestamp(e, unit="s", tz="UTC").tz_convert("America/Los_Angeles").strftime("%H:%M")
-    for e, shape, pos, text in ((e0, "arrowDown", "aboveBar", f"{label} start {hm(e0)}"),
-                                (e1, "arrowUp", "belowBar", f"{label} breakout {hm(e1)}")):
+    way = "up" if b.get("state") == RB.STATE_UP else "down"
+    for e, shape, pos, text in ((e0, "arrowDown", "aboveBar", f"range start {hm(e0)}"),
+                                (e1, "arrowUp", "belowBar", f"broke {way} {hm(e1)}")):
         if e == e1 and (bt is None or pd.isna(bt)):
             continue
         i = bisect.bisect_left(times, e)
@@ -2704,7 +2707,7 @@ def _mark_range_box(chart, b, color, tint_dn, label, tint):
             chart.setdefault("markers", []).append({"time": times[i], "position": pos, "color": color,
                                                     "shape": shape, "text": text})
     chart.get("markers", []).sort(key=lambda m: m["time"])
-    chart["title"] += (f"  |  {label} {R._to_pt_str(b['start'])} → "
+    chart["title"] += (f"  |  {label} range {R._to_pt_str(b['start'])} → "
                        f"{R._to_pt_str(bt) if bt is not None and pd.notna(bt) else 'open'}, "
                        f"high {hi:.2f} / low {lo:.2f}")
 
@@ -2982,7 +2985,7 @@ def _apply_trap_variants(results):
     return results
 
 
-N_COLS = 28  # keep in sync with `head` below and every colspan in this section
+N_COLS = 27  # keep in sync with `head` below and every colspan in this section
 
 # MES position sizing / commissions. R stays a fixed $1,000 and the stop is not
 # widened for costs: contracts = floor(R_DOLLARS / (stop pts x MES_POINT_VALUE)),
@@ -3620,7 +3623,7 @@ def _render_row(idx, res, chart_stacks, fps):
             )
 
             row_html = f"""
-<tr class="lvl-row unfilled-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
+<tr class="lvl-row unfilled-row is-valid {type_cls}" data-idx="{idx}" data-key="{row_key}"
     data-dyn-tags="{base_tags_attr}" data-base-tags="{base_tags_attr}"
     onclick="toggleChart({idx})">
   <td class="left">{idx}</td>
@@ -3642,8 +3645,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="contracts-cell">-</td><td class="comm-cell">-</td>
   <td class="mae-cell">-</td><td class="mfe-cell">-</td><td class="gb-cell">-</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
-  <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb"></td>
-  <td class="replayed-cell" onclick="event.stopPropagation();"><input type="checkbox" class="replayed-cb"></td>
+  <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb" checked></td>
   <td class="done-cell" onclick="event.stopPropagation();"><input type="checkbox" class="done-cb"></td>
   <td class="left" onclick="event.stopPropagation();"><textarea class="trade-note" placeholder="notes..."></textarea></td>
   <td class="expand-cell"><button class="expand-btn" data-idx="{idx}"
@@ -3747,7 +3749,7 @@ def _render_row(idx, res, chart_stacks, fps):
         )
 
         row_html = f"""
-<tr class="lvl-row {type_cls}" data-idx="{idx}" data-key="{row_key}"
+<tr class="lvl-row is-valid {type_cls}" data-idx="{idx}" data-key="{row_key}"
     data-dyn-tags="{dyn_tags_attr}" data-base-tags="{base_tags_attr}"
     data-r="{act['r']}" data-rr="{act['rrVal']}" data-pnl-pts="{act['pnlPts']}" data-outcome="{act['outcome']}"
     data-mgmt-r="{act['mgmtR']}" data-mgmt-pnl-pts="{act['mgmtPnl']}"
@@ -3773,8 +3775,7 @@ def _render_row(idx, res, chart_stacks, fps):
   <td class="contracts-cell" title="{mes_title}">{mes_contracts_html}</td><td class="comm-cell" title="{mes_title}">{mes_comm_text}</td>
   <td class="mae-cell bad">{act['mae']}</td><td class="mfe-cell good">{act['mfe']}</td><td class="gb-cell">{act['gb']}</td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
-  <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb"></td>
-  <td class="replayed-cell" onclick="event.stopPropagation();"><input type="checkbox" class="replayed-cb"></td>
+  <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb" checked></td>
   <td class="done-cell" onclick="event.stopPropagation();"><input type="checkbox" class="done-cb"></td>
   <td class="left" onclick="event.stopPropagation();"><textarea class="trade-note" placeholder="notes..."></textarea></td>
   <td class="expand-cell"><button class="expand-btn" data-idx="{idx}"
@@ -3878,12 +3879,11 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
   <div class="box"><strong id="sum-shown">{len(filled)}</strong>shown</div>
   <div class="box"><strong id="sum-reviewed">0</strong>reviewed</div>
   <div class="box"><strong id="sum-valid">0</strong>valid</div>
-  <div class="box"><strong id="sum-replayed">0</strong>replayed</div>
   <div class="toolbar">
     <button class="btn" onclick="exportReviewCsv()">\u2b07 Export notes CSV</button>
     <label class="btn" for="import-review-file">\u2b06 Import notes CSV</label>
     <input type="file" id="import-review-file" accept=".csv" class="hidden" onchange="importReviewCsv(event)">
-    <button class="btn" onclick="if(confirm('Clear ALL saved Reviewed/Valid/Replayed/Notes in this browser for this report?')) clearAllReview();">\U0001f5d1 Clear all</button>
+    <button class="btn" onclick="if(confirm('Clear ALL saved Reviewed/Valid/Notes in this browser for this report?')) clearAllReview();">\U0001f5d1 Clear all</button>
   </div>
 </div>
 """
@@ -3922,7 +3922,7 @@ its retest, moves the order to the next live same-side M5 level within
 (NEWS / THIN); and no position is carried past the end of the day -- open trades are flattened
 at market before 12:45 PT (EOD FLAT) and no entry is taken from then until the Globex reopen. Both searches use only completed M5 candles and the live ledger state
 immediately before the fill's M5 bar, with no fixed lookback. Charts/markers/price-lines/
-tooltips, MAE/MFE/Max DD definitions, and the Reviewed/Valid/Replayed/Notes columns below all
+tooltips, MAE/MFE/Max DD definitions, and the Reviewed/Valid/Notes columns below all
 follow render_stop_target_report.py's own conventions exactly (see that module and
 render_ss_confl_finetune_report.py for full detail). See the Dynamic filters row of the
 Trades tab for trade-exclusion toggles you can flip live in the browser, no regen required.</p>
@@ -4216,7 +4216,7 @@ the box is checked.">Trade management</span>
             f"<th title=\"Round-trip commission = contracts x ${MES_COMMISSION_RT} per MES. "
             f"Reported only; R and PnL are gross of it\">Comm.</th>"
             f"<th>MAE (win)</th><th>MFE (loss)</th><th>Max DD</th>"
-            f"<th>Reviewed</th><th>Valid</th><th>Replayed</th>"
+            f"<th>Reviewed</th><th>Valid</th>"
             f"<th title=\"Done with this trade's feedback -- purely a review aid, "
             f"dims the row, no effect on stats or filters\">Done</th>"
             f"<th class=\"left\">Notes</th><th class=\"expand-th\">\u25b6</th>")
@@ -4319,12 +4319,12 @@ tr.lvl-row.type-lhpb td.type-cell, tr.lvl-row.type-llpb td.type-cell {
   color:var(--text); font-weight:normal;
 }
 .cluster-tag { border-bottom:1px dotted var(--text-dim); cursor:help; }
-td.merged-h1-levels { max-width:220px; white-space:normal; }
+td.merged-h1-levels { max-width:220px; white-space:normal; overflow-wrap:break-word; }
 /* H1 P0 confl only ever shows a bare count (0, 1, 2...); the detail lives in
    its hover tooltip, so the cell itself is pinned thin regardless of its
    own long header label (see the header-wrap rule below). */
-td.h1-confl-cell { max-width:50px; white-space:nowrap; cursor:help; }
-td.bias-cell { max-width:150px; white-space:normal; cursor:help; }
+td.h1-confl-cell { white-space:nowrap; cursor:help; }
+td.bias-cell { max-width:150px; white-space:normal; overflow-wrap:break-word; cursor:help; }
 /* Bullish / bearish groups inside the Bias cell (see _bias_cell). Stacked,
    so a row carrying both reads as two lines rather than one run-on string. */
 .bias-bull, .bias-bear { display:block; font-size:0.86em; white-space:nowrap; }
@@ -4334,11 +4334,11 @@ td.bias-cell { max-width:150px; white-space:normal; cursor:help; }
 .trap-bull, .trap-bear { display:block; font-size:0.86em; white-space:nowrap; font-style:italic; }
 .trap-bull { color:#34d399; }
 .trap-bear { color:#fb7185; }
-td.tags-cell { max-width:200px; white-space:normal; }
+td.tags-cell { max-width:200px; white-space:normal; overflow-wrap:break-word; }
 /* Outcome can carry a full sentence (e.g. "NO TRADE (no target under any
    rule)") instead of just WIN/LOSS, so let it wrap rather than force the
    column to that sentence's own width. */
-td.outcome-cell { max-width:130px; white-space:normal; }
+td.outcome-cell { max-width:130px; white-space:normal; overflow-wrap:break-word; }
 /* Columns that only ever hold a short number/count but carry a much longer,
    multi-word header label (the H1 confluence
    count, excursion columns): wrap the HEADER instead, so the column stays
@@ -4351,11 +4351,16 @@ td.outcome-cell { max-width:130px; white-space:normal; }
 #lvl-table thead th:nth-child(22) { /* Max DD */
   white-space:normal; overflow-wrap:break-word; max-width:60px;
 }
+/* Safari (iPad) clamps a cell to its max-width even when nowrap content is wider and
+   lets the content spill over the next column, which reads as merged columns; Chrome
+   never narrows a column below its content. So nowrap cells carry no max-width, and
+   every wrapping cell may break a long word (overflow-wrap:break-word) so nothing is wider
+   than its clamp. */
 /* M5 retest / Entry (touch) time / Exit time: date and HH:MM:SS PT stack on
    two lines (see _pt_str_stacked) instead of running the whole
    "YYYY-MM-DD HH:MM:SS PT" string onto one, so the column is only as wide
    as the longer of the two (~11 chars) rather than all ~22. */
-td.time-stacked { max-width:78px; white-space:nowrap; line-height:1.3; }
+td.time-stacked { white-space:nowrap; line-height:1.3; }
 td.time-stacked .time-part { display:block; }
 /* Stop / Target: the src-tag (m5_p0_spike, m5_opposite_zz, swing_extreme,
    ...) drops to its own line under the price instead of running inline,
@@ -4425,7 +4430,7 @@ th.sortable-th { cursor:pointer; user-select:none; }
 th.sortable-th:hover { text-decoration:underline; }
 /* Done checkbox: purely "I'm finished with this trade's feedback" -- dims
    the whole row so reviewed trades visually recede, independent of the
-   Reviewed/Valid/Replayed workflow (own doneStore, see JS below). */
+   Reviewed/Valid workflow (own doneStore, see JS below). */
 tr.lvl-row.is-done { opacity:0.35; }
 tr.lvl-row.is-done:hover { opacity:0.6; }
 /* This report shows only M1 (the main/solo pane the LXPB state machine
@@ -4437,13 +4442,23 @@ tr.lvl-row.is-done:hover { opacity:0.6; }
 .d1-cell, .hidden-tick-panes, .footprint-outer-row { display:none; }
 </style>
 """
-# The shared applyReviewFilters ANDs a "Replayed" chip test into every row. This report has
-# no Replayed filter, so with no .f-review-replay chip on the page that test must pass.
-_SHARED_JS = SR.JS.replace(
-    "const replayOk = replayOn.includes(isReplayed ? 'replayed' : 'not_replayed');",
-    "const replayOk = !document.querySelector('.f-review-replay') "
-    "|| replayOn.includes(isReplayed ? 'replayed' : 'not_replayed');")
-assert _SHARED_JS != SR.JS, "shared applyReviewFilters changed: re-check the Replayed guard"
+# Two edits to the shared review JS, for this report only (each asserted, so a change
+# upstream fails loudly instead of silently skipping):
+#   * applyReviewFilters ANDs a "Replayed" chip test into every row. This report has no
+#     Replayed column or filter, so with no .f-review-replay chip on the page it must pass.
+#   * Valid is ON by default (a row with no saved state is valid; untick the trades that
+#     are not), where the shared code starts every row not-valid.
+_SHARED_JS = SR.JS
+for _old, _new, _n in (
+        ("const replayOk = replayOn.includes(isReplayed ? 'replayed' : 'not_replayed');",
+         "const replayOk = !document.querySelector('.f-review-replay') "
+         "|| replayOn.includes(isReplayed ? 'replayed' : 'not_replayed');", 1),
+        ("if (vcb) vcb.checked = !!state.valid;",
+         "if (vcb) vcb.checked = state.valid !== false;", 1),
+        ("tr.classList.toggle('is-valid', !!state.valid);",
+         "tr.classList.toggle('is-valid', state.valid !== false);", 2)):
+    assert _SHARED_JS.count(_old) == _n, f"shared review JS changed: re-check {_old!r}"
+    _SHARED_JS = _SHARED_JS.replace(_old, _new)
 JS = _SHARED_JS + """
 <script>
 // D1 pane above the M5 chart (H1 reuses the shared _renderH1 / th1- / ch1- ids).
@@ -4829,7 +4844,7 @@ let sortSpec = [];
 })();
 
 // ---------------------------------------------------------------------
-// Done checkbox -- separate from the Reviewed/Valid/Replayed review
+// Done checkbox -- separate from the Reviewed/Valid review
 // workflow above: it only means "I'm finished looking at this trade's
 // feedback" and dims the row, so it gets its own store (same report key,
 // suffixed) rather than folding into reviewRowState, which would force

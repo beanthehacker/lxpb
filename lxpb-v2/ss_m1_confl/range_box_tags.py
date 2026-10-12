@@ -238,14 +238,18 @@ def box_key(box):
 def claimed_box(slot, boxes, level_price):
     """The ONE episode a trade claims for `slot` out of those that qualify: the
     one whose breakout-side edge (top for an up breakout, bottom for a below one)
-    is nearest the level, then the tightest box. `boxes` are _describe dicts."""
+    is nearest the level, then the WIDEST box. Boxes sharing that edge and
+    breakout are one range seen at different stages, the wider one being the same
+    range after it extended its far edge (e.g. 7715.25-7724.75 and
+    7712.25-7724.75 on one breakout), so the extended box is the one claimed.
+    `boxes` are _describe dicts."""
     if not boxes:
         return None
     price = float(level_price)
 
     def dist(b):
         return abs(price - (b["high"] if b["state"] == STATE_UP else b["low"]))
-    return min(boxes, key=lambda b: (dist(b), b["high"] - b["low"]))
+    return min(boxes, key=lambda b: (round(dist(b), 4), -(b["high"] - b["low"])))
 
 
 def slot_rank(entry_is_spike, touch_time):
