@@ -2746,7 +2746,7 @@ def _mark_range_box(chart, b, color, label, letter, tagged):
                 "points": pts, "color": color, "lineWidth": 1, "lineStyle": 1,
                 "priceLabel": first, "title": f"{name} {edge}",
                 "label": f"{name} {edge} {px:.2f} (box from {R._to_pt_str(b['start'])}, {broke})"})
-    start_text = f"{letter} start {hm(e0)}" if letter else f"start {hm(e0)}"
+    start_text = f"{letter} {hm(e0)}" if letter else f"start {hm(e0)}"
     break_text = (f"{letter}{'↑' if up else '↓'}" if letter else f"broke {way} {hm(e1)}")
     for e, shape, pos, text in ((e0, "arrowDown", "aboveBar", start_text),
                                 (e1, "arrowUp", "belowBar", break_text)):

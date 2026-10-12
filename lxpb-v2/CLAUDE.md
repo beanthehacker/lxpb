@@ -48,7 +48,7 @@ for every chart you build or touch:
   `[N bars skipped]`), the OHLC readout 18px, the title bar and the ray hover tooltip 16-18px. A new
   label or tooltip follows suit; never ship the old 9-13px text.
 - Several range boxes on one trade are named A, B, ... in start order; chart labels stay short
-  ("A start 08:10", "A↓") and the ray hover text carries the times.
+  ("A 08:10" at its start, "A↓" at its breakout) and the ray hover text carries the times.
 - Candles keep the default grey. Never recolour candles (blue, orange, ...) to show a range, a
   level or anything else; use rays, markers and price tags.
 - A range box's candles, from its start to its breakout, are never compressed into a
