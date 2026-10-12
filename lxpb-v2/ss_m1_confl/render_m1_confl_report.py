@@ -1616,9 +1616,20 @@ def process_cluster(cluster, args):
     result["stop_m5_level"] = stop_row.to_dict()
     result["stop_source"] = stop_source
 
+    # The target window is the P1..P2 of the level that SUPPLIED the entry, not of the
+    # cluster's anchor (its earliest-retesting member): a later member can supply the
+    # entry, and the anchor's window may end long before that level was even retested
+    # (a 2-minute window, so no pivot, so no target, for an entry filled 30 minutes on).
+    # A partner level that was never retested has no P2 of its own: the window then
+    # simply runs to the fill.
+    target_p1, target_p2 = row_d["breakout_time"], row_d["retest_time"]
+    if entry_level_info is not None:
+        _bt, _rt = entry_level_info.get("breakout_time"), entry_level_info.get("retest_time")
+        if pd.notna(_bt):
+            target_p1 = _bt
+        target_p2 = _rt if pd.notna(_rt) else None
     targets = _pick_targets(m5_ledger, level_type, fill_price, is_long, touch_time_alt,
-                            args, p1_time=row_d["breakout_time"],
-                            p2_time=row_d["retest_time"])
+                            args, p1_time=target_p1, p2_time=target_p2)
     active = _active_mode(targets, fill_price, enabled=args.default_target_modes)
     if active is None:
         result["fail_reason"] = "no_target"
