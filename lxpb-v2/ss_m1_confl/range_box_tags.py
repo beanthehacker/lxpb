@@ -4,15 +4,24 @@ Boxes come from patterns-pure's `find_range_box_zz`, run on REAL M5 bars with
 the real 1-minute bars as its lower timeframe (whatever bar size the report
 itself trades on). Two trade tags are read off them:
 
-  breakout-from-range  the trade fades a fresh, confirmed strong breakout that
-                       has not been retested yet (the run-in leg into the level
-                       is the leg that broke the box): an LLPB (short) with a range BELOW the
-                       level in state breakout-up-waiting-for-retest, or an LHPB
-                       (long) with a range ABOVE it in state
-                       breakout-below-waiting-for-retest.
-  retest-into-range    the retested level's price lies inside a range whose
-                       strong breakout (either way) is still waiting for its
-                       retest.
+  breakout-from-range  PLAYBOOK 1, fade the breakout: the trade fades a fresh,
+                       confirmed strong breakout that has not been retested yet
+                       (the run-in leg into the level is the leg that broke the
+                       box): an LLPB (short) above a breakout-up episode, or an
+                       LHPB (long) below a breakout-below one.
+  retest-into-range    PLAYBOOK 2, go with the breakout on the retest: an LHPB
+                       (long) after a breakout up, an LLPB (short) after a
+                       breakout below, with the level inside the box or within
+                       GO_WITH_EDGE_TOL beyond the breakout-side edge, while that
+                       breakout is still waiting for its retest.
+
+Every strong breakout is an EPISODE of its box and belongs to ONE edge (upper for
+an up breakout, lower for a below one), so a box that broke both ways has both
+edges, each with its own two playbooks. A strong breakout is never invalidated: a
+finished edge (retested, or no level was waiting) is only marked done in the
+episode, whether or not trades were taken, and the other edge can still open.
+Each (box, edge, playbook) is a slot that takes one trade; see "One trade per
+slot" below.
 
 "Waiting for retest" is the detector's own state: a bar closed strong beyond an
 edge and no LXPB level of the box on the real M5 ledger has completed its retest
@@ -39,6 +48,7 @@ M5_MIN = 5
 LOOKBACK_DAYS = 5   # M5 history fed to the detector before each touch
 TAG_FROM_RANGE = "breakout-from-range"
 TAG_INTO_RANGE = "retest-into-range"
+GO_WITH_EDGE_TOL = 2.0   # pts: a go-with level may sit this far OUTSIDE the breakout-side edge
 TAG_SLOT_LOST = "range-slot-lost"
 SLOT_FROM = "from"
 SLOT_INTO = "into"
@@ -105,7 +115,33 @@ def boxes_as_of(m5, m1, touch_time, tick_bars, levels=None, lookback_days=LOOKBA
           & (found["n_top_edge"] >= MIN_EDGE_TOUCHES)
           & (found["n_bottom_edge"] >= MIN_EDGE_TOUCHES))
     found = found[ok].reset_index(drop=True)
-    return found
+    return expand_episodes(found)
+
+
+def expand_episodes(found):
+    """One row per strong-breakout EPISODE of each box (find_range_box_zz's
+    `episodes`): a box that broke both ways gives an up row and a below row, each
+    with its own state, so each edge carries its own two playbooks. The row's
+    `state` is the episode's (waiting-for-retest = the edge is still active;
+    retested / no-level = the edge is done, whether or not trades were taken),
+    `edge` is "upper" / "lower", `edge_done` / `edge_done_reason` say whether
+    it is done, and the breakout is always "strong". A strong breakout is never
+    invalidated: a finished edge is just marked done. `break_time` is the box's
+    own zigzag break time for the edge that broke it and the episode's strong
+    breakout bar for the other edge."""
+    rows = []
+    for _, b in found.iterrows():
+        for e in b["episodes"] or []:
+            r = b.copy()
+            own = b["break_dir"] == ("up" if e["direction"] == "up" else "down")
+            r["state"] = e["state"]
+            r["breakout"] = "strong"
+            r["edge"] = e["edge"]
+            r["edge_done"] = bool(e["done"])
+            r["edge_done_reason"] = e["done_reason"]
+            r["break_time"] = b["break_time"] if own and pd.notna(b["break_time"]) else e["breakout_time"]
+            rows.append(r)
+    return pd.DataFrame(rows).reset_index(drop=True) if rows else found.iloc[0:0]
 
 
 def _contains(box, price):
@@ -115,7 +151,8 @@ def _contains(box, price):
 def _describe(box):
     return {"start": box["start_time"], "low": float(box["low"]), "high": float(box["high"]),
             "status": box["status"], "state": box["state"], "breakout": box["breakout"],
-            "break_dir": box["break_dir"], "break_time": box["break_time"]}
+            "break_dir": box["break_dir"], "break_time": box["break_time"],
+            "edge": box["edge"], "edge_done": bool(box["edge_done"])}
 
 
 def _broke_in_run_in(box, run_in_start, touch):
@@ -130,19 +167,31 @@ def _broke_in_run_in(box, run_in_start, touch):
     return run_in_start is not None and end > pd.Timestamp(run_in_start)
 
 
-def classify(boxes, level_type, level_price, run_in_start=None, touch=None):
-    """(from_range, into_range): lists of the boxes behind each tag.
+def _near_breakout_edge(box, price, up):
+    """The level sits inside the box, or no more than GO_WITH_EDGE_TOL beyond the
+    edge the breakout went through (top edge for an up breakout, bottom edge for
+    a below one): where price comes back to when it retests the box."""
+    if _contains(box, price):
+        return True
+    return (box["high"] < price <= box["high"] + GO_WITH_EDGE_TOL) if up \
+        else (box["low"] - GO_WITH_EDGE_TOL <= price < box["low"])
 
-    from_range -- the trade fades a confirmed strong breakout whose range has
-        not been retested yet: an LLPB (short) with a box BELOW the level's
-        price in state breakout-up-waiting-for-retest, or an LHPB (long) with
-        a box ABOVE it in state breakout-below-waiting-for-retest -- and the
-        box's breakout is the run-in's own (see _broke_in_run_in: inside the
-        leg that began at `run_in_start`, or still forming). A breakout
-        before the leg began does not count.
-    into_range -- the level's price lies inside a box whose strong breakout is
-        still waiting for its retest (either direction): the level retests
-        into that range."""
+
+def classify(boxes, level_type, level_price, run_in_start=None, touch=None):
+    """(from_range, into_range): lists of the episode rows (expand_episodes)
+    behind each tag. Each strong breakout is one edge; its two playbooks:
+
+    from_range (fade) -- the trade fades a confirmed strong breakout whose range
+        has not been retested yet: an LLPB (short) above the top edge of a
+        breakout-up-waiting-for-retest episode, or an LHPB (long) below the
+        bottom edge of a breakout-below-waiting-for-retest one -- and the
+        breakout is the run-in's own (see _broke_in_run_in: inside the leg that
+        began at `run_in_start`, or still forming).
+    into_range (go-with) -- the trade goes WITH the breakout when price retests
+        the box: an LHPB (long) after a breakout UP, an LLPB (short) after a
+        breakout BELOW, with the level inside the box or within GO_WITH_EDGE_TOL
+        outside its breakout-side edge. The opposite level type there is neither
+        playbook."""
     from_range, into_range = [], []
     if boxes is None or boxes.empty:
         return from_range, into_range
@@ -151,7 +200,8 @@ def classify(boxes, level_type, level_price, run_in_start=None, touch=None):
         state = b["state"]
         if state not in WAITING_STATES:
             continue
-        if _contains(b, price):
+        up = state == STATE_UP
+        if level_type == ("LHPB" if up else "LLPB") and _near_breakout_edge(b, price, up):
             into_range.append(_describe(b))
         elif not _broke_in_run_in(b, run_in_start, touch):
             continue
@@ -186,19 +236,16 @@ def box_key(box):
 
 
 def claimed_box(slot, boxes, level_price):
-    """The ONE box a trade claims for `slot` out of the boxes that qualify.
-
-    from -- the box whose edge nearest the level: the top edge of a
-        breakout-up box below an LLPB, the bottom edge of a breakout-below box
-        above an LHPB.
-    into -- the tightest box that contains the level."""
+    """The ONE episode a trade claims for `slot` out of those that qualify: the
+    one whose breakout-side edge (top for an up breakout, bottom for a below one)
+    is nearest the level, then the tightest box. `boxes` are _describe dicts."""
     if not boxes:
         return None
     price = float(level_price)
-    if slot == SLOT_FROM:
-        return min(boxes, key=lambda b: (min(abs(price - b["high"]), abs(b["low"] - price)),
-                                         b["high"] - b["low"]))
-    return min(boxes, key=lambda b: b["high"] - b["low"])
+
+    def dist(b):
+        return abs(price - (b["high"] if b["state"] == STATE_UP else b["low"]))
+    return min(boxes, key=lambda b: (dist(b), b["high"] - b["low"]))
 
 
 def slot_rank(entry_is_spike, touch_time):

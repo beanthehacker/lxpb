@@ -199,7 +199,8 @@ def find_range_box_zz(data: pd.DataFrame,
           "seed_low", "seed_height", "n_pivots", "n_top_edge", "n_bottom_edge",
           "merged_into", "break_dir",
           "break_pivot_time", "break_price", "break_time", "breakout",
-          "breakout_range_atr", "breakout_body", "failed_time", "retest_time", "state", "state_log"]
+          "breakout_range_atr", "breakout_body", "failed_time", "retest_time", "state", "state_log",
+          "episodes"]
   grader = None
   if lower_data is not None:
     tf_min, lsp = _spacing_minutes(data.index), _spacing_minutes(lower_data.index)
@@ -236,9 +237,9 @@ def find_range_box_zz(data: pd.DataFrame,
       if grader is not None:
         bo = grader.grade(idx[k], up, b["high"], b["low"])
     if b["status"] == "merged":
-      state, log, failed_t, retest_t = "merged", [], pd.NaT, pd.NaT
+      state, log, failed_t, retest_t, episodes = "merged", [], pd.NaT, pd.NaT, []
     else:
-      state, log, failed_t, retest_t = _read_states(
+      state, log, failed_t, retest_t, episodes = _read_states(
         b, idx, O, H, L, C, n, widen_pct, grader, levels, bo_grade=bo[0])
     rows.append({
       "range_id": b["id"],
@@ -261,7 +262,7 @@ def find_range_box_zz(data: pd.DataFrame,
       "break_time": idx[k] if broken else pd.NaT,
       "breakout": bo[0], "breakout_range_atr": bo[1], "breakout_body": bo[2],
       "failed_time": failed_t, "retest_time": retest_t, "state": state,
-      "state_log": log,
+      "state_log": log, "episodes": episodes,
     })
   if not rows:
     return pd.DataFrame(columns=data.columns.tolist() + cols)
@@ -288,16 +289,26 @@ def _waiting_levels(levels, up, hi, lo, bar_t):
 
 def _read_states(b, idx, O, H, L, C, n, widen_pct, grader, levels, bo_grade):
   """The bar-by-bar State read of one box (see find_range_box_zz). Returns
-  (final state, [(bar time, state), ...], failed_time, retest_time)."""
+  (final state, [(bar time, state), ...], failed_time, retest_time, episodes).
+
+  `state` / `retest_time` describe the box's FIRST outcome exactly as before.
+  `episodes` lists every STRONG breakout of the box, one per edge (see
+  _edge_episode): once an episode is over (retested, or no level was waiting)
+  the box is not invalidated, that edge is just marked done, and the read keeps
+  going so the opposite edge can open an episode of its own. A failed weak
+  breakout likewise leaves both edges open for a later strong one."""
   sh, sl = b["seed_high"], b["seed_low"]
   lim_up = sh + widen_pct / 100 * (sh - sl)
   lim_dn = sl - widen_pct / 100 * (sh - sl)
   hi, lo = sh, sl
   wid, w = b["widen"], 0
-  out = None            # None while ranging, else the open breakout: dict(up, ext, rt, strong)
+  out = None            # None while ranging, else the open breakout: dict(up, ext, rt, strong, ep)
   state, failed_t, retest_t = "ranging", pd.NaT, pd.NaT
   log = [(idx[b["confirm_j"]], "ranging")]
   stop = b["end_j"] if b["end_j"] is not None else n - 1
+  episodes = []
+  used = set()          # directions that already had a strong episode
+  post = False          # first outcome reached: only NEW strong breakouts matter now
 
   def label(up, kind):
     return f"breakout-{'up' if up else 'below'}-{kind}"
@@ -312,8 +323,29 @@ def _read_states(b, idx, O, H, L, C, n, widen_pct, grader, levels, bo_grade):
     rt, nl = _waiting_levels(levels, up, hi, lo, t)
     return rt, label(up, "no-level" if nl == 0 else "waiting-for-retest")
 
+  def confirm(up, t):
+    """A strong breakout is confirmed on the bar at `t`: read its waiting levels,
+    open its episode and, if it has none, close the episode on the spot."""
+    nonlocal state, retest_t, out, post
+    rt, st = strong_state(up, t)
+    out["rt"] = rt
+    if not post:
+      state = st
+      log.append((t, state))
+    if levels is None:
+      return                          # strong vs weak is known, retest is not: no episode
+    used.add(up)
+    ep = {"direction": "up" if up else "below", "edge": "upper" if up else "lower",
+          "breakout_time": t, "state": st, "retest_time": pd.NaT, "done": False,
+          "done_reason": None, "done_time": pd.NaT}
+    episodes.append(ep)
+    out["ep"] = ep
+    if st.endswith("no-level"):
+      ep.update(done=True, done_reason="no-level", done_time=t)
+      out, post = None, True
+
   for m in range(b["confirm_j"] + 1, n):
-    if out is None and m > stop:
+    if out is None and m > stop and not post:
       break
     while w < len(wid) and wid[w][0] < m:
       _, side, price = wid[w]
@@ -322,11 +354,15 @@ def _read_states(b, idx, O, H, L, C, n, widen_pct, grader, levels, bo_grade):
     inside = lo <= C[m] <= hi
     if out is not None:
       up = out["up"]
-      if out["strong"]:       # confirmed: only a retest can end it
+      if out["strong"]:       # confirmed: never invalidated, only a retest ends the wait
         if pd.notna(out["rt"]) and out["rt"] <= idx[m]:
-          state, retest_t = label(up, "retested"), out["rt"]
-          log.append((idx[m], state))
-          break
+          if out.get("ep") is not None:
+            out["ep"].update(state=label(up, "retested"), retest_time=out["rt"],
+                             done=True, done_reason="retested", done_time=idx[m])
+          if not post:
+            state, retest_t = label(up, "retested"), out["rt"]
+            log.append((idx[m], state))
+          out, post = None, True
         continue
       if C[m] < lo if up else C[m] > hi:      # weak one ran through to the far edge
         out = None
@@ -335,7 +371,8 @@ def _read_states(b, idx, O, H, L, C, n, widen_pct, grader, levels, bo_grade):
         if inside and (H[m] > lim_up if up else L[m] < lim_dn):
           state, failed_t = failed_label(up), idx[m]
           log.append((idx[m], state))
-          break
+          out, post = None, True
+          continue
         if inside and (out["ext"] <= lim_up if up else out["ext"] >= lim_dn):
           hi, lo = (max(hi, out["ext"]), lo) if up else (hi, min(lo, out["ext"]))
           out, state = None, "ranging"
@@ -343,31 +380,37 @@ def _read_states(b, idx, O, H, L, C, n, widen_pct, grader, levels, bo_grade):
           continue
         if (C[m] > hi if up else C[m] < lo) and grader is not None             and grader.grade(idx[m], up, hi, lo)[0] == "strong":
           out["strong"] = True
-          out["rt"], state = strong_state(up, idx[m])
-          log.append((idx[m], state))
+          confirm(up, idx[m])
         continue
-    if H[m] > lim_up and inside:
-      state, failed_t = failed_label(True), idx[m]
-      log.append((idx[m], state))
-      break
-    if L[m] < lim_dn and inside:
-      state, failed_t = failed_label(False), idx[m]
-      log.append((idx[m], state))
-      break
+    if not post:
+      if H[m] > lim_up and inside:
+        state, failed_t = failed_label(True), idx[m]
+        log.append((idx[m], state))
+        post = True
+        continue
+      if L[m] < lim_dn and inside:
+        state, failed_t = failed_label(False), idx[m]
+        log.append((idx[m], state))
+        post = True
+        continue
     up = C[m] > hi
     if (up or C[m] < lo) and grader is not None:
+      if post and up in used:
+        continue                      # that edge already had its episode
       strong = grader.grade(idx[m], up, hi, lo)[0] == "strong"
+      if post and not strong:
+        continue                      # after the first outcome only strong breakouts count
       out = dict(up=up, ext=H[m] if up else L[m], rt=pd.NaT, strong=strong)
       if strong:
-        out["rt"], state = strong_state(up, idx[m])
+        confirm(up, idx[m])
       else:
         state = "weak-breakout"
-      log.append((idx[m], state))
+        log.append((idx[m], state))
   if state == "ranging" and b["status"] == "broken":
     state = "weak-breakout" if bo_grade is not None else None
     if state:
       log.append((idx[b["end_j"]], state))
-  return state, log, failed_t, retest_t
+  return state, log, failed_t, retest_t, episodes
 
 
 def _zigzag_pivots(H, L, atr, atr_mult, atr_period, order=None):

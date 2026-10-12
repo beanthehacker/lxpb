@@ -172,8 +172,10 @@ the target are ALL M5 LXPB structure:
          and treated as if it closed there (point in time). Only boxes with >= 2
          pivots at each edge count. Both tags read the detector's bar-by-bar box
          state breakout-up/below-waiting-for-retest (strong breakout, not yet
-         retested on the real M5 ledger). `retest-into-range`: the retested
-         level lies inside such a box. `breakout-from-range`: an LLPB short with
+         retested on the real M5 ledger). `retest-into-range`: the go-with
+         playbook, an LHPB long after a breakout up / an LLPB short after a
+         breakout below, with the level inside the box or within 2pt beyond its
+         breakout-side edge. `breakout-from-range`: an LLPB short with
          a breakout-up box below the level, or an LHPB long with a
          breakout-below box above it, and the box's breakout bar falls inside
          the run-in leg into the level (the same leg broke the box and ran into
@@ -3715,7 +3717,7 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
             (RB.TAG_FROM_RANGE, "from", "FROM RANGE",
              "this trade fades a fresh breakout out of this range (the run-in leg into the level is the one that broke it), not retested yet"),
             (RB.TAG_INTO_RANGE, "into", "INTO RANGE",
-             "the retested level lies inside this range, whose strong breakout is still waiting for its retest")):
+             "go-with playbook: this trade goes WITH the strong breakout of this range (still waiting for its retest) as price retests the box, level inside it or within 2pt of its breakout-side edge")):
         if tag in dyn_tags:
             boxes = (res.get("range_box") or {}).get(key) or []
             detail = "; ".join(
@@ -4580,7 +4582,7 @@ other row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" class="f-dyn-isolate" data-tag="breakout-from-range"> only</label>
     </div>
     <div class="chip-stack">
-      <label class="chip" title="Exclude every trade whose retested level lies inside an M5 range whose strong breakout is still waiting for its retest (find_range_box_zz, 1-minute lower timeframe).">
+      <label class="chip" title="Exclude every go-with trade on the retest of an M5 range whose strong breakout is still waiting for its retest (LHPB long after a breakout up, LLPB short after a breakout below; level inside the box or within 2pt of its breakout-side edge; find_range_box_zz, 1-minute lower timeframe).">
         <input type="checkbox" class="f-dyn-exclude" data-tag="retest-into-range">
         Exclude retest-into-range trades</label>
       <label class="chip chip-iso" title="Only: show ONLY rows tagged retest-into-range, hiding every
