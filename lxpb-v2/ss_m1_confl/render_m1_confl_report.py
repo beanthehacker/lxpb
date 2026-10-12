@@ -179,17 +179,20 @@ the target are ALL M5 LXPB structure:
          the level; a long-ago breakout does not count). Both are
          Dynamic filter chips (Exclude +
          Only), NOT excluded from the headline stats by default.
-         ONE TRADE PER SLOT: a box offers each trade type one slot (one
-         breakout-from-range, one retest-into-range; up and down breakouts are
-         separate boxes, keyed by start time + both frozen edges + direction).
-         A trade claims one box per slot (nearest breakout-side edge, then
-         the widest box: the same range after it extended its far edge); of the FILLED trades claiming
-         the same box, a spike entry level (hammer LHPB / shooting star LLPB)
-         wins, else the earliest touch. The others lose that range tag and get
-         `range-slot-lost` (SLOT LOST badge naming the winner; Exclude + Only
-         chips), so `--range-box-only` holds winners only. The spike
-         preference is a placeholder and not causal: a live algo has already
-         entered an earlier trade before a later spike appears.
+         ONE TRADE PER SEAT: every box has one breakout-from-range seat and one
+         retest-into-range seat (up and down breakouts are separate boxes, keyed
+         by start time + both frozen edges + direction). A trade takes the seat
+         of EVERY box it qualifies for in that playbook (an LLPB above two
+         overlapping breakout-up boxes fades both) and nothing for boxes it does
+         not qualify for (above box A but inside box B leaves B's seat for B's
+         own later breakout). Seats go out in rank order, a spike entry level
+         (hammer LHPB / shooting star LLPB) first, else the earliest touch; a
+         trade keeps the tag if it took at least one seat, and one whose boxes
+         are ALL taken loses it and gets `range-slot-lost` (SLOT LOST badge
+         naming the holders; Exclude + Only chips), so `--range-box-only` holds
+         winners only. The spike preference is a placeholder and not causal: a
+         live algo has already entered an earlier trade before a later spike
+         appears.
 
        * NEWS PULL (`--news-pull-window`, on by default). The level's first
          tick-level touch (the retest itself, from
@@ -1595,7 +1598,7 @@ def process_cluster(cluster, args):
     # rule, and there is nothing for the browser toggles to switch between.
     entry_level_info = _entry_level_row(cluster, conf)
     # The spike flag of the level that supplied the entry (detector pairing,
-    # lxpb.py is_spike): ranks contenders for a range-box slot. NaN counts as no.
+    # lxpb.py is_spike): ranks contenders for a range-box seat. NaN counts as no.
     _spike = (entry_level_info or {}).get("is_spike")
     result["entry_is_spike"] = bool(pd.notna(_spike) and _spike)
     stop_price, stop_row, stop_source = _dynamic_stop_m5(
@@ -2614,21 +2617,22 @@ def _apply_range_box_tags(results):
     box below the level, an LHPB with a breakout-below box above it, where the
     box's breakout bar falls inside the run-in leg into the level.
 
-    ONE TRADE PER SLOT. Each box has one breakout-from-range slot and one
-    retest-into-range slot (up and down breakouts are different boxes). A trade
-    claims one box per slot -- the box whose edge is nearest the level when
-    the widest of those sharing that edge, i.e. the extended range -- and
-    among the filled trades claiming the same box the winner (spike entry first,
-    else earliest touch; RB.slot_rank) keeps the tag. The others lose that range
-    tag and get 'range-slot-lost', with res['range_slot_lost'] naming the winner.
-    Unfilled candidates never use a slot.
+    ONE TRADE PER SEAT. Each box has one breakout-from-range seat and one
+    retest-into-range seat (up and down breakouts are different boxes). A trade
+    takes the seat of EVERY box it qualifies for in that playbook (an LLPB above
+    two overlapping breakout-up boxes fades both) and nothing for boxes it does
+    not qualify for (above box A but inside box B: B's seat stays free). Seats go
+    out in rank order (spike entry first, else earliest touch; RB.slot_rank): a
+    trade keeps the tag if it took at least one seat, and a trade whose boxes are
+    ALL taken loses it and gets 'range-slot-lost', with res['range_slot_lost']
+    naming the holders. Unfilled candidates never use a seat.
 
-    Ships res['range_box'] = {'from', 'into'} (the claimed box behind each tag
-    the trade KEPT) for the badge tooltips. No data loaded -> no tags."""
+    Ships res['range_box'] = {'from', 'into'} (the boxes whose seat the trade
+    took, behind each tag it KEPT) for the badge tooltips. No data loaded -> no tags."""
     if RANGE_BOX_M5 is None or RANGE_BOX_M1 is None:
         return results
     cache = {}
-    claims, claimed = [], {}
+    claims, boxes_of = [], {}
     for idx, res in enumerate(results):
         if not res["filled"]:
             continue
@@ -2641,27 +2645,26 @@ def _apply_range_box_tags(results):
                                               res.get("run_in_start"), touch)
         res["range_box"] = {"from": [], "into": []}
         for slot, boxes in ((RB.SLOT_FROM, from_range), (RB.SLOT_INTO, into_range)):
-            box = RB.claimed_box(slot, boxes, res["own_price"])
-            if box is None:
+            if not boxes:
                 continue
-            claimed[(idx, slot)] = box
-            claims.append({"id": idx, "slot": slot, "key": RB.box_key(box),
+            by_key = {RB.box_key(b): b for b in boxes}
+            boxes_of[(idx, slot)] = by_key
+            claims.append({"id": idx, "slot": slot, "keys": list(by_key),
                            "spike": bool(res.get("entry_is_spike")), "touch": touch})
-    winners = RB.assign_slots(claims)
-    for (idx, slot), box in claimed.items():
-        res = results[idx]
-        win = winners[(slot, RB.box_key(box))]
-        if win == idx:
-            res["range_box"][slot] = [box]
+    for (slot, idx), out in sorted(RB.assign_slots(claims).items(), key=lambda kv: (kv[0][1], kv[0][0])):
+        res, by_key = results[idx], boxes_of[(idx, slot)]
+        if out["won"]:
+            res["range_box"][slot] = [by_key[k] for k in out["won"]]
             res["dyn_tags"].append(RB.TAG_FROM_RANGE if slot == RB.SLOT_FROM else RB.TAG_INTO_RANGE)
             continue
-        w = results[win]
-        res.setdefault("range_slot_lost", []).append({
-            "slot": slot, "box": box,
-            "winner_touch": pd.Timestamp(w["touch_time_alt"]),
-            "winner_price": float(w["own_price"]), "winner_type": w["level_type"],
-            "winner_spike": bool(w.get("entry_is_spike")),
-            "this_spike": bool(res.get("entry_is_spike"))})
+        for k, win in out["lost"].items():
+            w = results[win]
+            res.setdefault("range_slot_lost", []).append({
+                "slot": slot, "box": by_key[k],
+                "winner_touch": pd.Timestamp(w["touch_time_alt"]),
+                "winner_price": float(w["own_price"]), "winner_type": w["level_type"],
+                "winner_spike": bool(w.get("entry_is_spike")),
+                "this_spike": bool(res.get("entry_is_spike"))})
         if RB.TAG_SLOT_LOST not in res["dyn_tags"]:
             res["dyn_tags"].append(RB.TAG_SLOT_LOST)
     return results
@@ -3391,12 +3394,12 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
                    else "earlier touch")
             lost.append(
                 f'{"breakout-from-range" if sl["slot"] == RB.SLOT_FROM else "retest-into-range"} '
-                f'slot of box {bx["low"]:.2f}-{bx["high"]:.2f} from {R._to_pt_str(bx["start"])} '
+                f'seat of box {bx["low"]:.2f}-{bx["high"]:.2f} from {R._to_pt_str(bx["start"])} '
                 f'taken by {sl["winner_type"]} {sl["winner_price"]:.2f} touched '
                 f'{R._to_pt_str(sl["winner_touch"])} ({why})')
         out += (f'<span class="dyn-tag-badge range-box-tag-badge" title="Dynamic filter '
-                f'‘{RB.TAG_SLOT_LOST}’: a range box gives each trade type ONE slot, and '
-                f'this trade lost it, so it carries no range tag for it: {"; ".join(lost)}. '
+                f'‘{RB.TAG_SLOT_LOST}’: each range box has ONE seat per trade type, and '
+                f'every box this trade qualified for was already taken, so it carries no range tag for it: {"; ".join(lost)}. '
                 f'Winner = a spike entry level first, else the earliest touch. Purely '
                 f'informational; not excluded from the headline stats by default.">'
                 f'SLOT LOST</span>')
@@ -4071,7 +4074,7 @@ other row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" class="f-dyn-isolate" data-tag="retest-into-range"> only</label>
     </div>
     <div class="chip-stack">
-      <label class="chip" title="Exclude every trade that lost a range-box slot: a box gives each trade type (breakout-from-range, retest-into-range) ONE slot, and another trade on the same box took it (spike entry first, else earliest touch).">
+      <label class="chip" title="Exclude every trade that lost its range-box seat: each box has ONE seat per trade type (breakout-from-range, retest-into-range), and another trade already took every box this trade qualified for (spike entry first, else earliest touch).">
         <input type="checkbox" class="f-dyn-exclude" data-tag="range-slot-lost">
         Exclude range-slot-lost trades</label>
       <label class="chip chip-iso" title="Only: show ONLY rows tagged range-slot-lost, hiding every

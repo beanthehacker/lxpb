@@ -20,8 +20,8 @@ an up breakout, lower for a below one), so a box that broke both ways has both
 edges, each with its own two playbooks. A strong breakout is never invalidated: a
 finished edge (retested, or no level was waiting) is only marked done in the
 episode, whether or not trades were taken, and the other edge can still open.
-Each (box, edge, playbook) is a slot that takes one trade; see "One trade per
-slot" below.
+Each (box, edge, playbook) is a seat that takes one trade; see "One trade per
+seat" below.
 
 "Waiting for retest" is the detector's own state: a bar closed strong beyond an
 edge and no LXPB level of the box on the real M5 ledger has completed its retest
@@ -213,17 +213,21 @@ def classify(boxes, level_type, level_price, run_in_start=None, touch=None):
 
 
 # ---------------------------------------------------------------------------
-# One trade per slot
+# One trade per seat
 #
-# A range box offers each trade type ONE slot: a single breakout-from-range
-# trade (fading the strong breakout) and a single retest-into-range trade. Up
-# and down breakouts are separate boxes, hence separate slots. Several LLPBs
-# can all fade the same fresh breakout-up, but a live algo holds one entry per
-# slot, so only one of them is taken; the others lose their range tag.
+# Every box has one fade seat (breakout-from-range) and one go-with seat
+# (retest-into-range); up and down breakouts are separate boxes, hence separate
+# seats. A trade takes the seat of EVERY box it qualifies for (an LLPB above two
+# overlapping breakout-up boxes fades both), and nothing for the boxes it does
+# not qualify for (an LLPB above box A but inside box B leaves B's seat alone:
+# B's own breakout gets its own fade later). Seats are handed out in rank
+# order; a trade that finds every box it qualifies for already taken loses its
+# range tag. No grouping is precomputed: a "group" is just the boxes one trade
+# takes together.
 # ---------------------------------------------------------------------------
 
 def box_key(box):
-    """Identity of a box for slot purposes: start time, both edges and the
+    """Identity of a box for seat purposes: start time, both edges and the
     breakout direction. Edges are frozen at the strong breakout, so a box seen
     by an earlier trade and by a later one is the same key. The END time is
     deliberately not part of it: an earlier trade sees the box still forming
@@ -235,25 +239,8 @@ def box_key(box):
             round(float(box["high"]), 4), direction)
 
 
-def claimed_box(slot, boxes, level_price):
-    """The ONE episode a trade claims for `slot` out of those that qualify: the
-    one whose breakout-side edge (top for an up breakout, bottom for a below one)
-    is nearest the level, then the WIDEST box. Boxes sharing that edge and
-    breakout are one range seen at different stages, the wider one being the same
-    range after it extended its far edge (e.g. 7715.25-7724.75 and
-    7712.25-7724.75 on one breakout), so the extended box is the one claimed.
-    `boxes` are _describe dicts."""
-    if not boxes:
-        return None
-    price = float(level_price)
-
-    def dist(b):
-        return abs(price - (b["high"] if b["state"] == STATE_UP else b["low"]))
-    return min(boxes, key=lambda b: (round(dist(b), 4), -(b["high"] - b["low"])))
-
-
 def slot_rank(entry_is_spike, touch_time):
-    """Sort key for contenders on one slot (lowest wins): a trade whose entry
+    """Sort key for contenders on one seat (lowest wins): a trade whose entry
     level is itself a spike (hammer for an LHPB / shooting star for an LLPB,
     the detector pairing; patterns-pure) beats one that is not, otherwise the
     earliest touch wins. A placeholder ranking: the spike preference is NOT
@@ -264,16 +251,23 @@ def slot_rank(entry_is_spike, touch_time):
 
 
 def assign_slots(claims):
-    """Decide each slot's winner.
+    """Hand out the seats, one slot (SLOT_FROM / SLOT_INTO) at a time, best rank first.
 
-    `claims` is a list of dicts with `id`, `slot` (SLOT_FROM / SLOT_INTO),
-    `key` (box_key), `spike` (bool) and `touch` (UTC Timestamp), one per
-    FILLED trade per slot it qualifies for. Unfilled candidates must not be
-    passed in: they never use a slot. Returns {(slot, key): winning id}."""
-    best = {}
-    for c in claims:
-        k = (c["slot"], c["key"])
-        r = slot_rank(c["spike"], c["touch"])
-        if k not in best or r < best[k][0]:
-            best[k] = (r, c["id"])
-    return {k: v[1] for k, v in best.items()}
+    `claims` is a list of dicts with `id`, `slot`, `keys` (box_key of every box
+    the trade qualifies for in that slot), `spike` (bool) and `touch` (UTC
+    Timestamp), one per FILLED trade per slot it qualifies for. Unfilled
+    candidates must not be passed in: they never use a seat. A trade takes every
+    one of its boxes whose seat is still free. Returns {(slot, id): {"won":
+    [keys it took], "lost": {key: id of the trade that already held it}}}; a
+    trade with an empty "won" lost the slot."""
+    out = {}
+    for slot in {c["slot"] for c in claims}:
+        taken = {}
+        for c in sorted((c for c in claims if c["slot"] == slot),
+                        key=lambda c: slot_rank(c["spike"], c["touch"])):
+            won = [k for k in c["keys"] if k not in taken]
+            lost = {k: taken[k] for k in c["keys"] if k in taken}
+            for k in won:
+                taken[k] = c["id"]
+            out[(slot, c["id"])] = {"won": won, "lost": lost}
+    return out
