@@ -1025,8 +1025,15 @@ _m5_bars = LC.m5_bars_continuous
 def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=None,
                    fill_window=None, p1_bar_width=pd.Timedelta(hours=1), p1_label="H1",
                    bars_before_retest=None, bars_after_exit=None, extra_context_times=None,
-                   plain_p0=LC.PLAIN_P0_UNTRACKED, p0_p2_pad_bars=None, bar_label="M5"):
+                   plain_p0=LC.PLAIN_P0_UNTRACKED, p0_p2_pad_bars=None, bar_label="M5",
+                   protect_spans=None):
     """5-minute companion pane for build_trade_chart's H1 chart.
+
+    `protect_spans` -- optional (start, end) UTC timestamp pairs whose bars are
+    ALL kept, edge to edge: the window reaches back to the earliest start and
+    each span is its own protected segment, so none of it lands inside a
+    "[N bars skipped]" gap (the range-box reports pass each drawn box's
+    start..breakout).
 
     `bar_label` is only the timeframe name shown on the pane (title, ray
     labels, markers); the M1/M2 variant reports pass their own bar size.
@@ -1223,6 +1230,10 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
     if near_levels:
         earliest = min(lv["formation_time"] for lv in near_levels)
         lo = min(lo, earliest - pd.Timedelta(minutes=5 * M5_CTX_BEFORE_FORMATION))
+    spans = [(pd.Timestamp(s0).tz_convert("UTC"), pd.Timestamp(s1).tz_convert("UTC"))
+             for s0, s1 in (protect_spans or ())]
+    if spans:
+        lo = min(lo, min(s0 for s0, _ in spans) - 5 * p1_bar_width)
     a = int(all_bars.index.searchsorted(lo, side="left"))
     b = int(all_bars.index.searchsorted(hi, side="left"))
     p0_time = None
@@ -1266,6 +1277,8 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
             epos = _pos(lv["end_time"])
             lv["end_pos"] = epos
             segments.append((epos - M5_CTX_AROUND_RAY_END, epos + M5_CTX_AROUND_RAY_END))
+    for s0, s1 in spans:
+        segments.append((_pos(s0), _pos(s1)))
     if extra_context_times:
         for ts in extra_context_times:
             # Normalize to tz-aware UTC regardless of what the caller passed

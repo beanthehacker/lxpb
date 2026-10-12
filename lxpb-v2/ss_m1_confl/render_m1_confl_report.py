@@ -2159,7 +2159,7 @@ CTX_M5_HOURS_BEFORE = 8
 CTX_M5_HOURS_AFTER = 2
 
 
-def _build_context_charts(res, filled):
+def _build_context_charts(res, filled, range_spans=()):
     """{'h1': ..., 'd1': ...} panes for the row -- 'd1' is unused and
     suppressed by this report's own CSS (see .d1-cell), and 'h1' is
     repurposed to hold a REAL M5 chart (R._display_m5(), never the M1
@@ -2192,9 +2192,11 @@ def _build_context_charts(res, filled):
     end_t = exit_t if exit_t is not None else entry_t
 
     m5 = R._display_m5()  # the REAL M5 series -- never the patched M1 one (see LC.m5_bars_continuous)
+    lo = entry_t - pd.Timedelta(hours=CTX_M5_HOURS_BEFORE)
+    if range_spans:   # the window is one unbroken run of bars: just reach back to the earliest box
+        lo = min(lo, min(s0 for s0, _ in range_spans) - pd.Timedelta(minutes=30))
     h1_chart = _build_context_chart(
-        m5, "M5", entry_t, exit_t,
-        entry_t - pd.Timedelta(hours=CTX_M5_HOURS_BEFORE),
+        m5, "M5", entry_t, exit_t, lo,
         end_t + pd.Timedelta(hours=CTX_M5_HOURS_AFTER), levels, is_long)
     # D1 is never shown (hidden by this report's own CSS, see .d1-cell) --
     # skip building it rather than compute a pane nobody sees.
@@ -2215,13 +2217,18 @@ def build_chart_stack_for_row(res, m5_only=False):
     m5_only skips every tick-built pane (1s trio, 1-minute, footprints).
     Only the charts go -- the trade itself was still filled and resolved on
     real ticks by process_cluster."""
-    row_d = res["row"]
-    alt_price = res["fill_price"]
-    resolved = res["resolved"]
-    stop_pts, target_pts = res["stop_pts"], res["target_pts"]
+    chart_m5, ctx = _build_price_panes(res)
+    if m5_only:
+        return {**ctx, "m5": chart_m5, "trio": None, "oneMin": None}, {"narrow": M5_ONLY_NOTE,
+                                                                        "wide": M5_ONLY_NOTE}
+    row_for_chart = _row_for_chart(res)
+    execution_charts, fp = SF.build_execution_charts({**res, "row": row_for_chart})
+    return {**ctx, "m5": chart_m5, **execution_charts}, fp
 
-    row_for_chart = row_d.copy()
-    row_for_chart["price"] = alt_price
+
+def _row_for_chart(res):
+    row_for_chart = res["row"].copy()
+    row_for_chart["price"] = res["fill_price"]
     # build_m5_chart does `pd.Timestamp(row["retest_time"], tz="UTC")` (and
     # likewise for breakout_time), which raises on an already tz-aware
     # value -- unlike the H1 reference report's naive-epoch-UTC timestamps,
@@ -2231,6 +2238,15 @@ def build_chart_stack_for_row(res, m5_only=False):
         ts = pd.Timestamp(row_for_chart[col])
         if ts.tzinfo is not None:
             row_for_chart[col] = ts.tz_convert("UTC").tz_localize(None)
+    return row_for_chart
+
+
+def _build_price_panes(res, range_spans=()):
+    """(M1 pane, {'h1': M5 pane, 'd1': None}) of a filled trade. `range_spans`
+    are (start, end) UTC pairs, one per drawn range box, kept whole in both panes."""
+    resolved = res["resolved"]
+    stop_pts, target_pts = res["stop_pts"], res["target_pts"]
+    row_for_chart = _row_for_chart(res)
     # Fetched BEFORE build_m5_chart (not just for _annotate_candidates
     # afterward) so every sibling candidate's own formation bar can be
     # passed in as extra_context_times -- otherwise build_m5_chart's own
@@ -2258,7 +2274,8 @@ def build_chart_stack_for_row(res, m5_only=False):
         bars_before_retest=2 * SR.M5_BARS_BEFORE_RETEST,
         bars_after_exit=2 * SR.M5_BARS_AFTER_EXIT,
         p0_p2_pad_bars=P0_P2_PAD_BARS,
-        extra_context_times=extra_context_times, plain_p0=res["plain_p0"])
+        extra_context_times=extra_context_times, plain_p0=res["plain_p0"],
+        protect_spans=range_spans)
     if chart_m5 is not None:
         chart_m5["title"] += (f"  |  R {res['r_multiple']:.2f}  |  entry via "
                               f"{res['alt_source']} ({res['group_n']} in group)")
@@ -2269,12 +2286,7 @@ def build_chart_stack_for_row(res, m5_only=False):
         _annotate_swerve(chart_m5, res, res["is_long"])
         _rayify_trade_lines(chart_m5, res, row_for_chart)
         _add_mode_views(chart_m5, res, res["is_long"])
-    ctx = _build_context_charts(res, filled=True)
-    if m5_only:
-        return {**ctx, "m5": chart_m5, "trio": None, "oneMin": None}, {"narrow": M5_ONLY_NOTE,
-                                                                        "wide": M5_ONLY_NOTE}
-    execution_charts, fp = SF.build_execution_charts({**res, "row": row_for_chart})
-    return {**ctx, "m5": chart_m5, **execution_charts}, fp
+    return chart_m5, _build_context_charts(res, filled=True, range_spans=range_spans)
 
 
 def _build_unfilled_chart_stack(res, args):
@@ -2670,16 +2682,46 @@ def _apply_range_box_tags(results):
     return results
 
 
-# (slot, colour, down-candle tint, chart-title prefix). On the chart itself the colour says
-# which playbook, so the rays and markers just read "range ...".
-RANGE_DRAW = (("from", "#fde68a", "#d97706", "fade"),
-              ("into", "#67e8f9", "#0e7490", "retest"))
+# (slot, ray/marker colour, chart-title prefix). On the chart itself the colour says which
+# playbook, so the rays and markers just read "range ...". The candles are never recoloured.
+RANGE_DRAW = (("from", "#fde68a", "fade"),
+              ("into", "#67e8f9", "retest"))
+RANGE_SPAN_PAD = pd.Timedelta(minutes=15)
 
 
-def _mark_range_box(chart, b, color, tint_dn, label, tint):
-    """High/low rays from the box start to the pane's last bar, a start marker, a
-    breakout marker (when the box has one in view) and, with `tint`, coloured
-    candles over start..breakout. Display only."""
+def _range_spans(res):
+    """(start, end) UTC pairs of every box drawn for the trade, padded a little: each
+    box's start..breakout (or the touch, for a box with no break bar), kept whole."""
+    rbx = res.get("range_box") or {}
+    touch = pd.Timestamp(res["touch_time_alt"]).tz_convert("UTC")
+    spans = []
+    for key, *_ in RANGE_DRAW:
+        for b in rbx.get(key, ()):
+            bt = b.get("break_time")
+            end = pd.Timestamp(bt) if bt is not None and pd.notna(bt) else touch
+            start = pd.Timestamp(b["start"])
+            spans.append((start.tz_localize("UTC") if start.tzinfo is None else start.tz_convert("UTC"),
+                          (end.tz_localize("UTC") if end.tzinfo is None else end.tz_convert("UTC"))
+                          + RANGE_SPAN_PAD))
+    return spans
+
+
+def _rebuild_range_panes(results, chart_stacks):
+    """The M1 and M5 panes of every trade with a drawn range box, rebuilt so each box's
+    candles, start to breakout, are all there (the first build knew nothing of the
+    boxes and may have skipped or cut off part of one)."""
+    for res, stack in zip(results, chart_stacks):
+        spans = _range_spans(res) if res.get("filled") else []
+        if not spans or not stack:
+            continue
+        chart_m5, ctx = _build_price_panes(res, spans)
+        stack["m5"], stack["h1"] = chart_m5, ctx["h1"]
+
+
+def _mark_range_box(chart, b, color, label):
+    """High/low rays from the box start to the pane's last bar, a start marker and a
+    breakout marker (when the box has one in view). Display only: the candles keep
+    their own colours."""
     if chart is None or not chart.get("candles"):
         return
     times = [c["time"] for c in chart["candles"]]
@@ -2687,18 +2729,14 @@ def _mark_range_box(chart, b, color, tint_dn, label, tint):
     bt = b.get("break_time")
     e1 = R._to_epoch_utc(bt) if bt is not None and pd.notna(bt) else times[-1]
     hi, lo = b["high"], b["low"]
-    if tint:
-        for c in chart["candles"]:
-            if e0 <= c["time"] <= e1:
-                col = color if c["close"] >= c["open"] else tint_dn
-                c.update(color=col, borderColor=col, wickColor=col)
     for px, name in ((hi, "high"), (lo, "low")):
         pts = [{"time": t, "value": px} for t in times if t >= e0]
         if pts:
-            title = f"range {name} {px:.2f}"
+            # The axis tag already prints the price; the hover text adds the box's start.
             chart.setdefault("rays", []).append({
                 "points": pts, "color": color, "lineWidth": 1, "lineStyle": 1,
-                "priceLabel": True, "title": title, "label": title})
+                "priceLabel": True, "title": f"range {name}",
+                "label": f"range {name} {px:.2f} (box from {R._to_pt_str(b['start'])})"})
     hm = lambda e: pd.Timestamp(e, unit="s", tz="UTC").tz_convert("America/Los_Angeles").strftime("%H:%M")
     way = "up" if b.get("state") == RB.STATE_UP else "down"
     for e, shape, pos, text in ((e0, "arrowDown", "aboveBar", f"range start {hm(e0)}"),
@@ -2722,10 +2760,10 @@ def _draw_range_boxes(results, chart_stacks):
         rbx = res.get("range_box")
         if not rbx or not stack:
             continue
-        for key, color, tint_dn, label in RANGE_DRAW:
+        for key, color, label in RANGE_DRAW:
             for b in rbx.get(key, ()):
-                _mark_range_box(stack.get("m5"), b, color, tint_dn, label, tint=False)
-                _mark_range_box(stack.get("h1"), b, color, tint_dn, label, tint=True)
+                _mark_range_box(stack.get("m5"), b, color, label)
+                _mark_range_box(stack.get("h1"), b, color, label)
 
 
 H1_CONFL_RADIUS_PTS = 10.0  # this strategy is M5-only; this is a cross-timeframe REVIEW aid, not a rule input
@@ -3144,6 +3182,7 @@ def render(args):
     results = _apply_trap_variants(results)
     results = _apply_atr_boundary(results, args)
     results = _apply_range_box_tags(results)
+    _rebuild_range_panes(results, chart_stacks)
     _draw_range_boxes(results, chart_stacks)
     if getattr(args, "range_box_only", False):
         keep = [i for i, r in enumerate(results)
@@ -4443,6 +4482,19 @@ tr.lvl-row.is-done:hover { opacity:0.6; }
    footprints are never built either (args.m5_charts_only forced True) --
    these rules just hide their now-empty/placeholder slots. */
 .d1-cell, .hidden-tick-panes, .footprint-outer-row { display:none; }
+/* CHART LAYOUT FOR AN 11-INCH iPAD AIR (1180x820 CSS px landscape, 820x1180 portrait), on every
+   device: the chart stack is one screen wide and stays put while the table is panned sideways,
+   each pane is about 40% of the screen's height so M5 and M1 fit one above the other, and all
+   chart text -- axis ticks, price tags, marker labels, the OHLC readout, the ray hover tip -- is
+   large enough to read at that size (18px; the layout font in the JS below drives the in-chart
+   text). The M5 and M1 candles keep their own default grey: ranges are drawn with rays and
+   markers only. */
+.chart-stack { width:calc(100vw - 16px); max-width:1164px; position:sticky; left:8px; }
+.chart-h1 { height:clamp(300px, 42vh, 460px); }
+.chart-title { font-size:16px; }
+.chart-title-split .ct-ohlc { font-size:18px; }
+.chart-title-split + .chart-ph { height:calc(100% - 38px); }
+.pane-tip { font-size:18px; line-height:1.4; padding:8px 12px; }
 </style>
 """
 # Two edits to the shared review JS, for this report only (each asserted, so a change
@@ -4474,15 +4526,16 @@ _renderStack = function(i) {
   else { const t = document.getElementById('td1-' + i); if (t) t.textContent = 'D1  |  (no bars covering this trade)'; }
   if (!cd.h1) { const t = document.getElementById('th1-' + i); if (t) t.textContent = 'H1  |  (no bars covering this trade)'; }
 };
-// M5 pane: bigger axis-tick font, to go with the bigger centered OHLC
-// readout from the .m5-pane CSS above (lightweight-charts shares one
-// layout.fontSize knob between axis ticks and the title's OHLC text, so
-// this is the only lever needed for both). Redeclaring _renderM5 shadows
-// render_stop_target_report.CSS's plain wrapper for this report only --
-// _renderH1 and the direct D1 _renderPane call above are untouched, so
-// H1/D1 keep the shared small font.
+// Both panes (M5 context and M1) use the big chart font. lightweight-charts shares one
+// layout.fontSize knob between axis ticks, price tags, marker labels and the title's OHLC
+// readout, so this one number sizes all the in-chart text. Redeclaring _renderM5 /
+// _renderH1 shadows render_stop_target_report's plain wrappers for this report only.
+const CHART_FONT = 18;   // in-chart text size (see the iPad Air chart layout in the CSS)
 function _renderM5(i, cd) {
-  _renderPane('cm5-' + i, 'tm5-' + i, cd, { fontSize: 13 });
+  _renderPane('cm5-' + i, 'tm5-' + i, cd, { fontSize: CHART_FONT });
+}
+function _renderH1(i, cd) {
+  _renderPane('ch1-' + i, 'th1-' + i, cd, { fontSize: CHART_FONT });
 }
 // ---------------------------------------------------------------------
 // Dynamic filters -- see _apply_globex_open_filter's own docstring in

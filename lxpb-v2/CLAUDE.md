@@ -34,6 +34,27 @@ when it is committed and smoke-tested; the regen waits for the user.
   the next change.
 - When a change needs a regen before its results show, say so and stop.
 
+# Report charts: sized for an 11-inch iPad Air, big text, plain candles (user preference)
+
+**Standing preference (user, 2026-10-12): every report chart is laid out for an 11-inch iPad Air
+(1180x820 CSS px landscape, 820x1180 portrait), whatever device it is opened on.** Remember it
+for every chart you build or touch:
+
+- The chart stack is one screen wide (`calc(100vw - 16px)`, at most 1164px) and sticky-left, so it
+  stays in view while the table is panned. Each pane is about 40% of the screen height
+  (`clamp(300px, 42vh, 460px)`): the M5 and M1 panes fit one above the other.
+- All chart text is large: the in-chart layout font is 18px (axis ticks, price tags, marker labels,
+  `[N bars skipped]`), the OHLC readout 18px, the title bar and the ray hover tooltip 16-18px. A new
+  label or tooltip follows suit; never ship the old 9-13px text.
+- Candles keep the default grey. Never recolour candles (blue, orange, ...) to show a range, a
+  level or anything else; use rays, markers and price tags.
+- A range box's candles, from its start to its breakout, are never compressed into a
+  "[N bars skipped]" gap and never cut off at the window's left edge (`protect_spans` in
+  `render_stop_target_report.build_m5_chart`, and the M5 pane reaches back to the earliest box).
+
+Done for the `ss_m1_confl` / `ss_m2_confl` reports (their CSS and JS blocks). The other reports keep
+their old layout until they are next touched; apply the same rules then.
+
 # Data convention: TradingView exports confirm, Sierra Chart ticks extend
 
 **H1 and M5 history comes from TradingView's own continuous ES1! exports.
