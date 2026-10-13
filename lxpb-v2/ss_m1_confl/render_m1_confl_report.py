@@ -4331,6 +4331,7 @@ other row -- overrides every Exclude box. Click again to turn off.">
                    else f"lxpb_m{BAR_MIN}_confl{args.ss_confl_min}_review_v1{storage_suffix}")
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>M{BAR_MIN}-native SS Confl report{title_suffix}</title>
 {CSS}
 </head><body>
