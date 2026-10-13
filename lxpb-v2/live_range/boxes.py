@@ -405,14 +405,14 @@ class BoxBook:
         self._trig_hi = min(his) if his else math.inf
         self._trig_lo = max(los) if los else -math.inf
 
-    def forming(self, t5, o, h, l, c, levels5, m1_partial=None):
+    def forming(self, t5, o, h, l, c, levels5, m1_partial=None, store=True):
         """Read the M5 bar now forming as if it closed at `c`. Returns the provisional
         episodes (also kept for active_episodes). `m1_partial` is the M1 bar still forming.
         Cheap exit unless the price is beyond some box edge."""
         if not (c > self._trig_hi or c < self._trig_lo) or not len(self.m5):
-            if self._prov:
+            if store and self._prov:
                 self._prov = []
-            return self._prov
+            return self._prov if store else []
         pushed = False
         if m1_partial is not None:
             self.m1.append(*m1_partial)
@@ -437,5 +437,6 @@ class BoxBook:
         finally:
             if pushed:
                 self.m1.pop()
-        self._prov = prov
+        if store:
+            self._prov = prov
         return prov

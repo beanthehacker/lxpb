@@ -62,6 +62,14 @@ class Params:
     eod_flat: int = 12 * 3600 + 44 * 60       # PT: flatten at 12:44
     no_entry_from: int = 12 * 3600 + 45 * 60  # PT: no new entry 12:45 .. reopen
     reopen: int = 15 * 3600
+    # Orders are placed the way an account with limited margin can: only when price is within arm_pts of the
+    # level, pulled when it drifts beyond cancel_pts, never more than max_working_orders at once and none
+    # while max_open_positions are open. Every gate is judged BEFORE the touch, as if price were already on
+    # the order: it is only placed while it would pass, and pulled the moment it would not.
+    arm_pts: float = 4.0
+    cancel_pts: float = 6.0
+    max_working_orders: int = 2
+    max_open_positions: int = 1
 
 
 def _pt_sod(t_ns):
@@ -96,6 +104,11 @@ class Engine:
         self.open = []
         self._oid = 0
         self._blocked = set()
+        self.entries = []                    # cluster-extreme levels an order could rest on, by price
+        self._ent_prices = []
+        self._eps_cache = None
+        self._live_keys = set()
+        self._bo_sec, self._bo_val = -1, None
         self._last_sec = -1
         self._prov_keys = frozenset()
         self.last_t = 0
@@ -148,16 +161,7 @@ class Engine:
             self._check_exits(t, px)
         if px >= self._sell_min or px <= self._buy_max:
             self._check_orders(t, px)
-        box = self.box
-        if px > box._trig_hi or px < box._trig_lo or self._prov_keys:
-            # price is beyond some box edge: read the forming M5 bar on this very tick (an order the
-            # reading arms can fill on this tick, like a limit order resting there)
-            if self._forming(t, px) and (px >= self._sell_min or px <= self._buy_max):
-                self._check_orders(t, px)
-        sec = t // S_NS
-        if sec != self._last_sec:
-            self._last_sec = sec
-            self._expire_orders(t)
+        self._orders_tick(t, px)
 
     def _roll(self, t, m1s, px):
         """The tick belongs to a new minute: close what is done, open the new forming bars."""
@@ -196,7 +200,7 @@ class Engine:
         for kind, lv in self.lv.on_bar(tt, g[1], g[2], g[3], g[4]):
             self.dead.discard(level_key(lv))
             self.log("level_" + kind, t, level=level_key(lv)[:2], price=lv["price"], type=lv["type"])
-        self._refresh(t, "bar")
+        self._rebuild_entries(t)
 
     def _close_m5(self, h, t):
         tt = h[0] * M5_NS
@@ -209,8 +213,7 @@ class Engine:
                          state=b["state"], reason=b["done_reason"])
             elif kind == "box_broken":
                 self.log("box_broken", t, box=payload["id"], dir=payload["break_dir"])
-        self._prov_keys = frozenset()
-        self._refresh(t, "m5")
+        self._eps_cache = None
 
     def _swings(self):
         """Confirm the fractal swing k bars back (high/low strictly beyond k bars each side)."""
@@ -224,25 +227,6 @@ class Engine:
             self.swing_hi.append((s.t[i], hi))
         if all(lo < s.l[i - d] and lo < s.l[i + d] for d in range(1, k + 1)):
             self.swing_lo.append((s.t[i], lo))
-
-    # ------------------------------------------------------------------ the forming M5 bar
-    def _forming(self, t, px):
-        """Read the forming M5 bar as if it closed at `px`; refresh the orders when the set of
-        provisional breakouts changed. Returns True if it did."""
-        if not self.box.m5.t:
-            return False
-        m5f, m1f = self.m5f, self.m1f
-        prov = self.box.forming(m5f[0] * M5_NS, m5f[1], m5f[2], m5f[3], px, self.lv5,
-                                m1_partial=(m1f[0] * M1_NS, m1f[1], m1f[2], m1f[3], m1f[4]))
-        keys = frozenset((e["box_id"], e["direction"]) for e in prov)
-        if keys == self._prov_keys:
-            return False
-        self._prov_keys = keys
-        self._refresh(t, "forming")
-        return True
-
-    def _expire_orders(self, t):
-        return
 
     # ------------------------------------------------------------------ order planning
     @staticmethod
@@ -296,102 +280,130 @@ class Engine:
         cand.sort(key=lambda x: abs(x["price"] - planned))
         return next((x for x in cand if not self._swings_near(x["price"], is_long, lo_ns)), None)
 
-    def _refresh(self, t, why):
-        """Recompute the working orders from the current state and diff them against the resting ones.
+    # ------------------------------------------------------------------ entries and the per-tick order book
+    def _rebuild_entries(self, t):
+        """The prices an order could rest on, from the live levels: one per cluster (the extreme price), moved
+        past a swing when one sits on it. Rebuilt whenever the levels or swings change (closed bars, a level
+        spent on a tick), not per tick."""
+        ents = []
+        self._live_keys = {level_key(x) for x in self.lv.state["touch_lv1"]}
+        now_lo = t - int(self.p.swerve_lookback_h * 3600 * S_NS)
+        for typ in ("LLPB", "LHPB"):
+            is_long = typ == "LHPB"
+            for cl in self._clusters(typ):
+                entry = min(cl, key=lambda x: (x["price"] if is_long else -x["price"],
+                                               pd.Timestamp(x["formation_time"]).value))
+                planned = entry["price"]
+                note = None
+                lo_ns = max(min(pd.Timestamp(x["breakout_time"]).value for x in cl), now_lo)
+                if self.p.swerve and self._swings_near(planned, is_long, lo_ns):
+                    moved = self._swerve(typ, planned, lo_ns)
+                    if moved is None:
+                        continue
+                    entry, note = moved, f"swerved {planned:.2f}->{moved['price']:.2f}"
+                ents.append({"key": level_key(entry), "type": typ, "side": "buy" if is_long else "sell",
+                             "price": entry["price"], "level": entry, "note": note, "lo_ns": lo_ns})
+        ents.sort(key=lambda e: e["price"])
+        self.entries = ents
+        self._ent_prices = [e["price"] for e in ents]
 
-        Orders are sticky: one stays while its level is live and some episode it serves still
-        qualifies (so a swerved order does not flap as the cluster around it changes), and a new one
-        is only started for a cluster that holds no resting order's level. Levels that cannot be
-        retested yet (the bar after their breakout has not closed) get no order: touching them
-        only consumes them."""
-        if t < self.arm_from:
+    def _committed_episodes(self):
+        if self._eps_cache is None:
+            self._eps_cache = [e for e in self.box.active_episodes(include_forming=False) if not e["done"]]
+        return self._eps_cache
+
+    def _episodes_if_touched(self, price):
+        """The breakouts waiting for their retest if price were on `price` right now: the committed ones plus
+        the forming M5 bar read as if it closed there (a breakout that would grade strong at that price)."""
+        eps = self._committed_episodes()
+        m5f, m1f = self.m5f, self.m1f
+        if m5f is None or not self.box.m5.t:
+            return eps
+        have = {(e["box_id"], e["direction"]) for e in eps}
+        hyp = self.box.forming(m5f[0] * M5_NS, m5f[1], max(m5f[2], price), min(m5f[3], price), price, self.lv5,
+                               m1_partial=(m1f[0] * M1_NS, m1f[1], max(m1f[2], price), min(m1f[3], price), price),
+                               store=False)
+        extra = [e for e in hyp if (e["box_id"], e["direction"]) not in have and self.box.is_range(e["box"])]
+        return eps + extra if extra else eps
+
+    def _evaluate(self, level, typ, price, t):
+        """Would an order resting on `level` pass every gate if price touched it now? A dict (the boxes and
+        playbooks it serves, the planned stop and target) or the reason it would not."""
+        why = self._blackout(t)
+        if why:
+            return why
+        eps = self._episodes_if_touched(price)
+        q = self._qualify(typ, price, eps)
+        if not q:
+            return "no_episode"
+        run = self._run_in(typ, level, price, t)
+        if not self._strong_run_in(typ, run, price):
+            return "weak_run_in"
+        serves = []
+        for e, pb in q:
+            if pb == "fade" and (run is None or e["breakout_time"] + M5_NS <= run[0]):
+                continue                    # the breakout is not the run-in's own
+            serves.append((e, pb))
+        if not serves:
+            return "breakout_not_run_in"
+        plan = self._plan({"level": level, "type": typ}, price, t)
+        if isinstance(plan, str):
+            return plan
+        return {"serves": [(e["box_id"], e["direction"], pb) for e, pb in serves],
+                "boxes": {(e["box_id"], e["direction"]): e for e, _ in serves},
+                "provisional": any(e.get("provisional") for e, _ in serves), "plan": plan}
+
+    def _orders_tick(self, t, px):
+        """Keep the working orders right for this tick: pull the ones that would no longer pass, place the ones that
+        now would, only near price and only as margin allows."""
+        if t < self.arm_from or not (self.orders or self.entries):
             return
-        eps = [e for e in self.box.active_episodes() if not e["done"]]
-        want = {}
-        if eps:
-            live_keys = {typ: {level_key(x): x for x in self.lv.live(typ)} for typ in ("LLPB", "LHPB")}
-            for o in self.orders.values():
-                lv = live_keys[o["type"]].get(o["key"])
-                if lv is None or o["key"] in self.dead:
-                    continue
-                q = self._qualify(o["type"], o["price"], eps)
-                if not q:
-                    continue
-                if self.p.swerve and self._swings_near(o["price"], o["type"] == "LHPB", o["lo_ns"]):
-                    moved = self._swerve(o["type"], o["price"], o["lo_ns"])      # a swing formed on it since
-                    if moved is not None and level_key(moved) not in want and self._qualify(o["type"], moved["price"], eps):
-                        mq = self._qualify(o["type"], moved["price"], eps)
-                        mk = level_key(moved)
-                        want[mk] = dict(o, key=mk, price=moved["price"], level=moved,
-                                        note=f"swerved {o['price']:.2f}->{moved['price']:.2f}",
-                                        serves=[(e["box_id"], e["direction"], pb) for e, pb in mq],
-                                        boxes={(e["box_id"], e["direction"]): e for e, _ in mq},
-                                        provisional=any(e.get("provisional") for e, _ in mq))
-                    else:
-                        bk = (o["type"], o["price"])
-                        if bk not in self._blocked:
-                            self._blocked.add(bk)
-                            self.log("order_blocked", t, price=o["price"], type=o["type"], why="swerve: nowhere to move")
-                    continue
-                want[o["key"]] = dict(o, serves=[(e["box_id"], e["direction"], pb) for e, pb in q],
-                                      boxes={(e["box_id"], e["direction"]): e for e, _ in q},
-                                      provisional=any(e.get("provisional") for e, _ in q))
-            now_lo = t - int(self.p.swerve_lookback_h * 3600 * S_NS)
-            for typ in ("LLPB", "LHPB"):
-                is_long = typ == "LHPB"
-                for cl in self._clusters(typ):
-                    if any(level_key(x) in want for x in cl):
-                        continue                 # an order already rests in this cluster
-                    entry = min(cl, key=lambda x: (x["price"] if is_long else -x["price"],
-                                                   pd.Timestamp(x["formation_time"]).value))
-                    planned = entry["price"]
-                    if not self._qualify(typ, planned, eps):
-                        continue
-                    note = None
-                    lo_ns = max(min(pd.Timestamp(x["breakout_time"]).value for x in cl), now_lo)
-                    if self.p.swerve and self._swings_near(planned, is_long, lo_ns):
-                        moved = self._swerve(typ, planned, lo_ns)
-                        if moved is None:
-                            bk = (typ, planned)
-                            if bk not in self._blocked:
-                                self._blocked.add(bk)
-                                self.log("order_blocked", t, price=planned, type=typ, why="swerve: nowhere to move")
-                            continue
-                        entry, note = moved, f"swerved {planned:.2f}->{moved['price']:.2f}"
-                    q = self._qualify(typ, entry["price"], eps)
-                    if not q:
-                        continue
-                    k = level_key(entry)
-                    want[k] = {"key": k, "type": typ, "side": "buy" if is_long else "sell", "price": entry["price"],
-                               "level": entry, "members": [level_key(x) for x in cl], "note": note, "lo_ns": lo_ns,
-                               "serves": [(e["box_id"], e["direction"], pb) for e, pb in q],
-                               "boxes": {(e["box_id"], e["direction"]): e for e, _ in q},
-                               "provisional": any(e.get("provisional") for e, _ in q)}
-        have = {o["key"]: o for o in self.orders.values()}
-        for k, o in list(have.items()):
-            if k not in want:
-                self._cancel(o, t, self._why_gone(o, eps))
-        for k, w in want.items():
-            if k in have:
-                o = have[k]
-                o["serves"], o["boxes"], o["provisional"] = w["serves"], w["boxes"], w["provisional"]
+        p = self.p
+        for o in list(self.orders.values()):
+            lv = o["level"]
+            if o["key"] in self.dead or o["key"] not in self._live_keys:
+                self._cancel(o, t, "level_gone")
+                continue
+            if abs(px - o["price"]) > p.cancel_pts:
+                self._cancel(o, t, "too_far")
+                continue
+            if p.swerve and self._swings_near(o["price"], o["type"] == "LHPB", o["lo_ns"]):
+                self._cancel(o, t, "swing_on_level")
+                self._rebuild_entries(t)
+                continue
+            res = self._evaluate(lv, o["type"], o["price"], t)
+            if isinstance(res, str):
+                self._cancel(o, t, res)
+                continue
+            o["serves"], o["boxes"], o["provisional"], o["plan"] = (
+                res["serves"], res["boxes"], res["provisional"], res["plan"])
+        if len(self.open) >= p.max_open_positions or len(self.orders) >= p.max_working_orders or not self.entries:
+            return
+        lo = bisect.bisect_left(self._ent_prices, px - p.arm_pts)
+        hi = bisect.bisect_right(self._ent_prices, px + p.arm_pts)
+        if lo >= hi:
+            return
+        have = {o["key"] for o in self.orders.values()}
+        for e in sorted(self.entries[lo:hi], key=lambda e: abs(e["price"] - px)):
+            if len(self.orders) >= p.max_working_orders:
+                break
+            if e["key"] in have or e["key"] in self.dead:
+                continue
+            if (e["side"] == "sell" and px >= e["price"]) or (e["side"] == "buy" and px <= e["price"]):
+                continue                    # price is already through it: it was touched, not approached
+            res = self._evaluate(e["level"], e["type"], e["price"], t)
+            if isinstance(res, str):
                 continue
             self._oid += 1
-            w.update(id=self._oid, armed_t=t)
-            self.orders[w["id"]] = w
-            self.log("order_armed", t, id=w["id"], type=w["type"], side=w["side"], price=w["price"],
-                     serves=w["serves"], note=w["note"], provisional=w["provisional"],
-                     boxes=[{"id": b, "dir": d, "low": e["box"]["low"], "high": e["box"]["high"]}
-                            for (b, d), e in w["boxes"].items()])
-        self._limits()
-
-    def _why_gone(self, o, eps):
-        live = {(e["box_id"], e["direction"]) for e in eps}
-        if not any(b in live for b in o["boxes"]):
-            return "episode_ended"
-        if level_key(o["level"]) not in {level_key(x) for x in self.lv.live(o["type"])}:
-            return "level_gone"
-        return "no_longer_qualifies"
+            o = {**e, "id": self._oid, "armed_t": t, "serves": res["serves"], "boxes": res["boxes"],
+                 "provisional": res["provisional"], "plan": res["plan"]}
+            self.orders[o["id"]] = o
+            self.log("order_armed", t, id=o["id"], type=o["type"], side=o["side"], price=o["price"],
+                     serves=o["serves"], note=o["note"], provisional=o["provisional"], px=px,
+                     stop=o["plan"][0], target=o["plan"][1],
+                     boxes=[{"id": b, "dir": d, "low": x["box"]["low"], "high": x["box"]["high"]}
+                            for (b, d), x in o["boxes"].items()])
+            self._limits()
 
     def _cancel(self, o, t, why):
         self.orders.pop(o["id"], None)
@@ -456,6 +468,13 @@ class Engine:
         return move >= self.p.run_in_mult * med
 
     def _blackout(self, t):
+        sec = t // S_NS
+        if sec == self._bo_sec:
+            return self._bo_val
+        self._bo_sec, self._bo_val = sec, self._blackout_now(t)
+        return self._bo_val
+
+    def _blackout_now(self, t):
         sod, ts = _pt_sod(t)
         a, b = self.p.news_window
         if a <= sod < b:
@@ -465,44 +484,23 @@ class Engine:
         return None
 
     def _touch(self, o, t, px):
-        lv = o["level"]
-        typ = o["type"]
-        is_long = typ == "LHPB"
-        k = level_key(lv)
-        if not self.lv.can_retest(lv):
+        """Price reached the order. It was kept only because it passed every gate on the previous tick, so it
+        fills at its price on the plan made then; the level is spent (retested) either way."""
+        k = level_key(o["level"])
+        if not self.lv.can_retest(o["level"]):
             self.dead.add(k)
             self._cancel(o, t, "level_touched_before_it_could_be_retested")
-            self._refresh(t, "tick")
+            self._rebuild_entries(t)
             return
-        # from here on the touch is a retest: the level is spent whether or not this order fills
         self.dead.add(k)
-        why = self._blackout(t)
-        if why:
-            self._cancel(o, t, why)
-            return
-        run = self._run_in(typ, lv, o["price"], t)
-        if not self._strong_run_in(typ, run, o["price"]):
-            self._cancel(o, t, "weak_run_in")
-            return
-        serves = []
-        for b, d, pb in o["serves"]:
-            if (b, d, pb) in self.seats:
-                continue
-            e = o["boxes"][(b, d)]
-            if pb == "fade":
-                bt = e.get("breakout_time")
-                if run is None or bt + M5_NS <= run[0]:
-                    continue                    # the breakout is not the run-in's own
-            serves.append((b, d, pb))
+        serves = [s for s in o["serves"] if s not in self.seats]
         if not serves:
             self._cancel(o, t, "no_seat_left")
+            self._rebuild_entries(t)
             return
-        plan = self._plan(o, o["price"], t)
-        if isinstance(plan, str):
-            self._cancel(o, t, plan)
-            return
-        stop, target, src = plan
+        stop, target, src = o["plan"]
         self._fill(o, t, o["price"], serves, stop, target, src)
+        self._rebuild_entries(t)
 
     def _plan(self, o, fill, t):
         lv, typ = o["level"], o["type"]
@@ -587,7 +585,9 @@ class Engine:
                  stop_src=src, r=round(tr["r_planned"], 2), serves=serves, level_type=o["type"])
         self._limits()
         self._retrig()
-        self._refresh(t, "fill")
+        if len(self.open) >= self.p.max_open_positions:
+            for other in list(self.orders.values()):
+                self._cancel(other, t, "margin: position open")
 
     def _check_exits(self, t, px):
         for tr in list(self.open):
