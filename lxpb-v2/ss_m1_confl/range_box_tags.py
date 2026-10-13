@@ -128,7 +128,9 @@ def expand_episodes(found):
     it is done, and the breakout is always "strong". A strong breakout is never
     invalidated: a finished edge is just marked done. `break_time` is the box's
     own zigzag break time for the edge that broke it and the episode's strong
-    breakout bar for the other edge."""
+    breakout bar for the other edge. `strong_time` is always the episode's strong
+    breakout bar (the zigzag break can come earlier: the bar that first closed
+    outside the box is not always the one that graded strong)."""
     rows = []
     for _, b in found.iterrows():
         for e in b["episodes"] or []:
@@ -140,6 +142,7 @@ def expand_episodes(found):
             r["edge_done"] = bool(e["done"])
             r["edge_done_reason"] = e["done_reason"]
             r["break_time"] = b["break_time"] if own and pd.notna(b["break_time"]) else e["breakout_time"]
+            r["strong_time"] = e["breakout_time"]   # the bar that graded strong: what a chart marks as "broke"
             rows.append(r)
     return pd.DataFrame(rows).reset_index(drop=True) if rows else found.iloc[0:0]
 
@@ -152,6 +155,7 @@ def _describe(box):
     return {"start": box["start_time"], "low": float(box["low"]), "high": float(box["high"]),
             "status": box["status"], "state": box["state"], "breakout": box["breakout"],
             "break_dir": box["break_dir"], "break_time": box["break_time"],
+            "strong_time": box.get("strong_time", box["break_time"]),
             "edge": box["edge"], "edge_done": bool(box["edge_done"])}
 
 

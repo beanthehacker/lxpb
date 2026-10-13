@@ -2708,8 +2708,9 @@ def _range_spans(res):
     spans = []
     for key, *_ in RANGE_DRAW:
         for b in rbx.get(key, ()):
-            bt = b.get("break_time")
-            end = pd.Timestamp(bt) if bt is not None and pd.notna(bt) else touch
+            ends = [pd.Timestamp(t) for t in (b.get("break_time"), b.get("strong_time"))
+                    if t is not None and pd.notna(t)]
+            end = max(ends) if ends else touch
             start = pd.Timestamp(b["start"])
             spans.append((start.tz_localize("UTC") if start.tzinfo is None else start.tz_convert("UTC"),
                           (end.tz_localize("UTC") if end.tzinfo is None else end.tz_convert("UTC"))
@@ -2740,13 +2741,17 @@ def _mark_range_box(chart, b, color, label, letter, tagged):
     times = [c["time"] for c in chart["candles"]]
     e0 = R._to_epoch_utc(b["start"])
     bt = b.get("break_time")
-    e1 = R._to_epoch_utc(bt) if bt is not None and pd.notna(bt) else times[-1]
+    # The breakout is marked on the bar that graded STRONG (the episode's), not the box's
+    # zigzag break bar, which can be an earlier close outside the box that never graded.
+    st = b.get("strong_time")
+    st = bt if st is None or pd.isna(st) else st
+    e1 = R._to_epoch_utc(st) if st is not None and pd.notna(st) else times[-1]
     hi, lo = b["high"], b["low"]
     up = b.get("edge") == "upper"
     way = "up" if up else "down"
     hm = lambda e: pd.Timestamp(e, unit="s", tz="UTC").tz_convert("America/Los_Angeles").strftime("%H:%M")
     name = f"range {letter}" if letter else "range"
-    broke = f"broke {way} {R._to_pt_str(bt)}" if bt is not None and pd.notna(bt) else "still open"
+    broke = f"broke {way} {R._to_pt_str(st)}" if st is not None and pd.notna(st) else "still open"
     for px, edge in ((hi, "high"), (lo, "low")):
         pts = [{"time": t, "value": px} for t in times if t >= e0]
         if pts:
@@ -2761,15 +2766,20 @@ def _mark_range_box(chart, b, color, label, letter, tagged):
     break_text = (f"{letter}{'↑' if up else '↓'}" if letter else f"broke {way} {hm(e1)}")
     for e, shape, pos, text in ((e0, "arrowDown", "aboveBar", start_text),
                                 (e1, "arrowUp", "belowBar", break_text)):
-        if e == e1 and (bt is None or pd.isna(bt)):
+        if e == e1 and (st is None or pd.isna(st)):
             continue
-        i = bisect.bisect_left(times, e)
-        if i < len(times) and times[i] < e + 300 and e >= times[0] - 300:
+        if e == e1:   # the bar holding the breakout, whatever the pane's bar size
+            i = bisect.bisect_right(times, e) - 1
+            ok = 0 <= i and e - times[i] < 300
+        else:
+            i = bisect.bisect_left(times, e)
+            ok = i < len(times) and times[i] < e + 300 and e >= times[0] - 300
+        if ok:
             chart.setdefault("markers", []).append({"time": times[i], "position": pos, "color": color,
                                                     "shape": shape, "text": text})
     chart.get("markers", []).sort(key=lambda m: m["time"])
     chart["title"] += (f"  |  {label} {name} {R._to_pt_str(b['start'])} -> "
-                       f"{R._to_pt_str(bt) if bt is not None and pd.notna(bt) else 'open'}, "
+                       f"{R._to_pt_str(st) if st is not None and pd.notna(st) else 'open'}, "
                        f"high {hi:.2f} / low {lo:.2f}")
 
 
