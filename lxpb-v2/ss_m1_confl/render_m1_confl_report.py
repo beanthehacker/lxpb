@@ -2287,6 +2287,44 @@ def _mark_range_box(chart, b, color, label, letter, tagged):
                        f"high {hi:.2f} / low {lo:.2f}")
 
 
+def _mark_range_pivots(chart, boxes):
+    """Label the zigzag crests (Cr) and troughs (Tr) behind the range boxes on the trading pane,
+    numbered in order within each box (Cr1 Tr2 Cr3 ...; the pivot that broke the box adds
+    "brk"; "Cr", not "C", because C1/4 already names a retest cluster), so the box's edges can be checked by eye. `boxes` is [(letter, colour, box)].
+    A crest sits above the candle that made its high and a trough below the candle that made
+    its low (the pivot is an M5 extreme, so it is the pane candle inside that M5 bar with the
+    same high/low); small squares, so no candle or wick is covered. A pivot two boxes share
+    gets one marker carrying both names."""
+    if chart is None or not chart.get("candles"):
+        return
+    candles = chart["candles"]
+    times = [c["time"] for c in candles]
+    found = {}   # (candle time, kind) -> [colour, [names]]
+    for letter, color, b in boxes:
+        for n, p in enumerate(b.get("pivots") or (), 1):
+            crest = p["kind"] == "crest"
+            e = R._to_epoch_utc(p["time"])
+            i = bisect.bisect_left(times, e)
+            inside = []
+            while i < len(times) and times[i] < e + 300:
+                inside.append(candles[i])
+                i += 1
+            if not inside:
+                continue   # the pane does not reach this pivot
+            key = "high" if crest else "low"
+            c = (max if crest else min)(inside, key=lambda k: (k[key] if crest else -k[key], -k["time"]))
+            name = f"{'Cr' if crest else 'Tr'}{n}{' brk' if p.get('brk') else ''}"
+            if letter:
+                name = f"{letter}:{name}"
+            slot = found.setdefault((c["time"], crest), [color, []])
+            slot[1].append(name)
+    markers = chart.setdefault("markers", [])
+    for (t, crest), (color, names) in found.items():
+        markers.append({"time": t, "position": "aboveBar" if crest else "belowBar",
+                        "color": color, "shape": "square", "text": " ".join(names)})
+    markers.sort(key=lambda m: m["time"])
+
+
 def _draw_range_boxes(results, chart_stacks):
     """Mark the boxes behind each tag (res['range_box']) on the main pane
     and on the M5 context pane. A trade with several boxes names them A, B, ... in
@@ -2303,6 +2341,8 @@ def _draw_range_boxes(results, chart_stacks):
         for (_, _, color, label, b), letter in zip(boxes, letters):
             _mark_range_box(stack.get("main"), b, color, label, letter, tagged)
             _mark_range_box(stack.get("ctx"), b, color, label, letter, tagged)
+        _mark_range_pivots(stack.get("main"),
+                           [(letter, color, b) for (_, _, color, _, b), letter in zip(boxes, letters)])
 
 
 N_COLS = 25  # keep in sync with `head` below and every colspan in this section
@@ -3509,6 +3549,7 @@ function _tagText(title) {
 // shape of the dropped one stays. Markers at the very same bar stack vertically, so they are fine.
 function _markerPriority(text) {
   const t = text || '';
+  if (/^([A-Z]:)?(Cr|Tr)\\d/.test(t)) return 0.5;   // range zigzag pivots: what the user checks the box by
   if (/^(WIN|LOSS|CANDLE|exit)/.test(t)) return 0;
   if (/^(P2 |entry)/i.test(t)) return 1;
   if (/^(RR FLOOR|Stop)/.test(t)) return 2;

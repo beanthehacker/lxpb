@@ -86,7 +86,10 @@ shared "m5" level calls, because the shared modules (`render_stop_target_report`
 `render_ss_confl_finetune_report`, `trade_management`) still ask for them by that name. Chart dict keys
 and DOM ids are `main` (the M1 trading pane) and `ctx` (the M5 context pane). Removed CLI flags
 (`--range-box-only`, `--m5-charts-only`, `--atr-boundary-mult`, `--crest-refine*`) are accepted and
-ignored so older regen commands still run. The table's column positions are hard-coded in `SORT_COLS` and
+ignored so older regen commands still run. Range boxes on the M1 trading pane also carry
+their zigzag pivots (`Cr1` crest, `Tr2` trough, ... numbered per box, `brk` on the one that broke it, `A:Cr1` when
+a trade has several boxes): small squares above/below the M5 extreme's own M1 candle, never on the candles
+(`range_box_tags.box_pivots` re-runs the detector's own zigzag; `_mark_range_pivots`). M1 pane only, not the M5 pane. The table's column positions are hard-coded in `SORT_COLS` and
 the `nth-child` header rule: change them together with any column added or removed.
 
 # Live range engine (`live_range/`): orders as close to real as possible (user preference)

@@ -42,7 +42,9 @@ the outer box they merged into carries the same area.
 import numpy as np
 import pandas as pd
 
-from find_range_box_zz import MIN_EDGE_TOUCHES, find_range_box_zz
+from find_range import _atr_series, _spacing_minutes
+from find_range_box_zz import (ATR_MULT, MIN_EDGE_TOUCHES, _intrabar_order, _zigzag_pivots,
+                               find_range_box_zz)
 
 M5_MIN = 5
 LOOKBACK_DAYS = 5   # M5 history fed to the detector before each touch
@@ -115,7 +117,33 @@ def boxes_as_of(m5, m1, touch_time, tick_bars, levels=None, lookback_days=LOOKBA
           & (found["n_top_edge"] >= MIN_EDGE_TOUCHES)
           & (found["n_bottom_edge"] >= MIN_EDGE_TOUCHES))
     found = found[ok].reset_index(drop=True)
+    found["pivots"] = box_pivots(found, data, low_tf)
     return expand_episodes(found)
+
+
+ATR_PERIOD = 21   # find_range_box_zz's default; the pivots below must be the detector's own
+
+
+def box_pivots(found, data, low_tf):
+    """The zigzag crests and troughs behind each box, for the charts: one list per row of
+    `found`, each pivot {"time", "kind" ("crest"/"trough"), "price", "brk"} oldest first. They are
+    the detector's own pivots (the same zigzag, ATR and intrabar order, re-run with the
+    detector's defaults), the ones from the box's first pivot to its last inside pivot, plus
+    the pivot that broke it (brk=True) when it has one. Display only."""
+    H, L = data["high"].to_numpy(float), data["low"].to_numpy(float)
+    order = _intrabar_order(data.index, _spacing_minutes(data.index), low_tf)
+    piv = _zigzag_pivots(H, L, _atr_series(data, ATR_PERIOD), ATR_MULT, ATR_PERIOD, order)
+    piv = [(data.index[i], kind, float(px)) for kind, i, px, _ in piv]
+    out = []
+    for _, b in found.iterrows():
+        bp = b["break_pivot_time"]
+        rows = []
+        for t, kind, px in piv:
+            brk = pd.notna(bp) and t == bp
+            if b["start_time"] <= t <= b["last_time"] or brk:
+                rows.append({"time": t, "kind": kind, "price": px, "brk": bool(brk)})
+        out.append(rows)
+    return out
 
 
 def expand_episodes(found):
@@ -156,7 +184,8 @@ def _describe(box):
             "status": box["status"], "state": box["state"], "breakout": box["breakout"],
             "break_dir": box["break_dir"], "break_time": box["break_time"],
             "strong_time": box.get("strong_time", box["break_time"]),
-            "edge": box["edge"], "edge_done": bool(box["edge_done"])}
+            "edge": box["edge"], "edge_done": bool(box["edge_done"]),
+            "pivots": box.get("pivots") or []}
 
 
 def _broke_in_run_in(box, run_in_start, touch):
