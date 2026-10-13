@@ -63,6 +63,9 @@ class Grader:
         return "weak", first[0], first[1]
 
 
+PLAIN = "plain-P0"
+
+
 def _label(up, kind):
     return f"breakout-{'up' if up else 'below'}-{kind}"
 
@@ -110,9 +113,15 @@ class Reader:
         return r
 
     # -- waiting levels of the M5 ledger ---------------------------------------------------
-    def _watch(self, levels5, up):
+    def _watch(self, levels5, up, spec=None):
+        """Keys of the M5 levels a breakout of this edge waits on: LHPB (up) / LLPB (below) inside the box,
+        already broken out and untouched. Plain-P0s do not count (the reports' range-box ledger leaves them
+        out). `spec` = (high, low, close) of a bar still forming: levels that bar would break out count too."""
         want = "LHPB" if up else "LLPB"
-        return [level_key(lv) for lv in levels5.live(want) if self.lo <= lv["price"] <= self.hi]
+        lv = [x for x in levels5.live(want) if x["p0_kind"] != PLAIN]
+        if spec is not None:
+            lv += [x for x in levels5.pending_break(want, *spec) if x["p0_kind"] != PLAIN]
+        return [level_key(x) for x in lv if self.lo <= x["price"] <= self.hi]
 
     def _retest_time(self, levels5, keys):
         times = [levels5.fate[k][1] for k in keys if k in levels5.fate and levels5.fate[k][0] == "retested"]
@@ -169,7 +178,7 @@ class Reader:
                     return None
                 if (C > self.hi if up else C < self.lo) and grader.grade(t, up, self.hi, self.lo)[0] == "strong":
                     self.out["strong"] = True
-                    self._confirm(up, t, levels5)
+                    self._confirm(up, t, levels5, (H, L, C) if speculative else None)
                 return None
         if not self.post:
             if H > self.lim_up and inside:
@@ -187,15 +196,15 @@ class Reader:
                 return None                  # after the first outcome only strong breakouts count
             self.out = dict(up=up, ext=H if up else L, strong=strong, ep=None, watch=[])
             if strong:
-                self._confirm(up, t, levels5)
+                self._confirm(up, t, levels5, (H, L, C) if speculative else None)
             else:
                 self.state = "weak-breakout"
         return None
 
-    def _confirm(self, up, t, levels5):
+    def _confirm(self, up, t, levels5, spec=None):
         """A strong breakout closes on the bar at `t`: open its episode with the box's waiting
         M5 levels; with none, the edge is done on the spot."""
-        watch = self._watch(levels5, up)
+        watch = self._watch(levels5, up, spec)
         self.used.add(up)
         ep = {"box_id": self.box["id"], "direction": "up" if up else "below", "edge": "upper" if up else "lower",
               "breakout_time": t, "state": _label(up, "waiting-for-retest" if watch else "no-level"),

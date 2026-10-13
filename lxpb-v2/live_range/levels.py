@@ -88,3 +88,29 @@ class LevelBook:
         """A touch on the forming bar is a retest only if more than one bar has passed since
         the breakout bar; a touch before that silently consumes the level."""
         return self.forming_bar_count() - lv["breakout_bar_count"] > lxpb.MIN_BARS_BEFORE_RETEST
+
+    def pending_break(self, level_type, h, l, c):
+        """Levels of `level_type` that have formed but not broken out which a bar with this high/low/close
+        WOULD break out (lxpb phase 2), as lxpb's own levels with their P0 kind worked out as of now.
+        Used to read a bar still forming "as if it closed here"."""
+        out = []
+        for lv in self.state["touch_lv0"]:
+            if lv["type"] != level_type:
+                continue
+            p = lv["price"]
+            if level_type == "LHPB":
+                if h < p:
+                    continue
+                broke = l > p or c > p
+                if not broke and h == p:
+                    continue
+            else:
+                if l > p:
+                    continue
+                broke = h < p or c < p
+                if not broke and l == p:
+                    continue
+            if broke:
+                out.append({**lv, "p0_kind": lxpb.p0_kind(lv["is_spike"], lv["is_swing"],
+                                                           lxpb._efficiency_ratio(lv.get("er_closes", ())))})
+        return out

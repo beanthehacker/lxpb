@@ -24,8 +24,8 @@ m1 = R._tick_bars_spanning(lo, hi, "1min")
 m5 = R._tick_bars_spanning(lo, hi, "5min")
 print(f"{len(m1)} M1 bars, {len(m5)} M5 bars")
 
-# the same M5 ledger the batch reads (plain P0s tracked), restricted to this window's bars
-ledger = LC.m5_levels(plain_p0=LC.PLAIN_P0_TRACKED, verbose=False)
+# the same M5 ledger the batch reads (plain P0s untracked, as the reports read it), restricted to this window's bars
+ledger = LC.m5_levels(plain_p0=LC.PLAIN_P0_UNTRACKED, verbose=False)
 batch = find_range_box_zz(m5, lower_data=m1, levels=ledger)
 
 book, lv5 = BoxBook(), LevelBook("m5")
