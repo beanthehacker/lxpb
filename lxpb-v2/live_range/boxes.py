@@ -391,8 +391,17 @@ class BoxBook:
 
     # -- the forming M5 bar ----------------------------------------------------------------------
     def _refresh_trigger(self):
-        his = [r.hi for r in self.readers.values() if not r.finished]
-        los = [r.lo for r in self.readers.values() if not r.finished]
+        """Cheap exit for forming(): the lowest top edge among readers that could still open an up episode, the
+        highest bottom edge among those that could open a below one (a reader with a weak breakout out can
+        do either)."""
+        his, los = [], []
+        for r in self.readers.values():
+            if r.finished:
+                continue
+            if r.out is not None or True not in r.used:
+                his.append(r.hi)
+            if r.out is not None or False not in r.used:
+                los.append(r.lo)
         self._trig_hi = min(his) if his else math.inf
         self._trig_lo = max(los) if los else -math.inf
 
@@ -415,7 +424,9 @@ class BoxBook:
                 b = r.box
                 if r.finished or b["status"] == "merged" or j <= b["confirm_j"]:
                     continue
-                if not (c > r.hi or c < r.lo):
+                if r.out is None and not ((c > r.hi and True not in r.used) or (c < r.lo and False not in r.used)):
+                    continue
+                if r.out is not None and not (c > r.hi or c < r.lo):
                     continue
                 c2 = r.clone()
                 was = len(c2.episodes)
