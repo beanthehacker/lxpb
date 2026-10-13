@@ -5,6 +5,7 @@ is exactly the set the playbooks pick from. This wrapper feeds it bars, and reco
 happened to every level that left that list: retested at a bar, or silently consumed (touched in
 the bar right after the breakout, which can never be a retest).
 """
+import collections
 import os
 import sys
 
@@ -17,6 +18,7 @@ for p in (os.path.abspath(os.path.join(_HERE, "..", "..")), os.path.abspath(os.p
 import lxpb  # noqa: E402
 
 _UTC = "UTC"
+_Row = collections.namedtuple("Row", "Index open high low close pp_hammer pp_shooting_star")
 
 
 def key(lv):
@@ -25,22 +27,31 @@ def key(lv):
 
 
 class LevelBook:
-    def __init__(self, name="levels"):
+    def __init__(self, name="levels", verdicts=None):
+        """`verdicts` (optional): {bar time ns: (hammer, shooting_star)} precomputed with patterns-pure
+        over the same bars, so a replay does not pay pandas for one tiny frame per bar. A bar
+        missing from it is judged live, one bar at a time, through lxpb.iter_bars."""
         self.name = name
+        self.verdicts = verdicts or {}
         self.state = lxpb.new_state()
         self.fate = {}            # key -> ("retested"|"consumed", bar time ns)
         self.bars = {}            # bar time ns -> (o, h, l, c): formation candles for stops
+        self.broke = []           # every level that broke out, oldest first (stops read P1 candles)
         self._seen = 0            # state["retests"] rows already looked at
         self.n_bars = 0
 
     def on_bar(self, t_ns, o, h, l, c):
         """Advance by one CLOSED bar. Returns [(event, level)] with event 'retest' / 'consumed'."""
         ts = pd.Timestamp(t_ns, unit="ns", tz=_UTC)
-        frame = pd.DataFrame({"open": [o], "high": [h], "low": [l], "close": [c]},
-                             index=pd.DatetimeIndex([ts]))
         before = {key(lv): lv for lv in self.state["touch_lv1"]}
-        for bar in lxpb.iter_bars(self.state, frame):
-            lxpb.advance_one_bar(self.state, bar)
+        v = self.verdicts.get(t_ns)
+        if v is not None:
+            lxpb.advance_one_bar(self.state, _Row(ts, o, h, l, c, v[0], v[1]))
+        else:
+            frame = pd.DataFrame({"open": [o], "high": [h], "low": [l], "close": [c]},
+                                 index=pd.DatetimeIndex([ts]))
+            for bar in lxpb.iter_bars(self.state, frame):
+                lxpb.advance_one_bar(self.state, bar)
         self.n_bars += 1
         self.bars[t_ns] = (o, h, l, c)
         events = []
@@ -52,6 +63,11 @@ class LevelBook:
             self.fate[k] = ("retested", t_ns)
             events.append(("retest", row))
         self._seen = len(rows)
+        for lv in self.state["touch_lv1"]:
+            if key(lv) not in before:
+                self.broke.append({"type": lv["type"], "price": lv["price"], "formation_time": lv["formation_time"],
+                                   "breakout_time": lv["breakout_time"], "breakout_high": lv["breakout_high"],
+                                   "breakout_low": lv["breakout_low"]})
         alive = {key(lv) for lv in self.state["touch_lv1"]}
         for k, lv in before.items():
             if k not in alive and k not in retested:
