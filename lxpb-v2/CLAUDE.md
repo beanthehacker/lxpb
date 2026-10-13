@@ -83,7 +83,9 @@ margin would, and judges every gate BEFORE the touch.** Remember it for every ch
   run-in are judged from, the break candle for the fade test, the liquidity and reopen gates. When the report's
   pipeline changes, change the engine to match, and compare with a cold-level replay against a full report run.
 - Trade management (stop trail, RR floor) runs on the trading-bar ledger and bars, as in the reports; seat
-  contenders are ranked nearest first (spike-first is an option, off).
+  contenders are ranked spike entry first, then nearest (`seat_rank="spike_first"`).
+  **User standing rule (2026-10-13): never change the seat-ranking default.** Offer an alternative as an option
+  and let the user choose; do not flip `seat_rank` (or any other strategy default) on your own.
 
 # Data convention: TradingView exports confirm, Sierra Chart ticks extend
 

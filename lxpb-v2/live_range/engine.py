@@ -100,13 +100,13 @@ class Params:
     tag_min_r: float = 1.0           # planned R below this is tagged r_below_min (the report measures, not skips)
     min_r: float = 0.0               # > 0 turns that tag into a gate
     cluster_hours: float = 3.0       # SF.MAX_ALT_FILL_HOURS_DEFAULT: a cluster's order waits this long after its anchor's retest bar
-    box_lookback_days: float = 5.0   # range_box_tags.LOOKBACK_DAYS: boxes older than this are not seen
+    box_lookback_days: float = 0.0   # 0 = a box never expires. The report feeds its detector 5 days of M5 history (range_box_tags.LOOKBACK_DAYS); set 5.0 to copy that
     pegged: bool = True
     peg_step: float = 0.25
     peg_cap: float = 1.0
     # Seat ranking: "spike_first" (a spike-P0 entry outranks a plain one for the same seat, as in the
     # report; then the nearer level) or "nearest" (first come, nearest to price).
-    seat_rank: str = "nearest"
+    seat_rank: str = "spike_first"
     # Trade management (trade_management.py): rule 1 trails the stop when a trading bar closes past
     # enough live P0s of the trade's type; rule 2 exits at market on a trading-bar close when the
     # remaining reward / remaining risk is at or below rr_floor.
@@ -489,6 +489,8 @@ class Engine:
 
     def _box_seen(self, e, t=None):
         """A box older than box_lookback_days is not seen: the report feeds its detector 5 days of M5 history."""
+        if self.p.box_lookback_days <= 0:
+            return True
         t = self.last_t if t is None else t
         return e["box"]["start_t"] >= t - int(self.p.box_lookback_days * 86400 * S_NS)
 

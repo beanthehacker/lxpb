@@ -73,9 +73,11 @@ def main():
     ap.add_argument("--no-peg", action="store_true", help="plain limit orders (no chasing)")
     ap.add_argument("--no-manage", action="store_true", help="no stop trail / RR-floor exit")
     ap.add_argument("--min-plain-wick", type=float, default=1.0, help="plain-P0 minimum rejection wick, points (0 = off)")
+    ap.add_argument("--box-lookback-days", type=float, default=0.0,
+                    help="range boxes older than this are not seen (the report's detector gets 5 days of M5 history); 0 = no expiry")
     ap.add_argument("--cold-levels", action="store_true",
                     help="build the trading-bar level book from --from on, as the reports do from their window's first bar")
-    ap.add_argument("--seat-rank", default="nearest", choices=["spike_first", "nearest"])
+    ap.add_argument("--seat-rank", default="spike_first", choices=["spike_first", "nearest"])
     a = ap.parse_args()
     lo = pd.Timestamp(a.lo, tz="UTC")
     hi = pd.Timestamp(a.hi, tz="UTC") if a.hi else pd.Timestamp(R._scid_bounds("EPZ26")[1]).floor("1min")
@@ -85,7 +87,8 @@ def main():
     vtb = verdicts(start, hi, f"{a.bar_minutes}min")
     print(f"verdicts for {len(v5):,} M5 and {len(vtb):,} M{a.bar_minutes} bars in {time.time() - t0:.1f}s")
     eng = Engine(Params(bar_minutes=a.bar_minutes, pegged=not a.no_peg, manage=not a.no_manage,
-                         seat_rank=a.seat_rank, min_plain_wick=a.min_plain_wick), arm_from_ns=lo.value, verdicts5=v5, verdicts_tb=vtb,
+                         seat_rank=a.seat_rank, min_plain_wick=a.min_plain_wick,
+                         box_lookback_days=a.box_lookback_days), arm_from_ns=lo.value, verdicts5=v5, verdicts_tb=vtb,
                  tb_from_ns=lo.value if a.cold_levels else 0)
     print(f"replay {start} -> {hi} (armed from {lo}), M{a.bar_minutes} trading bars")
     t0, n_ticks = time.time(), 0

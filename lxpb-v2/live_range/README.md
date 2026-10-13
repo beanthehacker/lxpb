@@ -62,7 +62,7 @@ from the anchor's P1, so the engine does too; the entry price (the extreme, or t
 the order rests. The order waits `cluster_hours` (3 h, the reports' fill window) after the anchor's retest bar, and a
 swerved cluster keeps its order alive after its anchor is gone. Two clusters that end on the same price share one order.
 
-**Playbooks.** For every strong breakout of a range box (box that has two pivots at each edge, seen within 5 days)
+**Playbooks.** For every strong breakout of a range box (a box that has two pivots at each edge; a box never expires)
 waiting for its retest:
 
 * **fade** - an LLPB whose anchor lies above the top edge of a box that broke UP (an LHPB below the bottom edge of a
@@ -78,10 +78,13 @@ Episodes already retested, weak or failed breakouts give nothing.
 
 One trade per (box, direction, playbook) seat, and one order serves every box it qualifies for.
 
-**Seat ranking** (`Params.seat_rank`, default `nearest`): working-order slots go to the nearer level. The reports rank
-filled contenders after the fact (spike entry first, else earliest touch); a live engine cannot undo a fill, and the
-`spike_first` option (a spike entry outranks a plain one for the same seat and pulls its resting order) lost a trade
-the report took, so it is off.
+**Seat ranking** (`Params.seat_rank`, default `spike_first`; the default is fixed by the user and is not to be changed
+without being asked): a spike-P0 entry outranks a plain one for working-order slots, then the nearer level. A plain
+entry is not placed while a spike entry serves one of the same seats, and a spike order that is placed pulls a
+resting plain order for the same seat (`superseded_by_spike`). The reports rank filled contenders after the fact
+(spike entry first, else earliest touch); a live engine cannot undo a fill. `nearest` is available as an option
+(`--seat-rank nearest`): on the test span it recovers the 2 Oct 00:57:47 trade that `spike_first` pulls, and loses the
+2 Oct 01:08:05 one to the one-position limit.
 
 **Orders are placed like an account with limited margin would place them, and every gate is judged before
 the touch.** On every tick:
@@ -139,7 +142,7 @@ cannot:
 | peg: 0.25 pt step, 1 pt cap, bid/ask and aggressor side | same |
 | stop (spike P0 else thrust, widened to 3 pt), target (swing extreme 0.25-50 pt), stop trail, RR floor 0.2 | same |
 | `r_below_min` (planned R < 1), `plain_p0`, `no_confl`, `swerved`, `eod_flat` tags | recorded on every trade (`tags`); `min_r` makes the R tag a gate (off) |
-| boxes from the last 5 days of M5 history per touch | boxes older than 5 days are ignored |
+| boxes from the last 5 days of M5 history per touch (a limit of how the report runs its detector, not a rule) | no expiry; `box_lookback_days=5` copies the report - on the test span it changes nothing |
 
 Where the engine differs because it is live, or because the report cannot be copied:
 
@@ -171,8 +174,8 @@ Where the engine differs because it is live, or because the report cannot be cop
   the report's (30 Sep 04:10:41 three trails then the target, +1.38R; 1 Oct 21:00:28 RR-floor exit -0.07R; 4 Oct
   23:15:52 trailed stop +0.21R; 5 Oct 01:34:14 -0.44R); on the other 6 the fill differs by a tick or two or the cluster
   entry does.
-* Not reproduced: 2 Oct 01:08:05 (one position at a time: the previous trade was still open), 2 Oct 03:11:35 (a swing
-  pulled the order), 2 Oct 08:17:58 and 4 Oct 15:02:11 (no order was armed; not traced).
+* Not reproduced: 2 Oct 00:57:47 (the plain order at 7759.00 was pulled as superseded when a spike order 3.5 pt away
+  armed), 2 Oct 03:11:35 (a swing pulled the order), 2 Oct 08:17:58 and 4 Oct 15:02:11 (no order was armed; not traced).
 * How the engine got here, 52 -> 35 -> 23 trades: the plain-P0 wick rule, then the strong-breakout gate and the
   cold level book, then the anchor and the forming-bar retest. Trades with no report counterpart went 29 -> 0.
 * Net over the span, managed and chasing: +1.3R on 23 trades (planned R >= 1 only: +2.7R on 5).
