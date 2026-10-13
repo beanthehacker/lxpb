@@ -34,19 +34,28 @@ when it is committed and smoke-tested; the regen waits for the user.
   the next change.
 - When a change needs a regen before its results show, say so and stop.
 
-# Report charts: sized for an 11-inch iPad Air, big text, plain candles (user preference)
+# Report charts: full width on any screen, readable labels (user preference)
 
-**Standing preference (user, 2026-10-12): every report chart is laid out for an 11-inch iPad Air
-(1180x820 CSS px landscape, 820x1180 portrait), whatever device it is opened on.** Remember it
-for every chart you build or touch:
+**Standing preference (user, 2026-10-12, refined 2026-10-13): every report chart is as wide as the
+screen it is opened on, in any orientation, laid out and tested for an 11-inch iPad Air (1180x820 CSS
+px landscape, 820x1180 portrait) first.** Remember it for every chart you build or touch:
 
-- The chart stack is one screen wide (`calc(100vw - 16px)`, at most 1164px) and sticky-left, so it
-  stays in view while the table is panned. Each pane is about two thirds of the screen
-  height (`clamp(400px, 68vh, 640px)`): tall enough for the axis tags of a trade with several range
-  boxes at the big font, which would otherwise stack off the bottom.
-- All chart text is large: the in-chart layout font is 18px (axis ticks, price tags, marker labels,
-  `[N bars skipped]`), the OHLC readout 18px, the title bar and the ray hover tooltip 16-18px. A new
-  label or tooltip follows suit; never ship the old 9-13px text.
+- The page carries `<meta name="viewport" content="width=device-width, initial-scale=1">`. Without
+  it iPad Safari lays the page out at its own default width and scales it, so the charts end up
+  half the page or zoomed.
+- The chart stack is exactly one screen wide and sticky-left. Its width is NOT `100vw` and NOT a fixed
+  cap (both are wrong on some browsers when the table is wider than the screen): a script sets
+  `--stack-w` from `visualViewport.width * visualViewport.scale` minus a 16px gutter, on load, resize
+  and rotation. Each pane is as wide as the stack, about 60% of the screen's height
+  (`clamp(340px, 60vh, 600px)`), the M5 context pane above the trading pane.
+- The candles fill the pane's width: the bar spacing follows the pane width and the number of bars
+  (1px minimum, 20px maximum), not a fixed 6px.
+- In-chart text is 13px (`CHART_FONT`): large enough to read on a tablet, small enough that one
+  trade's tags fit. Never go back to 18px (tags pile on each other) or to 9px (unreadable). Axis tags
+  show only the word naming the line (`stop`, `target`, `entry`, `level`, `range high`), since the tag
+  prints the price itself. Axis tags and marker texts that would overlap are thinned (the most
+  important one stays: entry, stop, target, level, range edges; result and exit markers before P0/P1
+  markers), and a ray's full text shows on hover.
 - Several range boxes on one trade are named A, B, ... in start order; chart labels stay short
   ("A 08:10" at its start, "A↓" at its breakout) and the ray hover text carries the times.
 - Candles keep the default grey. Never recolour candles (blue, orange, ...) to show a range, a
@@ -55,8 +64,24 @@ for every chart you build or touch:
   "[N bars skipped]" gap and never cut off at the window's left edge (`protect_spans` in
   `render_stop_target_report.build_m5_chart`, and the M5 pane reaches back to the earliest box).
 
-Done for the `ss_m1_confl` / `ss_m2_confl` reports (their CSS and JS blocks). The other reports keep
-their old layout until they are next touched; apply the same rules then.
+Done for the `ss_m1_confl` / `ss_m2_confl` reports (their own chart JS and CSS in
+`render_m1_confl_report.py`, which draws the panes itself rather than using the shared `_renderPane`).
+The other reports keep their old layout until they are next touched; apply the same rules then.
+Check a chart change with a mobile-emulated browser (Playwright `isMobile: true`) at 1180x820 and
+820x1180, and confirm the stack width equals the viewport width minus 16.
+
+# The M1 range-box report (`ss_m1_confl/`) is standalone
+
+It started as a fork of `ss_m5_confl2` and shares nothing with it any more: no H1 input (no H1 P0
+confluence, bias, trap or ATR-boundary columns or filters), no crest-refine, no D1/footprint/tick panes.
+M5 appears only in the range boxes and the M5 context chart. The M5 names inside the file
+(`m5_ledger`, `same_side_m5`, `LC.m5_levels`) are M1 levels: the script swaps M1 in behind the
+shared "m5" level calls, because the shared modules (`render_stop_target_report`,
+`render_ss_confl_finetune_report`, `trade_management`) still ask for them by that name. Chart dict keys
+and DOM ids are `main` (the M1 trading pane) and `ctx` (the M5 context pane). Removed CLI flags
+(`--range-box-only`, `--m5-charts-only`, `--atr-boundary-mult`, `--crest-refine*`) are accepted and
+ignored so older regen commands still run. The table's column positions are hard-coded in `SORT_COLS` and
+the `nth-child` header rule: change them together with any column added or removed.
 
 # Live range engine (`live_range/`): orders as close to real as possible (user preference)
 
