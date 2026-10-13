@@ -2311,8 +2311,8 @@ def _mark_range_pivots(chart, boxes):
                 i += 1
             if not inside:
                 continue   # the pane does not reach this pivot
-            key = "high" if crest else "low"
-            c = (max if crest else min)(inside, key=lambda k: (k[key] if crest else -k[key], -k["time"]))
+            c = (max(inside, key=lambda k: (k["high"], -k["time"])) if crest
+                 else min(inside, key=lambda k: (k["low"], k["time"])))   # first candle at the extreme
             name = f"{'Cr' if crest else 'Tr'}{n}{' brk' if p.get('brk') else ''}"
             if letter:
                 name = f"{letter}:{name}"
