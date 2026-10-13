@@ -40,9 +40,9 @@ What it does, in order
      r_below_min.
   7. BLOCKS, as tags with live Exclude/Only chips: SWERVED / SWERVE BLOCKED (a confirmed swing
      on the planned entry moves it to the next live level, or blocks it), NEWS / THIN (wide
-     quoted spread before the fill), GLOBEX OPEN (15:00-15:05 PT fills), VOLUME SPIKE
-     (same-side stop-run on the 1s tape; informational). Hard rules: a touch inside the 05:30 PT
-     news-pull blackout is no trade, and no position is carried past 12:45 PT (EOD FLAT).
+     quoted spread before the fill), GLOBEX OPEN (15:00-15:05 PT fills). Hard rules: a touch
+     inside the 05:30 PT news-pull blackout is no trade, and no position is carried past 12:45 PT
+     (EOD FLAT).
   8. RANGE BOXES (range_box_tags.py). Each box has one breakout-from-range seat and one
      retest-into-range seat; a trade takes the seat of every box it qualifies for and one with
      all of its boxes taken is tagged range-slot-lost. The report keeps only trades that hold a
@@ -85,7 +85,6 @@ import lxpb_levels_cache as LC                    # noqa: E402
 import trade_management as TM                     # noqa: E402
 import m5_structure as MS                         # noqa: E402
 import liquidity as LQ                            # noqa: E402
-import volume_spike as VS                         # noqa: E402
 import range_box_tags as RB                       # noqa: E402  (this folder; find_range_box_zz via patterns_pure)
 from find_ATR import findATR                       # noqa: E402  (vendored patterns_pure, on sys.path via R)
 
@@ -361,10 +360,6 @@ SWERVE_MAX_MOVE_PTS_DEFAULT = 10.0
 SWERVE_SWING_K_DEFAULT = MS.SWING_K_DEFAULT
 LIQ_WINDOW_MINUTES_DEFAULT = LQ.WINDOW_MINUTES_DEFAULT
 LIQ_WIDE_SPREAD_SHARE_DEFAULT = LQ.WIDE_SPREAD_SHARE_MAX_DEFAULT
-VOL_SPIKE_CORE_SECONDS_DEFAULT = VS.CORE_WINDOW_SECONDS_DEFAULT
-VOL_SPIKE_BASELINE_SECONDS_DEFAULT = VS.BASELINE_WINDOW_SECONDS_DEFAULT
-VOL_SPIKE_RATIO_DEFAULT = VS.RATIO_THRESHOLD_DEFAULT
-VOL_SPIKE_MIN_PEAK_DEFAULT = VS.MIN_PEAK_CONTRACTS_DEFAULT
 PEG_STEP_DEFAULT = SF.PEG_STEP_DEFAULT
 PEG_CAP_DEFAULT = SF.PEG_CAP_DEFAULT
 BAR_MIN = 1  # bar size in minutes (--bar-minutes); main sets it before anything runs
@@ -374,7 +369,8 @@ CANDIDATE_COLOR = "#7dd3fc"  # light blue -- every C1..Cn marker (dot + label), 
                              # plain-P0s are distinguished by their " pl." text suffix, not color
 
 # Options of the old forked report that are gone (see main): accepted and ignored.
-REMOVED_FLAGS = ("--range-box-only", "--m5-charts-only", "--atr-boundary-mult", "--crest-refine")
+REMOVED_FLAGS = ("--range-box-only", "--m5-charts-only", "--atr-boundary-mult", "--crest-refine",
+                 "--volume-spike", "--no-volume-spike")
 
 pd.set_option("display.width", 160)
 pd.set_option("display.max_columns", 20)
@@ -1240,19 +1236,6 @@ def process_cluster(cluster, args):
         result["liquidity"] = liq
         if blocked:
             result["dyn_tags"].append("low_liquidity")
-
-    # Volume spike (volume_spike.py): same-side stop-run on the real 1s
-    # tape around the fill -- purely informational, tags rather than
-    # excludes (see the module docstring's VOLUME SPIKE bullet).
-    if args.volume_spike_check:
-        spiked, vspike = VS.detect(touch_time_alt, level_type,
-                                    core_window_seconds=args.volume_spike_core_seconds,
-                                    baseline_window_seconds=args.volume_spike_baseline_seconds,
-                                    ratio_threshold=args.volume_spike_ratio,
-                                    min_peak=args.volume_spike_min_peak)
-        result["volume_spike"] = vspike
-        if spiked:
-            result["dyn_tags"].append("volume-spike")
 
     # The STOP is target-rule-agnostic, so it is resolved once, before any
     # target: a trade with no qualifying stop is not a trade under either
@@ -2628,7 +2611,7 @@ def _attr_json(obj):
 def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
     """Badge HTML for the ROW-level dynamic-filter tags (globex_eth_open,
     low_liquidity, swerved, swerve_blocked, crest_refined, spike_confl,
-    fading_bias, volume-spike) -- the ones that
+    fading_bias) -- the ones that
     don't depend on which target rule is active, so they render once and
     never get rewritten by applyTargetModes() (unlike _mode_tag_badges'
     r_below_min/eod_flat). Lives in the Tags column (see _render_row).
@@ -2713,15 +2696,6 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
                 f'Winner = a spike entry level first, else the earliest touch. Purely '
                 f'informational; not excluded from the headline stats by default.">'
                 f'SLOT LOST</span>')
-    if "volume-spike" in dyn_tags:
-        side_word = "bid" if level_type == "LHPB" else "ask"
-        vs = res.get("volume_spike") or {}
-        offs_label = vs.get("offsets_label") or "0s"
-        out += (f'<span class="dyn-tag-badge vol-spike-tag-badge" title="Dynamic filter '
-                f'‘volume-spike’: unusual same-side ({side_word}) volume on the real '
-                f'1s tape around this fill ({VS.describe(vs)}) -- worth reviewing for a stop '
-                f'run. Purely informational; not excluded from the headline stats by default.'
-                f'">VOL SPIKE {offs_label}</span>')
     return out
 
 
@@ -3166,13 +3140,6 @@ row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" class="f-dyn-isolate" data-tag="eod_flat"> only</label>
     </div>
     <div class="chip-stack">
-      <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="volume-spike">
-        Exclude volume-spike fills</label>
-      <label class="chip chip-iso" title="Only: show ONLY rows tagged volume-spike, hiding every
-other row -- overrides every Exclude box. Click again to turn off.">
-        <input type="radio" class="f-dyn-isolate" data-tag="volume-spike"> only</label>
-    </div>
-    <div class="chip-stack">
       <label class="chip" title="Exclude every trade that fades a strong breakout whose range has not been retested yet: an LLPB short with such an upward breakout range below its level, or an LHPB long with such a downward breakout range above it (find_range_box_zz on M5, 1-minute lower timeframe, as of the touch).">
         <input type="checkbox" class="f-dyn-exclude" data-tag="breakout-from-range">
         Exclude breakout-from-range trades</label>
@@ -3236,8 +3203,7 @@ the box is checked.">Trade management</span>
     head = (f"<th class=\"left\">Trade Id</th>"
             f"<th class=\"left\" title=\"Every dynamic-filter tag this row carries, in one "
             f"place: globex_eth_open, low_liquidity, swerved/swerve_blocked, "
-            f"breakout-from-range, retest-into-range, range-slot-lost, "
-            f"volume-spike "
+            f"breakout-from-range, retest-into-range, range-slot-lost "
             f"(row-level, constant across target rules) plus r_below_min/eod_flat (the "
             f"ACTIVE target rule's own -- these swap along with Target/R/Outcome when you "
             f"toggle a Target rules checkbox above). Hover a badge for its own detail; the "
@@ -3455,7 +3421,6 @@ tr.lvl-row.outcome-hidden, tr.chart-row.outcome-hidden { display:none !important
 tr.lvl-row.no-target-row td { color:var(--text-faint); font-style:italic; }
 .liq-tag-badge { background:#3f1d2e; color:#fda4af; }
 .swerve-tag-badge { background:#1e3a2f; color:#86efac; }
-.vol-spike-tag-badge { background:#3f2d0e; color:#fdba74; }
 .range-box-tag-badge { background:#1f2a44; color:#93c5fd; }
 /* Notes box: this report is reviewed with long, written-out notes per trade,
    so it ships far larger than the shared 160x34 default in
@@ -4225,29 +4190,6 @@ if __name__ == "__main__":
                         default=LIQ_WIDE_SPREAD_SHARE_DEFAULT,
                         help=f"Share of quotes wider than one tick at or above which the tape "
                              f"counts as illiquid (default {LIQ_WIDE_SPREAD_SHARE_DEFAULT:g}).")
-    parser.add_argument("--volume-spike-check", action=argparse.BooleanOptionalAction,
-                        default=True,
-                        help="Tag trades whose fill sat near an unusual same-side (bid for "
-                             "LHPB, ask for LLPB) 1s volume spike -- see volume_spike.py. "
-                             "Purely informational (tags, does not exclude). ON by default.")
-    parser.add_argument("--volume-spike-core-seconds", type=float,
-                        default=VOL_SPIKE_CORE_SECONDS_DEFAULT,
-                        help=f"+/- seconds around the fill searched for the peak same-side "
-                             f"volume (default {VOL_SPIKE_CORE_SECONDS_DEFAULT:g}s).")
-    parser.add_argument("--volume-spike-baseline-seconds", type=float,
-                        default=VOL_SPIKE_BASELINE_SECONDS_DEFAULT,
-                        help=f"+/- seconds around the fill (core window excluded) this trade's "
-                             f"own 'normal' same-side volume/sec is measured over (default "
-                             f"{VOL_SPIKE_BASELINE_SECONDS_DEFAULT:g}s).")
-    parser.add_argument("--volume-spike-ratio", type=float, default=VOL_SPIKE_RATIO_DEFAULT,
-                        help=f"Peak same-side volume must be at least this many times the "
-                             f"baseline mean to count as a spike (default "
-                             f"{VOL_SPIKE_RATIO_DEFAULT:g}x).")
-    parser.add_argument("--volume-spike-min-peak", type=float,
-                        default=VOL_SPIKE_MIN_PEAK_DEFAULT,
-                        help=f"A qualifying second's same-side volume must also be strictly "
-                             f"more than this many contracts outright (default "
-                             f"{VOL_SPIKE_MIN_PEAK_DEFAULT:g}).")
     parser.add_argument("--eod-flat", action=argparse.BooleanOptionalAction, default=True,
                         help="End-of-day flat (trade_management.py rule 3): close any open "
                              "position before 12:45 PT and take no entry from then until the "
