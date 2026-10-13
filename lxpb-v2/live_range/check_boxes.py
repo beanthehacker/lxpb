@@ -57,7 +57,7 @@ for _, r in batch.iterrows():
              ("high", float(r["high"]), float(b["high"])), ("low", float(r["low"]), float(b["low"])),
              ("n", int(r["n_pivots"]), b["n"]), ("confirm", tsn(r["confirm_time"]), b["confirm_t"])]
     if r["status"] == "broken":
-        pairs += [("break_dir", r["break_dir"], b["break_dir"]),
+        pairs += [("break_dir", r["break_dir"], b["break_dir"]), ("break_time", tsn(r["break_time"]), b["break_t"]),
                   ("end", tsn(r["end_time"]), m5.index[b["end_j"]].value if b["end_j"] is not None else None)]
     for name, x, y in pairs:
         if x != y:

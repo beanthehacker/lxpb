@@ -48,32 +48,49 @@ has two pivots at each edge, as in the reports.
 
 ## Orders
 
-Entries: same-type live levels within 2 pt chain into a cluster, ordered at the extreme price (the reports'
-rule); a confirmed swing within 1 pt of that price moves it to the nearest other live level within 10 pt, or
-blocks it (swerve). Levels that cannot be retested yet get none.
+The engine follows the M1/M2 report's pipeline (`render_m1_confl_report.py`), one rule at a time; see "Matching the report" below.
 
-For every episode waiting for its retest, an entry qualifies as:
+**Entry and cluster.** Same-type live levels within 2 pt of each other chain into a cluster, ordered at the extreme
+price (the reports' rule). Only levels the report would trade are candidates: a plain-P0 needs 1 pt of rejection wick
+(`min_plain_wick`) and every level's breakout must be strong (`bo_range_atr`, below). A confirmed swing within 1 pt of
+the price moves the order to the nearest other live level within 10 pt, or blocks it (swerve). Levels that cannot be
+retested yet get none.
 
-* **fade** - a level beyond the breakout edge (LLPB above an up breakout, LHPB below a down one);
-* **go-with** - a level inside the box or within 2 pt beyond the breakout-side edge (LHPB after an up
-  breakout, LLPB after a down one).
+**Anchor.** A cluster's anchor is its earliest-retested member (the nearest to price while nothing is retested, and
+kept after it is retested and leaves the book). The reports classify with the anchor's price and measure the run-in
+from the anchor's P1, so the engine does too; the entry price (the extreme, or the swerved level) only decides where
+the order rests. The order waits `cluster_hours` (3 h, the reports' fill window) after the anchor's retest bar, and a
+swerved cluster keeps its order alive after its anchor is gone. Two clusters that end on the same price share one order.
+
+**Playbooks.** For every strong breakout of a range box (box that has two pivots at each edge, seen within 5 days)
+waiting for its retest:
+
+* **fade** - an LLPB whose anchor lies above the top edge of a box that broke UP (an LHPB below the bottom edge of a
+  box that broke DOWN), and the breakout is the run-in's own: the box's break candle (for the edge the zigzag broke
+  through, else the strong-breakout bar) ends after the run-in leg began;
+* **go-with** - an LHPB whose anchor lies inside the box or within 2 pt beyond its top edge after an UP breakout (an
+  LLPB at the bottom edge after a DOWN breakout).
+
+The breakout must be *strong*: a bar that closes beyond an edge and grades strong on the M1 bars (1.5 x ATR, body at
+least half), read on the closed M5 bars plus the M5 bar still forming as if it closed at the order price. A forming bar
+that would retest one of the box's waiting M5 levels ends the wait at once (the reports see it that way at the touch).
+Episodes already retested, weak or failed breakouts give nothing.
 
 One trade per (box, direction, playbook) seat, and one order serves every box it qualifies for.
 
-**Seat ranking** (`Params.seat_rank`, default `spike_first`, the reports' ranking made causal): when more
-entries pass than there are working-order slots, a spike-P0 entry goes first, then the nearer level. A plain
-entry is not placed while a spike entry (placeable or already resting) serves one of the same seats, and a
-spike order that is placed pulls a resting plain order for the same seat (`superseded_by_spike`). The
-reports hand a seat to a spike contender even when a plain one filled earlier; a live engine cannot undo a
-fill, so this only decides which orders rest, never takes a seat back. `nearest` drops the spike preference.
+**Seat ranking** (`Params.seat_rank`, default `nearest`): working-order slots go to the nearer level. The reports rank
+filled contenders after the fact (spike entry first, else earliest touch); a live engine cannot undo a fill, and the
+`spike_first` option (a spike entry outranks a plain one for the same seat and pulls its resting order) lost a trade
+the report took, so it is off.
 
 **Orders are placed like an account with limited margin would place them, and every gate is judged before
 the touch.** On every tick:
 
 1. an entry within `arm_pts` (4 pt) of price is evaluated as if price were already on it: the breakouts
-   waiting for their retest *including a forming M5 bar read as if it closed at that price*, the run-in into
-   the level (must be strong: 4x the baseline bar range), for a fade that the breakout is the run-in's own,
-   a stop and a target that can be planned, and no blackout (news pull, end-of-day). Pass -> an order is placed
+   waiting for their retest, the run-in into the level (strong: 4x the median bar range, measured from the anchor's P1
+   to the planned entry, not the chased price), for a fade that the breakout is the run-in's own, a stop and a
+   target that can be planned, and no blackout (news pull, end-of-day, the 15:00-15:05 PT reopen) and no
+   thin tape (`liquidity.py`: 20% or more of the last 5 minutes' quotes wider than 1 tick). Pass -> an order is placed
    with that stop and target; fail -> none (and it is placed later if it starts to pass);
 2. a resting order is re-evaluated the same way and pulled the moment it would fail, or when price is
    more than `cancel_pts` (6 pt) away, the level is spent, or a swing now sits on it;
@@ -103,41 +120,59 @@ trading-bar ledger and bars (the reports run `trade_management` on the M1/M2 led
 
 R is always taken against the stop the trade started with.
 
+## Matching the report
+
+What the engine takes from `render_m1_confl_report.py` (M1; the M2 report is the same with 2-minute bars), and where it
+cannot:
+
+| report | engine |
+|---|---|
+| ledger: plain-P0 needs >= 1 pt wick (`--plain-p0-min-wick-pts`) | same; weaker ones are stop candidates only |
+| ledger: strong-breakout gate on every level's P1 (`--bo-range-atr 1.5 --bo-body 0.5 --bo-atr-period 30`) | same, on the trading bars, on closed bars at order time |
+| M1/M2 ledger starts at the report window's first bar | `--cold-levels` starts the trading-bar book at `--from` |
+| cluster = confluence of retested levels, entry = extreme, anchor = earliest retest | live chain of levels, extreme, anchor kept after its retest |
+| range tag read at the touch with the touch's own M5 bar "closed right there" | forming bar read as if closed; a retest by that bar so far ends the wait |
+| tag price = anchor price; run-in from the anchor's P1 to the planned entry | same |
+| fade: box break candle (zigzag `break_time`) vs the run-in start | same (`break_t` is checked against `find_range_box_zz`) |
+| news pull 05:29:55-05:30:40 PT, EOD entry block 12:45-15:00 PT, flat 12:44 PT | same |
+| liquidity gate (tag `low_liquidity`, excluded by default), 15:00-15:05 PT reopen (tag `globex_eth_open`, excluded by default) | gates, switchable (`liquidity_gate`, `globex_block`) |
+| peg: 0.25 pt step, 1 pt cap, bid/ask and aggressor side | same |
+| stop (spike P0 else thrust, widened to 3 pt), target (swing extreme 0.25-50 pt), stop trail, RR floor 0.2 | same |
+| `r_below_min` (planned R < 1), `plain_p0`, `no_confl`, `swerved`, `eod_flat` tags | recorded on every trade (`tags`); `min_r` makes the R tag a gate (off) |
+| boxes from the last 5 days of M5 history per touch | boxes older than 5 days are ignored |
+
+Where the engine differs because it is live, or because the report cannot be copied:
+
+* The report's order waits up to 3 h anywhere; the engine only rests an order within `arm_pts` of price, as the margin
+  preference demands, and holds one position at a time (the report lets trades overlap).
+* The report reads the touch's own M5 bar in full: a retest of a box level later in that bar, after the touch, already
+  counts as done. The engine can only see the bar so far.
+* A cluster's entry is the extreme of the retested members and their confluence pools, and members retested after the
+  anchor extend it; the engine takes the extreme of the live chain.
+* Seats: the reports rank filled contenders afterwards; the engine's first fill keeps a seat.
+* Not applied (review tags in the report, nothing trades on them): volume spike, H1 bias, trap variants, H1 spike
+  confluence, ATR boundary, `fading_bias`; the opposite-zigzag target is off by default in the report too.
+* Fill latency and queue position are not modelled beyond the report's peg model.
+
 ## Run
 
-    python scid_only/run_scid_only.py live_range/replay.py --from 2026-09-27T22:00 --warmup-days 4 --out /tmp/out
+    python scid_only/run_scid_only.py live_range/replay.py --from 2026-09-27T22:00 --cold-levels --warmup-days 5 --out /tmp/out
     python scid_only/run_scid_only.py live_range/check_boxes.py
 
-## Known differences from the reports
+`--cold-levels` reproduces the report window (its M1 ledger starts at the first bar); leave it off for a warm engine.
 
-* No liquidity or volume-spike tags and no opposite-zigzag target (the default rule is swing-extreme).
-* The reports pick a cluster's entry among the retests that happened; the engine takes it from the levels
-  live in its book, so the entry price differs on some trades. The reports' strong-breakout gate on P1
-  (`--bo-range-atr`) is not applied.
-* A plain-P0 without enough wick is not an entry, but stays a stop candidate while untouched (the reports'
-  stop pool counts it) and a sibling for the stop trail.
-* Forming-bar reads use the box edges as of the last closed bar; the batch read also lets the forming bar
-  confirm zigzag pivots.
-* No order latency or queue position beyond the report's peg model.
-* A seat is kept by the first fill; the reports re-rank filled contenders afterwards.
+## Results (27 Sep 22:00 UTC - 6 Oct 2026, `.scid` ticks only, `--cold-levels`)
 
-## Results so far (28 Sep - 6 Oct 2026, .scid ticks only)
-
-* Speed: 1.9M tape records (price / quote / side changes) replayed in ~230 s, about 8k records/s,
-  warm-up included.
-* Boxes: `check_boxes.py` - all boxes and all 201 episodes equal `find_range_box_zz`'s.
-* Against the M1 range-box report (22 range-tagged trades, 107 trades in all) the engine takes 35 trades:
-  16 are the same trade as a range-tagged report trade, 11 the same trade as a report trade the report did not
-  tag as range, 1 sits on a row the report rejected, 7 have no report row. 17 of the report's 22 range trades
-  appear in the engine's trades (at the same level and time, to the second on most); on 11 of those the
-  engine's *managed* result equals the report's managed one (e.g. 30 Sep 04:10:41 three trails then the target,
-  +1.38R; 1 Oct 21:00:28 RR-floor exit -0.07R; 5 Oct 01:34:14 trailed stop -0.44R). On the other 6 the entry
-  price differs (cluster extreme, or a chase of a different size).
-* Not reproduced: 28 Sep 19:18:45 (swerve and a 48-minute wait), 2 Oct 00:57:47, 03:11:35 and 08:17:58, 4 Oct
-  23:15:52 - the cluster / swerve choice differs, not the fills or management.
-* The plain-P0 wick rule (`min_plain_wick`, 1 pt) took the engine from 52 to 35 trades and the trades without a
-  report row from 29 to 7: 26 of those 29 sat on a plain-P0 with under 1 pt of wick, which the M1/M2 reports
-  never trade. The 7 left are mostly LHPB; the next difference to check is the reports' strong-breakout gate on
-  every level's P1 (`--bo-range-atr`, 1.5 x ATR(30) and a 0.5 body), which the engine does not apply.
-* Net over the span, managed and chasing: 1.5R on 35 trades.
-* Seat ranking: `spike_first` pulls few plain orders (2 in 15 days) and barely changes the trades.
+* Speed: 2.0M tape records replayed in ~310 s (6.5k records/s), warm-up included.
+* Boxes: `check_boxes.py` - all boxes, their break candles and all 201 episodes equal `find_range_box_zz`'s.
+* Against the M1 range-box report (22 range-tagged trades, 107 trades in all) the engine takes 23 trades; **every one
+  has a report trade at the same level and time**, 20 of them range-tagged in the report and 3 swerved ones not.
+  18 of the report's 22 range trades appear (to the second on most); on 12 of those the engine's managed result equals
+  the report's (30 Sep 04:10:41 three trails then the target, +1.38R; 1 Oct 21:00:28 RR-floor exit -0.07R; 4 Oct
+  23:15:52 trailed stop +0.21R; 5 Oct 01:34:14 -0.44R); on the other 6 the fill differs by a tick or two or the cluster
+  entry does.
+* Not reproduced: 2 Oct 01:08:05 (one position at a time: the previous trade was still open), 2 Oct 03:11:35 (a swing
+  pulled the order), 2 Oct 08:17:58 and 4 Oct 15:02:11 (no order was armed; not traced).
+* How the engine got here, 52 -> 35 -> 23 trades: the plain-P0 wick rule, then the strong-breakout gate and the
+  cold level book, then the anchor and the forming-bar retest. Trades with no report counterpart went 29 -> 0.
+* Net over the span, managed and chasing: +1.3R on 23 trades (planned R >= 1 only: +2.7R on 5).

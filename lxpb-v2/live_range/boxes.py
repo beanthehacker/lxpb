@@ -298,6 +298,18 @@ class BoxBook:
                 return o
         return None
 
+    def _break_bar(self, b, j):
+        """Time (ns) of the box's break candle, as find_range_box_zz reports `break_time`: the first M5 bar after the
+        box's last inside pivot, up to the bar that confirms the breaking pivot (`j`), that OPENS or CLOSES beyond the
+        broken edge; the breaking pivot's own bar when only wicks got out."""
+        m5, up = self.m5, b["break_dir"] == "up"
+        k = b["break_i"]
+        for m in range(b["last_i"] + 1, j + 1):
+            if (m5.o[m] > b["high"] or m5.c[m] > b["high"]) if up else (m5.o[m] < b["low"] or m5.c[m] < b["low"]):
+                k = m
+                break
+        return m5.t[k]
+
     def _end(self, b, status, j):
         b["status"], b["end_j"] = status, j
         self.events.append(("box_" + status, b))
@@ -321,6 +333,7 @@ class BoxBook:
                 else:
                     self._end(b, "broken", j)
                     b.update(break_dir="up" if kind == "crest" else "down", break_i=i, break_price=price)
+                    b["break_t"] = self._break_bar(b, j)
                 continue
             if beyond:
                 if kind == "crest":
@@ -345,7 +358,7 @@ class BoxBook:
             b = dict(id=len(self.boxes), start_i=i0, start_kind=k0, confirm_j=j, last_i=i,
                      high=chi, low=tlo, seed_high=chi, seed_low=tlo, n=2, crests=[chi], troughs=[tlo],
                      widen=[], status="open", end_j=None, merged_into=None,
-                     break_dir=None, break_i=None, break_price=None,
+                     break_dir=None, break_i=None, break_price=None, break_t=None,
                      start_t=self.m5.t[i0], confirm_t=self.m5.t[j])
             self.boxes.append(b)
             outer = self._twin(chi, tlo, self.live)
@@ -383,6 +396,27 @@ class BoxBook:
             for e in self._prov:
                 if self.is_range(e["box"]):
                     out.append(e)
+        return out
+
+    def retested_by(self, h, l, levels5):
+        """The episodes still waiting that a bar with this high/low would end by retesting one of the box's waiting M5
+        levels - what the reports see when the M5 bar holding the touch is "closed right there"."""
+        out, live = set(), {}
+        for r in self.readers.values():
+            o = r.out
+            if o is None or not o.get("strong") or o.get("ep") is None or o["ep"]["done"]:
+                continue
+            up = o["up"]
+            want = "LHPB" if up else "LLPB"
+            if want not in live:
+                live[want] = {level_key(x): x for x in levels5.live(want)}
+            for k in o["watch"]:
+                lv = live[want].get(k)
+                if lv is None or not levels5.can_retest(lv):
+                    continue
+                if (l <= lv["price"]) if up else (h >= lv["price"]):
+                    out.add((o["ep"]["box_id"], o["ep"]["direction"]))
+                    break
         return out
 
     def drain(self):

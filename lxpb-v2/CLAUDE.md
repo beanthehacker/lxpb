@@ -78,8 +78,12 @@ margin would, and judges every gate BEFORE the touch.** Remember it for every ch
   to 1 pt), each re-quote re-judged by the gates. Never fill an order just because a price printed at it.
 - A plain-P0 is only an entry level with at least 1 pt of rejection wick on its formation candle (the M1/M2
   reports' rule); weaker ones end at their breakout but still serve as stop candidates while untouched.
+- The engine follows the M1/M2 report's pipeline rule for rule (`live_range/README.md`, "Matching the report"): the
+  strong-breakout gate on every level's P1, the anchor (earliest-retested cluster member) that the range tag and the
+  run-in are judged from, the break candle for the fade test, the liquidity and reopen gates. When the report's
+  pipeline changes, change the engine to match, and compare with a cold-level replay against a full report run.
 - Trade management (stop trail, RR floor) runs on the trading-bar ledger and bars, as in the reports; seat
-  contenders are ranked spike entry first, then nearest.
+  contenders are ranked nearest first (spike-first is an option, off).
 
 # Data convention: TradingView exports confirm, Sierra Chart ticks extend
 

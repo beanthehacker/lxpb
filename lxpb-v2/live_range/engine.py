@@ -30,6 +30,7 @@ trails the stop to one tick beyond that bar; a bar close with remaining reward /
 below rr_floor exits at market.
 """
 import bisect
+import collections
 import math
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
@@ -85,12 +86,27 @@ class Params:
     # (price at the order but nobody traded through it) is re-quoted peg_step closer to market, up to
     # peg_cap in all; a re-quote that lands on the opposite quote fills there. Every re-quote is judged
     # by the same gates as a new order (the order is a new price) and pulled if it would fail.
+    # M1/M2 report ledger filters and gates (render_m1_confl_report.py)
+    bo_range_atr: float = 1.5        # strong-breakout gate on every level's P1 run: range >= this x ATR(bo_atr_period)
+    bo_body: float = 0.5             # ... and body >= this share of the run's range (0 range_atr = gate off)
+    bo_atr_period: int = 30
+    bo_atr_window: int = 150
+    liquidity_gate: bool = True      # liquidity.py: >= 20% of the last 5 min of quotes wider than 1 tick -> no order
+    liq_window_s: int = 300
+    liq_wide_share: float = 0.20
+    liq_min_quotes: int = 20
+    globex_block: bool = True        # 15:00-15:05 PT reopen: the report tags it and excludes it by default
+    globex_open: tuple = (15 * 3600, 15 * 3600 + 5 * 60)
+    tag_min_r: float = 1.0           # planned R below this is tagged r_below_min (the report measures, not skips)
+    min_r: float = 0.0               # > 0 turns that tag into a gate
+    cluster_hours: float = 3.0       # SF.MAX_ALT_FILL_HOURS_DEFAULT: a cluster's order waits this long after its anchor's retest bar
+    box_lookback_days: float = 5.0   # range_box_tags.LOOKBACK_DAYS: boxes older than this are not seen
     pegged: bool = True
     peg_step: float = 0.25
     peg_cap: float = 1.0
     # Seat ranking: "spike_first" (a spike-P0 entry outranks a plain one for the same seat, as in the
     # report; then the nearer level) or "nearest" (first come, nearest to price).
-    seat_rank: str = "spike_first"
+    seat_rank: str = "nearest"
     # Trade management (trade_management.py): rule 1 trails the stop when a trading bar closes past
     # enough live P0s of the trade's type; rule 2 exits at market on a trading-bar close when the
     # remaining reward / remaining risk is at or below rr_floor.
@@ -105,8 +121,12 @@ def _pt_sod(t_ns):
 
 
 class Engine:
-    def __init__(self, params=None, arm_from_ns=0, on_event=None, verdicts5=None, verdicts_tb=None):
+    def __init__(self, params=None, arm_from_ns=0, on_event=None, verdicts5=None, verdicts_tb=None, tb_from_ns=0):
+        """`tb_from_ns`: the trading bars (levels, run-in, zigzag, swings) start here; before it only the M5 / box
+        machinery runs. The reports build their M1/M2 level ledger from the first bar of their window, so levels that
+        formed earlier do not exist there; set it to the report window's start to compare like with like."""
         self.p = params or Params()
+        self.tb_from = tb_from_ns
         self.arm_from = arm_from_ns          # warm-up: nothing is armed before this time
         self.on_event = on_event
         self.events = []
@@ -134,6 +154,12 @@ class Engine:
         self.entries = []                    # cluster-extreme levels an order could rest on, by price
         self._ent_prices = []
         self._eps_cache = None
+        self._recs = []                      # per-cluster entry records before merging by price
+        self.anchors = {}                    # cluster (key of its extreme level) -> its earliest-retested member, kept after that member leaves the book
+        self._bo_cache = {}                  # (breakout ns, is_long) -> strong-breakout verdict of the level's P1
+        self._liq = collections.deque()      # (t, n_quotes, n_wide) of the last liq_window_s of tape
+        self._liq_n = self._liq_w = 0
+        self._liq_sec, self._liq_val = -1, None
         self._pending = 0                    # working orders with a re-quote not yet seen by the next record
         self._rr_close = None                # M5 close awaiting the RR-floor check on the next tick
         self._live_keys = set()
@@ -157,10 +183,11 @@ class Engine:
         return ev
 
     # ------------------------------------------------------------------ tick entry point
-    def on_tick(self, t, px, bid=None, ask=None, side=0):
+    def on_tick(self, t, px, bid=None, ask=None, side=0, nq=1):
         """One tape record: trade price `px`, the quotes `bid` / `ask` around it and its aggressor `side`
         (+1 a buyer lifted the offer, -1 a seller hit the bid, 0 unknown). Without quotes an order simply
-        fills when price reaches it."""
+        fills when price reaches it. `nq` is how many single-trade tape records this record stands for (the
+        liquidity gate counts records, and identical consecutive ones are collapsed into one)."""
         m1s = t // M1_NS
         f = self.m1f
         if f is None:
@@ -197,6 +224,11 @@ class Engine:
                              else (ask >= self._sell_min or bid <= self._buy_max)):
             self._check_orders(t, px, bid, ask, side)
         self._orders_tick(t, px)
+        if bid is not None and nq:
+            wide = round((ask - bid) / self.p.tick) > 1
+            self._liq.append((t, nq, nq if wide else 0))
+            self._liq_n += nq
+            self._liq_w += nq if wide else 0
 
     def _roll(self, t, m1s, px):
         """The tick belongs to a new minute: close what is done, open the new forming bars."""
@@ -229,6 +261,8 @@ class Engine:
 
     def _close_tb(self, g, t):
         tt = g[0] * self.tb_ns
+        if tt < self.tb_from:
+            return
         self.tb.append(tt, g[1], g[2], g[3], g[4])
         self.zz.step(tt, g[2], g[3])
         self._swings()
@@ -272,9 +306,61 @@ class Engine:
             return True
         return (box["high"] < price <= box["high"] + tol) if up else (box["low"] - tol <= price < box["low"])
 
+    # -- the reports' strong-breakout gate on a level's P1 (render_m1_confl_report._scan_strong_breakout) ----------
+    def _gate_ok(self, lv):
+        """True if the level's breakout (P1) is a strong one: the maximal run of consecutive trading bars that close
+        in the breakout direction and contain the P1 bar, merged into one candle, has a range of at least
+        bo_range_atr x ATR(bo_atr_period) (measured on the bo_atr_window bars before the run, so never informed by the
+        run) and a body of at least bo_body of that range. A level that fails ends at its breakout: it is not an entry
+        (it stays a stop candidate while untouched)."""
+        p = self.p
+        if p.bo_range_atr <= 0:
+            return True
+        k = (pd.Timestamp(lv["breakout_time"]).value, lv["type"] == "LHPB")
+        v = self._bo_cache.get(k)
+        if v is None:
+            v, final = self._scan_bo(k[0], k[1])
+            if final:
+                self._bo_cache[k] = v
+        return v
+
+    def _scan_bo(self, t0, up):
+        s, p = self.tb, self.p
+        n = len(s.t)
+        pos = bisect.bisect_left(s.t, t0)
+        if pos >= n or s.t[pos] != t0:
+            return False, True
+        o, c = s.o, s.c
+
+        def match(i):
+            return (c[i] > o[i]) if up else (c[i] < o[i])
+
+        if not match(pos):
+            return False, True
+        lo = pos
+        while lo > 0 and match(lo - 1):
+            lo -= 1
+        if lo == 0:
+            return False, True
+        hi = pos
+        while hi < n - 1 and match(hi + 1):
+            hi += 1
+        final = hi < n - 1                      # a run still open may yet grow
+        rng = max(s.h[lo:hi + 1]) - min(s.l[lo:hi + 1])
+        body = abs(c[hi] - o[lo])
+        a0 = max(0, lo - p.bo_atr_window)
+        if lo - a0 < 2 or rng <= 0:
+            return False, final
+        alpha, atr = 1.0 / p.bo_atr_period, None        # findATR: Wilder RMA of the true range, first bar dropped
+        for i in range(a0 + 1, lo):
+            pc = c[i - 1]
+            tr = max(s.h[i] - s.l[i], abs(s.h[i] - pc), abs(s.l[i] - pc))
+            atr = tr if atr is None else atr + alpha * (tr - atr)
+        return (rng >= p.bo_range_atr * atr and body >= p.bo_body * rng), final
+
     def _clusters(self, typ):
         levels = sorted((lv for lv in self.lv.live(typ)
-                         if level_key(lv) not in self.dead and self.lv.can_retest(lv)),
+                         if level_key(lv) not in self.dead and self.lv.can_retest(lv) and self._gate_ok(lv)),
                         key=lambda x: x["price"])
         out, cur = [], []
         for lv in levels:
@@ -287,7 +373,8 @@ class Engine:
         return out
 
     def _qualify(self, typ, price, eps):
-        """[(episode, playbook)] the level price qualifies for, seats still free."""
+        """[(episode, playbook)] the retested level's own price qualifies for (the reports classify with the price of the
+        cluster's earliest-retesting member, not the refined entry), seats still free."""
         res = []
         for e in eps:
             up = e["direction"] == "up"
@@ -302,6 +389,16 @@ class Engine:
                 res.append((e, pb))
         return res
 
+    @staticmethod
+    def _fade_break_ns(e):
+        """The time the report compares with the run-in leg (range_box_tags._broke_in_run_in): for the edge the
+        box's own zigzag break went through, that break candle (find_range_box_zz `break_time`); otherwise the
+        episode's strong-breakout bar."""
+        box = e["box"]
+        if box.get("break_t") is not None and (box.get("break_dir") == "up") == (e["direction"] == "up"):
+            return box["break_t"]
+        return e["breakout_time"]
+
     def _swings_near(self, price, is_low, lo_ns):
         arr = self.swing_lo if is_low else self.swing_hi
         return [s for s in arr if s[0] >= lo_ns and abs(s[1] - price) <= self.p.swerve_tol]
@@ -312,6 +409,7 @@ class Engine:
         None when there is none (the order is blocked)."""
         is_long = typ == "LHPB"
         cand = [x for x in self.lv.live(typ) if level_key(x) not in self.dead and self.lv.can_retest(x)
+                and self._gate_ok(x)
                 and ((x["price"] < planned) if is_long else (x["price"] > planned))
                 and abs(x["price"] - planned) <= self.p.swerve_max_move]
         cand.sort(key=lambda x: abs(x["price"] - planned))
@@ -320,9 +418,10 @@ class Engine:
     # ------------------------------------------------------------------ entries and the per-tick order book
     def _rebuild_entries(self, t):
         """The prices an order could rest on, from the live levels: one per cluster (the extreme price), moved
-        past a swing when one sits on it. Rebuilt whenever the levels or swings change (closed bars, a level
-        spent on a tick), not per tick."""
-        ents = []
+        past a swing when one sits on it. The cluster's ANCHOR is its member nearest to price (the first one
+        retested; the reports classify and measure the run-in from it). Rebuilt whenever the levels or swings
+        change (closed bars, a level spent on a tick), not per tick."""
+        ents, new_anchors = [], {}
         self._live_keys = {level_key(x) for x in self.lv.state["touch_lv1"]}
         now_lo = t - int(self.p.swerve_lookback_h * 3600 * S_NS)
         for typ in ("LLPB", "LHPB"):
@@ -330,23 +429,73 @@ class Engine:
             for cl in self._clusters(typ):
                 entry = min(cl, key=lambda x: (x["price"] if is_long else -x["price"],
                                                pd.Timestamp(x["formation_time"]).value))
+                anchor = min(cl, key=lambda x: (-x["price"] if is_long else x["price"],
+                                                pd.Timestamp(x["formation_time"]).value))
+                ck = level_key(entry)
+                prev = self.anchors.get(ck)
+                if prev is not None and all(level_key(x) != level_key(prev) for x in cl):
+                    fate = self.lv.fate.get(level_key(prev))
+                    if fate is not None and fate[0] == "retested":
+                        anchor = prev           # the member retested first stays the anchor after it leaves the book
+                new_anchors[ck] = anchor
                 planned = entry["price"]
                 note = None
-                lo_ns = max(min(pd.Timestamp(x["breakout_time"]).value for x in cl), now_lo)
+                lo_ns = max(pd.Timestamp(anchor["breakout_time"]).value, now_lo)
                 if self.p.swerve and self._swings_near(planned, is_long, lo_ns):
                     moved = self._swerve(typ, planned, lo_ns)
                     if moved is None:
                         continue
                     entry, note = moved, f"swerved {planned:.2f}->{moved['price']:.2f}"
-                ents.append({"key": level_key(entry), "type": typ, "side": "buy" if is_long else "sell",
-                             "price": entry["price"], "level": entry, "note": note, "lo_ns": lo_ns})
+                ent = {"key": level_key(entry), "type": typ, "side": "buy" if is_long else "sell",
+                       "price": entry["price"], "level_price": entry["price"], "level": entry, "anchor": anchor,
+                       "note": note, "lo_ns": lo_ns, "cluster": len(cl), "cluster_key": ck}
+                if self._expired(ent, t):
+                    continue
+                ents.append(ent)
+        # A cluster whose anchor has been retested but whose order has not filled stays alive (the reports'
+        # fill window runs on after the retest): a swerved entry belongs to the swerved cluster, not to the level
+        # it moved to, so it must outlive its anchor in the book.
+        seen = {e["cluster_key"] for e in ents}
+        for ck, pe in {e["cluster_key"]: e for e in self._recs}.items():
+            if ck in seen:
+                continue
+            fate = self.lv.fate.get(level_key(pe["anchor"]))
+            if (fate is not None and fate[0] == "retested" and pe["key"] in self._live_keys
+                    and pe["key"] not in self.dead and not self._expired(pe, t)):
+                ents.append(pe)
+        self._recs = list(ents)
+        # Two clusters can end on the same price (a swerve moves one onto another's level): one order there, which
+        # serves what each of the clusters' trades would have, so it keeps every anchor.
+        merged = {}
+        for e in ents:
+            m = merged.get(e["key"])
+            if m is None:
+                merged[e["key"]] = m = {**e, "anchors": [e["anchor"]]}
+            elif all(level_key(a) != level_key(e["anchor"]) for a in m["anchors"]):
+                m["anchors"].append(e["anchor"])
+                m["note"] = m["note"] or e["note"]
+        ents = list(merged.values())
+        self.anchors = new_anchors
         ents.sort(key=lambda e: e["price"])
         self.entries = ents
         self._ent_prices = [e["price"] for e in ents]
 
+    def _expired(self, ent, t):
+        """The reports' fill window: an order waits cluster_hours after the retest bar of the cluster's anchor
+        (find_alt_fill starts there); before that retest there is no window yet."""
+        fate = self.lv.fate.get(level_key(ent["anchor"]))
+        return (fate is not None and fate[0] == "retested"
+                and t - fate[1] > int(self.p.cluster_hours * 3600 * S_NS))
+
+    def _box_seen(self, e, t=None):
+        """A box older than box_lookback_days is not seen: the report feeds its detector 5 days of M5 history."""
+        t = self.last_t if t is None else t
+        return e["box"]["start_t"] >= t - int(self.p.box_lookback_days * 86400 * S_NS)
+
     def _committed_episodes(self):
         if self._eps_cache is None:
-            self._eps_cache = [e for e in self.box.active_episodes(include_forming=False) if not e["done"]]
+            self._eps_cache = [e for e in self.box.active_episodes(include_forming=False)
+                               if not e["done"] and self._box_seen(e)]
         return self._eps_cache
 
     def _episodes_if_touched(self, price):
@@ -356,39 +505,72 @@ class Engine:
         m5f, m1f = self.m5f, self.m1f
         if m5f is None or not self.box.m5.t:
             return eps
+        if eps:
+            gone = self.box.retested_by(max(m5f[2], price), min(m5f[3], price), self.lv5)
+            if gone:
+                eps = [e for e in eps if (e["box_id"], e["direction"]) not in gone]
         have = {(e["box_id"], e["direction"]) for e in eps}
         hyp = self.box.forming(m5f[0] * M5_NS, m5f[1], max(m5f[2], price), min(m5f[3], price), price, self.lv5,
                                m1_partial=(m1f[0] * M1_NS, m1f[1], max(m1f[2], price), min(m1f[3], price), price),
                                store=False)
-        extra = [e for e in hyp if (e["box_id"], e["direction"]) not in have and self.box.is_range(e["box"])]
+        extra = [e for e in hyp if (e["box_id"], e["direction"]) not in have and self.box.is_range(e["box"])
+                 and self._box_seen(e)]
         return eps + extra if extra else eps
 
-    def _evaluate(self, level, typ, price, t):
-        """Would an order resting on `level` pass every gate if price touched it now? A dict (the boxes and
-        playbooks it serves, the planned stop and target) or the reason it would not."""
+    def _evaluate(self, e, price, t):
+        """Would an order on entry/order `e` pass every gate if price were on `price` (its level, or a chased
+        price) right now? A dict (the boxes and playbooks it serves, the planned stop and target) or the reason
+        it would not. As in the report: the box tag is judged with the price of the cluster's anchor, the
+        run-in is measured from the anchor's P1 to the PLANNED entry (not the chased price), and the stop
+        and target are planned from the price that fills."""
+        typ = e["type"]
         why = self._blackout(t)
         if why:
             return why
+        if self.p.liquidity_gate and self._liq_blocked(t):
+            return "low_liquidity"
         eps = self._episodes_if_touched(price)
-        q = self._qualify(typ, price, eps)
-        if not q:
-            return "no_episode"
-        run = self._run_in(typ, level, price, t)
-        if not self._strong_run_in(typ, run, price):
-            return "weak_run_in"
-        serves = []
-        for e, pb in q:
-            if pb == "fade" and (run is None or e["breakout_time"] + M5_NS <= run[0]):
-                continue                    # the breakout is not the run-in's own
-            serves.append((e, pb))
+        serves, reason = [], "no_episode"
+        for anchor in e["anchors"]:
+            q = self._qualify(typ, anchor["price"], eps)
+            if not q:
+                continue
+            run = self._run_in(typ, anchor, e["level_price"], t)
+            if not self._strong_run_in(typ, run, e["level_price"]):
+                reason = "weak_run_in"
+                continue
+            for ep, pb in q:
+                if pb == "fade" and (run is None or self._fade_break_ns(ep) + M5_NS <= run[0]):
+                    reason = "breakout_not_run_in" if reason == "no_episode" else reason
+                    continue                # the breakout is not the run-in's own
+                if all((ep["box_id"], ep["direction"], pb) != (x["box_id"], x["direction"], p2) for x, p2 in serves):
+                    serves.append((ep, pb))
         if not serves:
-            return "breakout_not_run_in"
-        plan = self._plan({"level": level, "type": typ}, price, t)
+            return reason
+        plan = self._plan({"level": e["level"], "type": typ}, price, t)
         if isinstance(plan, str):
             return plan
-        return {"serves": [(e["box_id"], e["direction"], pb) for e, pb in serves],
-                "boxes": {(e["box_id"], e["direction"]): e for e, _ in serves},
-                "provisional": any(e.get("provisional") for e, _ in serves), "plan": plan}
+        if self.p.min_r > 0 and abs(plan[1] - price) < self.p.min_r * abs(plan[0] - price):
+            return "r_below_min"
+        return {"serves": [(ep["box_id"], ep["direction"], pb) for ep, pb in serves],
+                "boxes": {(ep["box_id"], ep["direction"]): ep for ep, _ in serves},
+                "provisional": any(ep.get("provisional") for ep, _ in serves), "plan": plan}
+
+    def _liq_blocked(self, t):
+        """liquidity.gate on the tape: from the last liq_window_s of quotes ending at the tick before this one, the share
+        wider than one tick is at or above liq_wide_share (with at least liq_min_quotes of them). Cached per second."""
+        sec = t // S_NS
+        if sec == self._liq_sec:
+            return self._liq_val
+        lo = t - self.p.liq_window_s * S_NS
+        dq = self._liq
+        while dq and dq[0][0] < lo:
+            _, n, w = dq.popleft()
+            self._liq_n -= n
+            self._liq_w -= w
+        self._liq_sec = sec
+        self._liq_val = self._liq_n >= self.p.liq_min_quotes and self._liq_w >= self.p.liq_wide_share * self._liq_n
+        return self._liq_val
 
     def _orders_tick(self, t, px):
         """Keep the working orders right for this tick: pull the ones that would no longer pass, place the ones that
@@ -408,7 +590,7 @@ class Engine:
                 self._cancel(o, t, "swing_on_level")
                 self._rebuild_entries(t)
                 continue
-            res = self._evaluate(lv, o["type"], o["price"], t)
+            res = self._evaluate(o, o["price"], t)
             if isinstance(res, str):
                 self._cancel(o, t, res)
                 continue
@@ -427,7 +609,7 @@ class Engine:
                 continue
             if self._level_touched(e["side"], e["price"], px):
                 continue                    # the tape was through it already: touched, not approached
-            res = self._evaluate(e["level"], e["type"], e["price"], t)
+            res = self._evaluate(e, e["price"], t)
             if not isinstance(res, str):
                 cands.append((e, res))
         if not cands:
@@ -537,7 +719,7 @@ class Engine:
         buy = o["side"] == "buy"
         step = self.p.peg_step
         new = min(o["price"] + step, o["worst"]) if buy else max(o["price"] - step, o["worst"])
-        res = self._evaluate(o["level"], o["type"], new, t)
+        res = self._evaluate(o, new, t)
         if isinstance(res, str):
             self._cancel(o, t, "peg:" + res)
             return
@@ -606,6 +788,8 @@ class Engine:
             return "news_pull"
         if self.p.no_entry_from <= sod < self.p.reopen:
             return "eod_entry_blocked"
+        if self.p.globex_block and self.p.globex_open[0] <= sod < self.p.globex_open[1]:
+            return "globex_open"
         return None
 
     def _touch(self, o, t, fill_px):
@@ -706,6 +890,19 @@ class Engine:
               "boxes": [(b, d) for b, d, _ in serves], "exit": None}
         stop_pts, tgt_pts = abs(stop - price), abs(target - price)
         tr["stop_pts"], tr["target_pts"], tr["r_planned"] = stop_pts, tgt_pts, tgt_pts / stop_pts
+        # the report's row tags that describe the trade (informational there; the ones it excludes by default are gates here)
+        tags = []
+        if o["anchor"].get("p0_kind") == "plain-P0":
+            tags.append("plain_p0")
+        if o["cluster"] == 1:
+            tags.append("no_confl")
+        if o.get("note"):
+            tags.append("swerved")
+        if tr["r_planned"] < self.p.tag_min_r:
+            tags.append("r_below_min")
+        if not self.p.globex_block and self.p.globex_open[0] <= sod < self.p.globex_open[1]:
+            tags.append("globex_eth_open")
+        tr["tags"], tr["anchor_price"] = tags, o["anchor"]["price"]
         self.trades.append(tr)
         self.open.append(tr)
         for s in serves:
@@ -783,6 +980,8 @@ class Engine:
 
     def _exit(self, tr, t, price, why):
         tr["exit"] = {"t": t, "price": price, "why": why}
+        if why == "eod_flat":
+            tr["tags"].append("eod_flat")
         pnl = (price - tr["price"]) if tr["side"] == "buy" else (tr["price"] - price)
         tr["pnl"], tr["r"] = pnl, pnl / tr["stop_pts"]
         self.open.remove(tr)

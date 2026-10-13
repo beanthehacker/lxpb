@@ -25,7 +25,7 @@ def ticks(lo, hi):
     side differ from the last kept one, or it opens a new minute (so no bar close is ever late)."""
     rolls = [r for r in R._own_roll() if r is not None and lo < r < hi]
     edges = [lo] + rolls + [hi]
-    T, P, B, A, S = [], [], [], [], []
+    T, P, B, A, S, Q = [], [], [], [], [], []
     for a, b in zip(edges[:-1], edges[1:]):
         offset, sym = R._offset_for_ts(a)
         w = R._scid_window(sym, a, b)
@@ -36,15 +36,19 @@ def ticks(lo, hi):
         B.append(np.round(w["Low"].to_numpy(np.float64) + offset, 4))
         A.append(np.round(w["High"].to_numpy(np.float64) + offset, 4))
         S.append(np.where(w["AskVolume"].to_numpy() > 0, 1, np.where(w["BidVolume"].to_numpy() > 0, -1, 0)).astype(np.int8))
+        # liquidity.py counts single-trade records with a valid quote
+        Q.append(((w["Trades"].to_numpy() == 1) & (w["High"].to_numpy() >= w["Low"].to_numpy())).astype(np.int32))
     if not T:
         e = np.empty(0)
-        return np.empty(0, np.int64), e, e, e, np.empty(0, np.int8)
-    t, p, bd, ak, sd = (np.concatenate(x) for x in (T, P, B, A, S))
+        return np.empty(0, np.int64), e, e, e, np.empty(0, np.int8), np.empty(0, np.int32)
+    t, p, bd, ak, sd, qn = (np.concatenate(x) for x in (T, P, B, A, S, Q))
     slot = t // 60_000_000_000
     keep = np.ones(len(t), dtype=bool)
     keep[1:] = ((p[1:] != p[:-1]) | (bd[1:] != bd[:-1]) | (ak[1:] != ak[:-1]) | (sd[1:] != sd[:-1])
                 | (slot[1:] != slot[:-1]))
-    return t[keep], p[keep], bd[keep], ak[keep], sd[keep]
+    grp = np.cumsum(keep) - 1                      # every collapsed record counts toward its group's quote tally
+    nq = np.bincount(grp, weights=qn).astype(np.int32)
+    return t[keep], p[keep], bd[keep], ak[keep], sd[keep], nq
 
 
 def verdicts(lo, hi, freq):
@@ -69,7 +73,9 @@ def main():
     ap.add_argument("--no-peg", action="store_true", help="plain limit orders (no chasing)")
     ap.add_argument("--no-manage", action="store_true", help="no stop trail / RR-floor exit")
     ap.add_argument("--min-plain-wick", type=float, default=1.0, help="plain-P0 minimum rejection wick, points (0 = off)")
-    ap.add_argument("--seat-rank", default="spike_first", choices=["spike_first", "nearest"])
+    ap.add_argument("--cold-levels", action="store_true",
+                    help="build the trading-bar level book from --from on, as the reports do from their window's first bar")
+    ap.add_argument("--seat-rank", default="nearest", choices=["spike_first", "nearest"])
     a = ap.parse_args()
     lo = pd.Timestamp(a.lo, tz="UTC")
     hi = pd.Timestamp(a.hi, tz="UTC") if a.hi else pd.Timestamp(R._scid_bounds("EPZ26")[1]).floor("1min")
@@ -79,17 +85,18 @@ def main():
     vtb = verdicts(start, hi, f"{a.bar_minutes}min")
     print(f"verdicts for {len(v5):,} M5 and {len(vtb):,} M{a.bar_minutes} bars in {time.time() - t0:.1f}s")
     eng = Engine(Params(bar_minutes=a.bar_minutes, pegged=not a.no_peg, manage=not a.no_manage,
-                         seat_rank=a.seat_rank, min_plain_wick=a.min_plain_wick), arm_from_ns=lo.value, verdicts5=v5, verdicts_tb=vtb)
+                         seat_rank=a.seat_rank, min_plain_wick=a.min_plain_wick), arm_from_ns=lo.value, verdicts5=v5, verdicts_tb=vtb,
+                 tb_from_ns=lo.value if a.cold_levels else 0)
     print(f"replay {start} -> {hi} (armed from {lo}), M{a.bar_minutes} trading bars")
     t0, n_ticks = time.time(), 0
     cur = start
     step = pd.Timedelta(hours=a.chunk_hours)
     while cur < hi:
         nxt = min(cur + step, hi)
-        T, P, B, A, S = ticks(cur, nxt)
+        T, P, B, A, S, Nq = ticks(cur, nxt)
         on_tick = eng.on_tick
-        for t, px, bd, ak, sd in zip(T.tolist(), P.tolist(), B.tolist(), A.tolist(), S.tolist()):
-            on_tick(t, px, bd, ak, sd)
+        for t, px, bd, ak, sd, nq in zip(T.tolist(), P.tolist(), B.tolist(), A.tolist(), S.tolist(), Nq.tolist()):
+            on_tick(t, px, bd, ak, sd, nq)
         n_ticks += len(T)
         print(f"  {cur:%m-%d %H:%M} +{len(T):>7,} ticks  trades {len(eng.trades):>3}  working orders {len(eng.orders):>2}  "
               f"{time.time() - t0:6.1f}s", flush=True)
@@ -113,6 +120,7 @@ def report(eng, out):
             "entry": tr["price"], "stop": tr["stop"], "target": tr["target"], "stop_src": tr["stop_src"],
             "r_planned": round(tr["r_planned"], 2), "level": tr["level_price"],
             "chased": round(abs(tr["price"] - tr["level_price"]), 2), "trails": tr["trails"],
+            "anchor": tr["anchor_price"], "tags": " ".join(tr["tags"]),
             "exit_time_pt": _fmt(ex["t"]) if ex else "", "exit": ex["price"] if ex else "", "why": ex["why"] if ex else "open",
             "pnl_pts": round(tr.get("pnl", float("nan")), 2) if ex else "", "r": round(tr.get("r", float("nan")), 2) if ex else "",
         })
@@ -125,6 +133,11 @@ def report(eng, out):
         if len(done):
             r = done["r"].astype(float)
             print(f"\n{len(done)} closed trades  win rate {(r > 0).mean():.0%}  avg R {r.mean():.2f}  total R {r.sum():.1f}")
+            hi_r = done[~done["tags"].fillna("").str.contains("r_below_min")]
+            if len(hi_r):
+                rr_ = hi_r["r"].astype(float)
+                print(f"  planned R >= 1 only (the report's default R filter): {len(hi_r)} trades  win rate "
+                      f"{(rr_ > 0).mean():.0%}  avg R {rr_.mean():.2f}  total R {rr_.sum():.1f}")
             for pb, g in done.groupby("playbooks"):
                 print(f"  {pb:<18} n={len(g):>3}  win {(g['r'].astype(float) > 0).mean():.0%}  avg R {g['r'].astype(float).mean():.2f}")
     kinds = {}
