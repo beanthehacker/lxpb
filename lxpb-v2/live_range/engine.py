@@ -58,6 +58,9 @@ class Params:
     swing_k: int = 2
     run_in_mult: float = 4.0
     run_in_baseline: int = 30
+    # A plain-P0 (neither swing nor spike) is tradable only with this much rejection wick on its formation
+    # candle (the M1/M2 reports' --plain-p0-min-wick-pts); weaker ones end at their breakout.
+    min_plain_wick: float = 1.0
     zz_threshold: float = 3.0
     zz_min_bars: int = 3
     tick: float = 0.25
@@ -117,7 +120,7 @@ class Engine:
         # books
         self.box = BoxBook()
         self.lv5 = LevelBook("m5", verdicts5)
-        self.lv = LevelBook("trade", verdicts_tb)
+        self.lv = LevelBook("trade", verdicts_tb, min_plain_wick=self.p.min_plain_wick)
         self.zz = StructZigzag(self.p.zz_threshold, self.p.zz_min_bars)
         self.swing_hi, self.swing_lo = [], []    # confirmed fractal swings (time_ns, price)
         self.dead = set()                    # trade levels touched on the tick before they could be retested
@@ -644,7 +647,7 @@ class Engine:
                 return "no_stop"
             src = "p0_spike"
         else:
-            pool = [x for x in self.lv.live(typ) if abs(x["price"] - fill) <= self.p.stop_radius]
+            pool = [x for x in self.lv.live_for_stops(typ) if abs(x["price"] - fill) <= self.p.stop_radius]
             extreme = "breakout_low" if is_long else "breakout_high"
             cands = [(x[extreme] + (-tick if is_long else tick)) for x in pool]
             cands = [s for s in cands if ((s < fill) if is_long else (s > fill))]

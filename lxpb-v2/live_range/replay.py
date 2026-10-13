@@ -68,6 +68,7 @@ def main():
     ap.add_argument("--chunk-hours", type=float, default=24.0)
     ap.add_argument("--no-peg", action="store_true", help="plain limit orders (no chasing)")
     ap.add_argument("--no-manage", action="store_true", help="no stop trail / RR-floor exit")
+    ap.add_argument("--min-plain-wick", type=float, default=1.0, help="plain-P0 minimum rejection wick, points (0 = off)")
     ap.add_argument("--seat-rank", default="spike_first", choices=["spike_first", "nearest"])
     a = ap.parse_args()
     lo = pd.Timestamp(a.lo, tz="UTC")
@@ -78,7 +79,7 @@ def main():
     vtb = verdicts(start, hi, f"{a.bar_minutes}min")
     print(f"verdicts for {len(v5):,} M5 and {len(vtb):,} M{a.bar_minutes} bars in {time.time() - t0:.1f}s")
     eng = Engine(Params(bar_minutes=a.bar_minutes, pegged=not a.no_peg, manage=not a.no_manage,
-                         seat_rank=a.seat_rank), arm_from_ns=lo.value, verdicts5=v5, verdicts_tb=vtb)
+                         seat_rank=a.seat_rank, min_plain_wick=a.min_plain_wick), arm_from_ns=lo.value, verdicts5=v5, verdicts_tb=vtb)
     print(f"replay {start} -> {hi} (armed from {lo}), M{a.bar_minutes} trading bars")
     t0, n_ticks = time.time(), 0
     cur = start

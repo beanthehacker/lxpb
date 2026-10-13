@@ -76,6 +76,8 @@ margin would, and judges every gate BEFORE the touch.** Remember it for every ch
 - Fills follow the report's pegged model on the tape's own records (price, bid, ask, aggressor side): the right
   aggressor at or through the price fills, a wrong-side touch re-quotes the order a tick closer to market (up
   to 1 pt), each re-quote re-judged by the gates. Never fill an order just because a price printed at it.
+- A plain-P0 is only an entry level with at least 1 pt of rejection wick on its formation candle (the M1/M2
+  reports' rule); weaker ones end at their breakout but still serve as stop candidates while untouched.
 - Trade management (stop trail, RR floor) runs on the trading-bar ledger and bars, as in the reports; seat
   contenders are ranked spike entry first, then nearest.
 

@@ -112,8 +112,10 @@ R is always taken against the stop the trade started with.
 
 * No liquidity or volume-spike tags and no opposite-zigzag target (the default rule is swing-extreme).
 * The reports pick a cluster's entry among the retests that happened; the engine takes it from the levels
-  live in its book, so the entry price differs on some trades (e.g. 4 Oct 15:02 LLPB 7785.75 in the report,
-  7787.25 here) and the engine trades more seats than the reports' retest-driven pipeline.
+  live in its book, so the entry price differs on some trades. The reports' strong-breakout gate on P1
+  (`--bo-range-atr`) is not applied.
+* A plain-P0 without enough wick is not an entry, but stays a stop candidate while untouched (the reports'
+  stop pool counts it) and a sibling for the stop trail.
 * Forming-bar reads use the box edges as of the last closed bar; the batch read also lets the forming bar
   confirm zigzag pivots.
 * No order latency or queue position beyond the report's peg model.
@@ -121,17 +123,21 @@ R is always taken against the stop the trade started with.
 
 ## Results so far (28 Sep - 6 Oct 2026, .scid ticks only)
 
-* Speed: 1.9M tape records (price / quote / side changes) replayed in ~280 s, about 6.8k records/s,
+* Speed: 1.9M tape records (price / quote / side changes) replayed in ~230 s, about 8k records/s,
   warm-up included.
 * Boxes: `check_boxes.py` - all boxes and all 201 episodes equal `find_range_box_zz`'s.
-* Against the M1 range-box report's 22 trades, 15 appear in the engine's 52 at the same level and time
-  (to the second on most). On those, the engine's *managed* result equals the report's managed one on 10
-  (e.g. 30 Sep 04:10:41: three trails then the target, +1.38R; 30 Sep 12:37:46 and 1 Oct 21:00:28: RR-floor
-  exits at +0.02R and -0.07R; 27 Sep 17:02:06: +0.05R); the other 5 enter at a different price (cluster
-  extreme, or a chase of a different size). The other 37 trades the engine takes are seats the report's
-  pipeline never traded.
-* Not reproduced: 28 Sep 19:18:45 (swerve and a 48-minute wait), 2 Oct 00:05:13, 00:57:47, 08:17:58,
-  4 Oct 23:15:52 and 5 Oct 01:34:14 - the cluster / swerve choice differs, not the fills or management.
-* Pegging: 37 of 52 fills were chased (average 0.22 pt). With managed exits the 52 trades net -1.9R; with
-  `--no-manage` 8.2R and with `--no-peg` -1.4R (49 trades): chasing and the RR floor cost R on this span.
-* Seat ranking: `spike_first` pulled 3 plain orders in 15 days and changed 1 trade against `nearest`.
+* Against the M1 range-box report (22 range-tagged trades, 107 trades in all) the engine takes 35 trades:
+  16 are the same trade as a range-tagged report trade, 11 the same trade as a report trade the report did not
+  tag as range, 1 sits on a row the report rejected, 7 have no report row. 17 of the report's 22 range trades
+  appear in the engine's trades (at the same level and time, to the second on most); on 11 of those the
+  engine's *managed* result equals the report's managed one (e.g. 30 Sep 04:10:41 three trails then the target,
+  +1.38R; 1 Oct 21:00:28 RR-floor exit -0.07R; 5 Oct 01:34:14 trailed stop -0.44R). On the other 6 the entry
+  price differs (cluster extreme, or a chase of a different size).
+* Not reproduced: 28 Sep 19:18:45 (swerve and a 48-minute wait), 2 Oct 00:57:47, 03:11:35 and 08:17:58, 4 Oct
+  23:15:52 - the cluster / swerve choice differs, not the fills or management.
+* The plain-P0 wick rule (`min_plain_wick`, 1 pt) took the engine from 52 to 35 trades and the trades without a
+  report row from 29 to 7: 26 of those 29 sat on a plain-P0 with under 1 pt of wick, which the M1/M2 reports
+  never trade. The 7 left are mostly LHPB; the next difference to check is the reports' strong-breakout gate on
+  every level's P1 (`--bo-range-atr`, 1.5 x ATR(30) and a 0.5 body), which the engine does not apply.
+* Net over the span, managed and chasing: 1.5R on 35 trades.
+* Seat ranking: `spike_first` pulls few plain orders (2 in 15 days) and barely changes the trades.
