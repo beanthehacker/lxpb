@@ -58,8 +58,14 @@ For every episode waiting for its retest, an entry qualifies as:
 * **go-with** - a level inside the box or within 2 pt beyond the breakout-side edge (LHPB after an up
   breakout, LLPB after a down one).
 
-One trade per (box, direction, playbook) seat; the first fill takes it, and one order serves every box it
-qualifies for.
+One trade per (box, direction, playbook) seat, and one order serves every box it qualifies for.
+
+**Seat ranking** (`Params.seat_rank`, default `spike_first`, the reports' ranking made causal): when more
+entries pass than there are working-order slots, a spike-P0 entry goes first, then the nearer level. A plain
+entry is not placed while a spike entry (placeable or already resting) serves one of the same seats, and a
+spike order that is placed pulls a resting plain order for the same seat (`superseded_by_spike`). The
+reports hand a seat to a spike contender even when a plain one filled earlier; a live engine cannot undo a
+fill, so this only decides which orders rest, never takes a seat back. `nearest` drops the spike preference.
 
 **Orders are placed like an account with limited margin would place them, and every gate is judged before
 the touch.** On every tick:
@@ -74,11 +80,28 @@ the touch.** On every tick:
 3. at most `max_working_orders` (2) rest at once, nearest first, and none while `max_open_positions` (1) is open
    (a fill pulls the others).
 
-At the touch it simply fills at its price on the plan made on the previous tick.
+**Fills are the report's pegged model** (`find_alt_fill`), on the tape's own records (price, bid, ask, aggressor
+side): a buy fills when a seller prints at or below its price (a sell: a buyer at or above); a record that only
+touches the price from the wrong side re-quotes the order one tick (`peg_step`) closer to market, up to
+`peg_cap` (1 pt) in all, and the re-quote fills at the quote if it meets it. Every re-quote is judged by the
+gates as a new order (`peg:weak_run_in` ... pulls it), and the stop and target are planned again at the fill
+price. A level the tape has already traded through on the forming bar is never armed. `--no-peg` gives a
+plain limit.
 
 Stop: P0 candle of a spike level, else the thrust candle of the live same-type levels within 10 pt, widened to
 3 pt (older P1) if tighter. Target: swing-extreme (latest confirmed zigzag pivot since the level's breakout,
 0.25-50 pt away). Exits tick by tick; flat at 12:44 PT.
+
+**Trade management** (`Params.manage`, `--no-manage` to switch off), the reports' two rules, run on the
+trading-bar ledger and bars (the reports run `trade_management` on the M1/M2 ledger):
+
+1. stop trail - when a trading bar closes past the highs (lows) of enough live same-type P0s that broke out on
+   it (1 if any is a swing or spike, 2 if every P0 wick is at least 20% of its candle, else 3), the stop
+   moves to one tick beyond that bar, toward the target only;
+2. RR floor - at a bar close, remaining reward / remaining risk (against the trailed stop) at or below 0.2
+   exits at market (the bid/ask of the next record).
+
+R is always taken against the stop the trade started with.
 
 ## Run
 
@@ -87,21 +110,28 @@ Stop: P0 candle of a spike level, else the thrust candle of the live same-type l
 
 ## Known differences from the reports
 
-* No trade management (stop trail, RR floor), no pegged/chasing entry, no liquidity or
-  volume-spike tags, no opposite-zigzag target (the default rule is swing-extreme).
+* No liquidity or volume-spike tags and no opposite-zigzag target (the default rule is swing-extreme).
+* The reports pick a cluster's entry among the retests that happened; the engine takes it from the levels
+  live in its book, so the entry price differs on some trades (e.g. 4 Oct 15:02 LLPB 7785.75 in the report,
+  7787.25 here) and the engine trades more seats than the reports' retest-driven pipeline.
 * Forming-bar reads use the box edges as of the last closed bar; the batch read also lets the forming bar
   confirm zigzag pivots.
-* No order latency or queue position: a resting order fills when a tick trades at or through its price.
-* The first fill takes a seat, where the reports ranked contenders (spike entry first, else
-  earliest touch).
+* No order latency or queue position beyond the report's peg model.
+* A seat is kept by the first fill; the reports re-rank filled contenders afterwards.
 
 ## Results so far (28 Sep - 6 Oct 2026, .scid ticks only)
 
-* Speed: 768k ticks (price changes) replayed in ~210 s, about 3.7k ticks/s, warm-up included.
+* Speed: 1.9M tape records (price / quote / side changes) replayed in ~280 s, about 6.8k records/s,
+  warm-up included.
 * Boxes: `check_boxes.py` - all boxes and all 201 episodes equal `find_range_box_zz`'s.
-* Against the M1 range-box report's 22 trades: 17 appear in the engine's 61 trades at the same level and
-  time (several to the second, e.g. 28 Sep 10:11:29 LLPB 7768.75, 29 Sep 04:49:38 LLPB 7768.00 and 11:00:34
-  LLPB 7727.50). The engine's 61 trades are every box seat it could fill, not only the retests the old
-  pipeline happened to trade, so it has more of them (39 fades, 8 fade+go-with, 14 go-with).
-* Not reproduced: 28 Sep 19:18:45 (the 7740.00 go-with, filled after a swerve and a 48-minute wait), 2 Oct
-  00:05:13 and 4 Oct 23:15:52, plus differences in entry price on three more (cluster / seat order).
+* Against the M1 range-box report's 22 trades, 15 appear in the engine's 52 at the same level and time
+  (to the second on most). On those, the engine's *managed* result equals the report's managed one on 10
+  (e.g. 30 Sep 04:10:41: three trails then the target, +1.38R; 30 Sep 12:37:46 and 1 Oct 21:00:28: RR-floor
+  exits at +0.02R and -0.07R; 27 Sep 17:02:06: +0.05R); the other 5 enter at a different price (cluster
+  extreme, or a chase of a different size). The other 37 trades the engine takes are seats the report's
+  pipeline never traded.
+* Not reproduced: 28 Sep 19:18:45 (swerve and a 48-minute wait), 2 Oct 00:05:13, 00:57:47, 08:17:58,
+  4 Oct 23:15:52 and 5 Oct 01:34:14 - the cluster / swerve choice differs, not the fills or management.
+* Pegging: 37 of 52 fills were chased (average 0.22 pt). With managed exits the 52 trades net -1.9R; with
+  `--no-manage` 8.2R and with `--no-peg` -1.4R (49 trades): chasing and the RR floor cost R on this span.
+* Seat ranking: `spike_first` pulled 3 plain orders in 15 days and changed 1 trade against `nearest`.

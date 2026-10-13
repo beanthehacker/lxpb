@@ -37,6 +37,7 @@ class LevelBook:
         self.fate = {}            # key -> ("retested"|"consumed", bar time ns)
         self.bars = {}            # bar time ns -> (o, h, l, c): formation candles for stops
         self.broke = []           # every level that broke out, oldest first (stops read P1 candles)
+        self.broke_by_bar = {}    # breakout bar time ns -> the levels that broke on it (the stop trail reads these)
         self._seen = 0            # state["retests"] rows already looked at
         self.n_bars = 0
 
@@ -65,9 +66,12 @@ class LevelBook:
         self._seen = len(rows)
         for lv in self.state["touch_lv1"]:
             if key(lv) not in before:
-                self.broke.append({"type": lv["type"], "price": lv["price"], "formation_time": lv["formation_time"],
-                                   "breakout_time": lv["breakout_time"], "breakout_high": lv["breakout_high"],
-                                   "breakout_low": lv["breakout_low"]})
+                rec = {"type": lv["type"], "price": lv["price"], "formation_time": lv["formation_time"],
+                       "breakout_time": lv["breakout_time"], "breakout_high": lv["breakout_high"],
+                       "breakout_low": lv["breakout_low"], "is_spike": bool(lv.get("is_spike")),
+                       "is_swing": bool(lv.get("is_swing"))}
+                self.broke.append(rec)
+                self.broke_by_bar.setdefault(pd.Timestamp(lv["breakout_time"]).value, []).append(rec)
         alive = {key(lv) for lv in self.state["touch_lv1"]}
         for k, lv in before.items():
             if k not in alive and k not in retested:

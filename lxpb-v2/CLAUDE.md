@@ -73,6 +73,11 @@ margin would, and judges every gate BEFORE the touch.** Remember it for every ch
   run-in makes the order placeable then.
 - A level that cannot be retested yet (the bar after its breakout has not closed) gets no order: touching it
   only consumes it.
+- Fills follow the report's pegged model on the tape's own records (price, bid, ask, aggressor side): the right
+  aggressor at or through the price fills, a wrong-side touch re-quotes the order a tick closer to market (up
+  to 1 pt), each re-quote re-judged by the gates. Never fill an order just because a price printed at it.
+- Trade management (stop trail, RR floor) runs on the trading-bar ledger and bars, as in the reports; seat
+  contenders are ranked spike entry first, then nearest.
 
 # Data convention: TradingView exports confirm, Sierra Chart ticks extend
 

@@ -11,15 +11,23 @@ as if it closed (provisional breakouts); on every closed bar the books advance. 
 the working orders are recomputed from the current state and diffed against the ones already
 resting: new ones armed, stale ones pulled, each with a reason in the event log.
 
-The playbooks (one trade per box seat; first fill takes the seat):
+The playbooks (one trade per box seat):
   fade      the breakout is confirmed and waiting for its retest; rest an order on a live LXPB
             level BEYOND the breakout edge (LLPB above an up breakout, LHPB below a down one).
   go-with   rest an order on a live LXPB level INSIDE the box or within GO_WITH_EDGE_TOL beyond
             the breakout-side edge (LHPB after an up breakout, LLPB after a below one).
 Same-type live levels within CLUSTER_PTS of each other are one order at the extreme price; a swing
-on that price moves it (swerve). At the touch the order is pulled, not filled, if the run-in
-into it is weak, a fade's breakout is not the run-in's own, a stop or target cannot be planned,
-or the time is in a blackout.
+on that price moves it (swerve).
+
+Orders: placed only near price, only as margin allows, and only while every gate would pass at the
+order price (strong run-in, strong breakout, a plannable stop and target, no blackout); pulled the
+moment one would fail. Seat ranking: for the working-order slots a spike entry outranks a plain one
+that serves one of the same seats, then the nearer level wins (Params.seat_rank). Fills follow the
+report's pegged model: only a trade of the right aggressor at or through the price fills; a wrong-side
+touch re-quotes the order one tick closer to market (peg_step, up to peg_cap), re-judged by the gates.
+Management (trade_management.py): a trading bar that closes past enough live P0s of the trade's type
+trails the stop to one tick beyond that bar; a bar close with remaining reward / remaining risk at or
+below rr_floor exits at market.
 """
 import bisect
 import math
@@ -70,6 +78,22 @@ class Params:
     cancel_pts: float = 6.0
     max_working_orders: int = 2
     max_open_positions: int = 1
+    # Pegged (chasing) entry, the report's fill model: an order that the tape touches on the wrong side
+    # (price at the order but nobody traded through it) is re-quoted peg_step closer to market, up to
+    # peg_cap in all; a re-quote that lands on the opposite quote fills there. Every re-quote is judged
+    # by the same gates as a new order (the order is a new price) and pulled if it would fail.
+    pegged: bool = True
+    peg_step: float = 0.25
+    peg_cap: float = 1.0
+    # Seat ranking: "spike_first" (a spike-P0 entry outranks a plain one for the same seat, as in the
+    # report; then the nearer level) or "nearest" (first come, nearest to price).
+    seat_rank: str = "spike_first"
+    # Trade management (trade_management.py): rule 1 trails the stop when a trading bar closes past
+    # enough live P0s of the trade's type; rule 2 exits at market on a trading-bar close when the
+    # remaining reward / remaining risk is at or below rr_floor.
+    manage: bool = True
+    rr_floor: float = 0.2
+    trail_min_wick: float = 0.20
 
 
 def _pt_sod(t_ns):
@@ -107,6 +131,8 @@ class Engine:
         self.entries = []                    # cluster-extreme levels an order could rest on, by price
         self._ent_prices = []
         self._eps_cache = None
+        self._pending = 0                    # working orders with a re-quote not yet seen by the next record
+        self._rr_close = None                # M5 close awaiting the RR-floor check on the next tick
         self._live_keys = set()
         self._bo_sec, self._bo_val = -1, None
         self._last_sec = -1
@@ -128,7 +154,10 @@ class Engine:
         return ev
 
     # ------------------------------------------------------------------ tick entry point
-    def on_tick(self, t, px):
+    def on_tick(self, t, px, bid=None, ask=None, side=0):
+        """One tape record: trade price `px`, the quotes `bid` / `ask` around it and its aggressor `side`
+        (+1 a buyer lifted the offer, -1 a seller hit the bid, 0 unknown). Without quotes an order simply
+        fills when price reaches it."""
         m1s = t // M1_NS
         f = self.m1f
         if f is None:
@@ -159,8 +188,11 @@ class Engine:
         self.last_t, self.last_px = t, px
         if self.open and (px <= self._lo_t or px >= self._hi_t or t >= self._next_exit):
             self._check_exits(t, px)
-        if px >= self._sell_min or px <= self._buy_max:
-            self._check_orders(t, px)
+        if self._rr_close is not None:
+            self._rr_floor(t, px, bid, ask)
+        if self._pending or (px >= self._sell_min or px <= self._buy_max if bid is None
+                             else (ask >= self._sell_min or bid <= self._buy_max)):
+            self._check_orders(t, px, bid, ask, side)
         self._orders_tick(t, px)
 
     def _roll(self, t, m1s, px):
@@ -200,6 +232,8 @@ class Engine:
         for kind, lv in self.lv.on_bar(tt, g[1], g[2], g[3], g[4]):
             self.dead.discard(level_key(lv))
             self.log("level_" + kind, t, level=level_key(lv)[:2], price=lv["price"], type=lv["type"])
+        if self.open and self.p.manage:
+            self._manage_tb(tt, g[4])
         self._rebuild_entries(t)
 
     def _close_m5(self, h, t):
@@ -361,13 +395,13 @@ class Engine:
         p = self.p
         for o in list(self.orders.values()):
             lv = o["level"]
-            if o["key"] in self.dead or o["key"] not in self._live_keys:
+            if (o["key"] in self.dead and not o["touched"]) or o["key"] not in self._live_keys:
                 self._cancel(o, t, "level_gone")
                 continue
             if abs(px - o["price"]) > p.cancel_pts:
                 self._cancel(o, t, "too_far")
                 continue
-            if p.swerve and self._swings_near(o["price"], o["type"] == "LHPB", o["lo_ns"]):
+            if p.swerve and not o["touched"] and self._swings_near(o["level_price"], o["type"] == "LHPB", o["lo_ns"]):
                 self._cancel(o, t, "swing_on_level")
                 self._rebuild_entries(t)
                 continue
@@ -384,20 +418,34 @@ class Engine:
         if lo >= hi:
             return
         have = {o["key"] for o in self.orders.values()}
-        for e in sorted(self.entries[lo:hi], key=lambda e: abs(e["price"] - px)):
-            if len(self.orders) >= p.max_working_orders:
-                break
+        cands = []
+        for e in self.entries[lo:hi]:
             if e["key"] in have or e["key"] in self.dead:
                 continue
-            if (e["side"] == "sell" and px >= e["price"]) or (e["side"] == "buy" and px <= e["price"]):
-                continue                    # price is already through it: it was touched, not approached
+            if self._level_touched(e["side"], e["price"], px):
+                continue                    # the tape was through it already: touched, not approached
             res = self._evaluate(e["level"], e["type"], e["price"], t)
-            if isinstance(res, str):
-                continue
+            if not isinstance(res, str):
+                cands.append((e, res))
+        if not cands:
+            return
+        cands.sort(key=lambda c: self._seat_rank(c[0], px))
+        for e, res in cands:
+            if len(self.orders) >= p.max_working_orders:
+                break
+            if p.seat_rank == "spike_first" and self._outranked(e, res, cands):
+                continue                    # a spike entry in view serves the same seat: that one gets it
             self._oid += 1
             o = {**e, "id": self._oid, "armed_t": t, "serves": res["serves"], "boxes": res["boxes"],
-                 "provisional": res["provisional"], "plan": res["plan"]}
+                 "provisional": res["provisional"], "plan": res["plan"], "level_price": e["price"],
+                 "touched": False, "pending": False,
+                 "worst": e["price"] + (p.peg_cap if e["side"] == "buy" else -p.peg_cap)}
             self.orders[o["id"]] = o
+            if p.seat_rank == "spike_first" and self._spike(o):
+                mine = set(o["serves"])
+                for w in list(self.orders.values()):
+                    if w is not o and not self._spike(w) and mine & set(w["serves"]):
+                        self._cancel(w, t, "superseded_by_spike")
             self.log("order_armed", t, id=o["id"], type=o["type"], side=o["side"], price=o["price"],
                      serves=o["serves"], note=o["note"], provisional=o["provisional"], px=px,
                      stop=o["plan"][0], target=o["plan"][1],
@@ -405,7 +453,39 @@ class Engine:
                             for (b, d), x in o["boxes"].items()])
             self._limits()
 
+    def _level_touched(self, side, price, px):
+        """The trading bar now forming has already traded through the level (or price is on it): the level
+        is spent for this bar, so an order there would only chase a retest that has happened."""
+        f = self.tbf
+        return (f[2] >= price or px >= price) if side == "sell" else (f[3] <= price or px <= price)
+
+    @staticmethod
+    def _spike(e):
+        return bool(e["level"].get("is_spike"))
+
+    def _seat_rank(self, e, px):
+        """Sort key for entries competing for working-order slots (lowest wins)."""
+        if self.p.seat_rank == "spike_first":
+            return (0 if self._spike(e) else 1, abs(e["price"] - px), e["price"])
+        return (abs(e["price"] - px), e["price"])
+
+    def _outranked(self, e, res, cands):
+        """A plain entry is held back while a spike entry (placeable now, or already resting) serves one
+        of the same seats: of the contenders for a seat the spike one is the one to rest an order on."""
+        if self._spike(e):
+            return False
+        mine = set(res["serves"])
+        for d, r in cands:
+            if d is not e and self._spike(d) and mine & set(r["serves"]):
+                return True
+        for o in self.orders.values():
+            if self._spike(o) and mine & set(o["serves"]):
+                return True
+        return False
+
     def _cancel(self, o, t, why):
+        if o.get("pending"):
+            self._pending -= 1
         self.orders.pop(o["id"], None)
         self.log("order_cancelled", t, id=o["id"], price=o["price"], type=o["type"], why=why)
         self._limits()
@@ -417,12 +497,54 @@ class Engine:
         self._buy_max = max(buys) if buys else -math.inf
 
     # ------------------------------------------------------------------ touch: gates, plan, fill
-    def _check_orders(self, t, px):
+    def _check_orders(self, t, px, bid=None, ask=None, side=0):
+        """Match the tape record against the working orders (the report's fill model, find_alt_fill):
+        an order fills when a trade of the right aggressor (a seller for a buy, a buyer for a sell) prints
+        at or through its price; a record that merely touches the price from the wrong side re-quotes a
+        pegged order one step closer to market, and the re-quote fills at once if it now meets the
+        opposite quote. Without quotes (no bid/ask) price reaching the order is a fill."""
         for o in list(self.orders.values()):
             if o["id"] not in self.orders:
                 continue
-            if (px >= o["price"]) if o["side"] == "sell" else (px <= o["price"]):
-                self._touch(o, t, px)
+            buy = o["side"] == "buy"
+            cur = o["price"]
+            if not o["touched"] and ((px <= o["level_price"]) if buy else (px >= o["level_price"])):
+                o["touched"] = True
+                self.dead.add(o["key"])             # the level is traded: no order may be put on it again
+            if bid is None:
+                if (px <= cur) if buy else (px >= cur):
+                    self._touch(o, t, cur)
+                continue
+            if o["pending"]:
+                o["pending"] = False
+                self._pending -= 1
+                quote = ask if buy else bid
+                if (cur >= quote) if buy else (cur <= quote):
+                    self._touch(o, t, quote)
+                    continue
+            right = (side < 0) if buy else (side > 0)
+            if right and ((px <= cur) if buy else (px >= cur)):
+                self._touch(o, t, cur)
+            elif self.p.pegged and not right and bid <= cur <= ask and cur != o["worst"]:
+                self._requote(o, t, px)
+
+    def _requote(self, o, t, px):
+        """Chase: move a touched-but-unfilled order one step closer to market. The new price is judged like
+        a new order (gates, stop, target); if it would fail, the order is pulled."""
+        buy = o["side"] == "buy"
+        step = self.p.peg_step
+        new = min(o["price"] + step, o["worst"]) if buy else max(o["price"] - step, o["worst"])
+        res = self._evaluate(o["level"], o["type"], new, t)
+        if isinstance(res, str):
+            self._cancel(o, t, "peg:" + res)
+            return
+        old = o["price"]
+        o["price"], o["pending"] = new, True
+        self._pending += 1
+        o["serves"], o["boxes"], o["provisional"], o["plan"] = res["serves"], res["boxes"], res["provisional"], res["plan"]
+        self._limits()
+        self.log("order_requoted", t, id=o["id"], type=o["type"], frm=old, to=new, level=o["level_price"],
+                 stop=o["plan"][0], target=o["plan"][1])
 
     def _tb_floor(self, t):
         return (t // self.tb_ns) * self.tb_ns
@@ -483,9 +605,10 @@ class Engine:
             return "eod_entry_blocked"
         return None
 
-    def _touch(self, o, t, px):
-        """Price reached the order. It was kept only because it passed every gate on the previous tick, so it
-        fills at its price on the plan made then; the level is spent (retested) either way."""
+    def _touch(self, o, t, fill_px):
+        """The order filled at `fill_px`. It was kept only because it passed every gate on the previous tick,
+        so it fills on the plan made then (re-planned when the fill landed away from the order price, e.g.
+        a re-quote that met the quote); the level is spent (retested) either way."""
         k = level_key(o["level"])
         if not self.lv.can_retest(o["level"]):
             self.dead.add(k)
@@ -498,8 +621,12 @@ class Engine:
             self._cancel(o, t, "no_seat_left")
             self._rebuild_entries(t)
             return
-        stop, target, src = o["plan"]
-        self._fill(o, t, o["price"], serves, stop, target, src)
+        plan = o["plan"]
+        if fill_px != o["price"]:
+            re = self._plan(o, fill_px, t)
+            plan = plan if isinstance(re, str) else re
+        stop, target, src = plan
+        self._fill(o, t, fill_px, serves, stop, target, src)
         self._rebuild_entries(t)
 
     def _plan(self, o, fill, t):
@@ -572,7 +699,7 @@ class Engine:
         eod = (day + pd.Timedelta(seconds=self.p.eod_flat)).tz_convert("UTC").value
         tr = {"id": len(self.trades), "order": o["id"], "t": t, "side": o["side"], "type": o["type"],
               "price": price, "stop": stop, "target": target, "stop_src": src, "serves": serves,
-              "eod": eod, "level_spike": bool(o["level"].get("is_spike")), "p0_kind": o["level"].get("p0_kind"),
+              "eod": eod, "trails": 0, "level_price": o["level_price"], "level_spike": bool(o["level"].get("is_spike")), "p0_kind": o["level"].get("p0_kind"),
               "boxes": [(b, d) for b, d, _ in serves], "exit": None}
         stop_pts, tgt_pts = abs(stop - price), abs(target - price)
         tr["stop_pts"], tr["target_pts"], tr["r_planned"] = stop_pts, tgt_pts, tgt_pts / stop_pts
@@ -580,14 +707,63 @@ class Engine:
         self.open.append(tr)
         for s in serves:
             self.seats[s] = tr["id"]
+        if o.get("pending"):
+            self._pending -= 1
         self.orders.pop(o["id"], None)
         self.log("fill", t, trade=tr["id"], order=o["id"], side=o["side"], price=price, stop=stop, target=target,
-                 stop_src=src, r=round(tr["r_planned"], 2), serves=serves, level_type=o["type"])
+                 stop_src=src, r=round(tr["r_planned"], 2), serves=serves, level_type=o["type"],
+                 level=o["level_price"], chased=round(abs(price - o["level_price"]), 2))
         self._limits()
         self._retrig()
         if len(self.open) >= self.p.max_open_positions:
             for other in list(self.orders.values()):
                 self._cancel(other, t, "margin: position open")
+
+    def _manage_tb(self, tt, close):
+        """A trading bar closed with trades open: rule 1 (stop trail) now, rule 2 (RR floor) on the next tick.
+        Both read the trading-bar ledger (the reports run trade_management on the M1/M2 ledger and bars
+        they were built on, one bar at a time)."""
+        p = self.p
+        grp_all = self.lv.broke_by_bar.get(tt, ())
+        for tr in self.open:
+            long = tr["side"] == "buy"
+            grp = [x for x in grp_all if x["type"] == tr["type"]]
+            if not grp or len(grp) < self._trail_need(grp, tr["type"]):
+                continue
+            new = grp[0]["breakout_low"] - p.tick if long else grp[0]["breakout_high"] + p.tick
+            if (new - tr["stop"]) * (1 if long else -1) > 0:
+                self.log("stop_trailed", self.last_t, trade=tr["id"], frm=tr["stop"], to=new, group=len(grp))
+                tr["stop"] = new
+                tr["trails"] += 1
+        self._retrig()
+        self._rr_close = (close, {tr["id"] for tr in self.open})
+
+    def _trail_need(self, grp, typ):
+        """How many P0s must share the breakout bar: 1 when any is a swing or a spike, 2 when every wick is at
+        least trail_min_wick of its own candle, else 3 (trade_management._group_threshold)."""
+        if any(x["is_swing"] or x["is_spike"] for x in grp):
+            return 1
+        for x in grp:
+            bar = self.lv.bars.get(pd.Timestamp(x["formation_time"]).value)
+            if bar is None or bar[1] <= bar[2]:
+                return 3
+            o, h, l, c = bar
+            wick = (h - max(o, c)) if typ == "LHPB" else (min(o, c) - l)
+            if wick / (h - l) < self.p.trail_min_wick:
+                return 3
+        return 2
+
+    def _rr_floor(self, t, px, bid, ask):
+        close, ids = self._rr_close
+        self._rr_close = None
+        for tr in list(self.open):
+            if tr["id"] not in ids:
+                continue
+            sgn = 1 if tr["side"] == "buy" else -1
+            reward, risk = sgn * (tr["target"] - close), sgn * (close - tr["stop"])
+            if risk > 0 and reward / risk <= self.p.rr_floor:
+                quote = (bid if sgn > 0 else ask)
+                self._exit(tr, t, px if quote is None else quote, "rr_floor")
 
     def _check_exits(self, t, px):
         for tr in list(self.open):

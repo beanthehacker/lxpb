@@ -20,12 +20,12 @@ from live_range.engine import Engine, Params, PT
 
 
 def ticks(lo, hi):
-    """(times_ns int64 array, prices float64 array) over [lo, hi) on the continuous scale, a tick kept
-    only when its price differs from the last kept one or it opens a new minute (so no bar close
-    is ever late)."""
+    """(times_ns, prices, bids, asks, sides) over [lo, hi) on the continuous scale. `sides` is +1 when a
+    buyer lifted the offer, -1 when a seller hit the bid. A record is kept only when its price, quotes or
+    side differ from the last kept one, or it opens a new minute (so no bar close is ever late)."""
     rolls = [r for r in R._own_roll() if r is not None and lo < r < hi]
     edges = [lo] + rolls + [hi]
-    T, P = [], []
+    T, P, B, A, S = [], [], [], [], []
     for a, b in zip(edges[:-1], edges[1:]):
         offset, sym = R._offset_for_ts(a)
         w = R._scid_window(sym, a, b)
@@ -33,13 +33,18 @@ def ticks(lo, hi):
             continue
         T.append(w.index.asi8)
         P.append(np.round(w["Close"].to_numpy(np.float64) + offset, 4))
+        B.append(np.round(w["Low"].to_numpy(np.float64) + offset, 4))
+        A.append(np.round(w["High"].to_numpy(np.float64) + offset, 4))
+        S.append(np.where(w["AskVolume"].to_numpy() > 0, 1, np.where(w["BidVolume"].to_numpy() > 0, -1, 0)).astype(np.int8))
     if not T:
-        return np.empty(0, np.int64), np.empty(0)
-    t, p = np.concatenate(T), np.concatenate(P)
+        e = np.empty(0)
+        return np.empty(0, np.int64), e, e, e, np.empty(0, np.int8)
+    t, p, bd, ak, sd = (np.concatenate(x) for x in (T, P, B, A, S))
     slot = t // 60_000_000_000
     keep = np.ones(len(t), dtype=bool)
-    keep[1:] = (p[1:] != p[:-1]) | (slot[1:] != slot[:-1])
-    return t[keep], p[keep]
+    keep[1:] = ((p[1:] != p[:-1]) | (bd[1:] != bd[:-1]) | (ak[1:] != ak[:-1]) | (sd[1:] != sd[:-1])
+                | (slot[1:] != slot[:-1]))
+    return t[keep], p[keep], bd[keep], ak[keep], sd[keep]
 
 
 def verdicts(lo, hi, freq):
@@ -61,6 +66,9 @@ def main():
     ap.add_argument("--bar-minutes", type=int, default=1)
     ap.add_argument("--out", default=None)
     ap.add_argument("--chunk-hours", type=float, default=24.0)
+    ap.add_argument("--no-peg", action="store_true", help="plain limit orders (no chasing)")
+    ap.add_argument("--no-manage", action="store_true", help="no stop trail / RR-floor exit")
+    ap.add_argument("--seat-rank", default="spike_first", choices=["spike_first", "nearest"])
     a = ap.parse_args()
     lo = pd.Timestamp(a.lo, tz="UTC")
     hi = pd.Timestamp(a.hi, tz="UTC") if a.hi else pd.Timestamp(R._scid_bounds("EPZ26")[1]).floor("1min")
@@ -69,17 +77,18 @@ def main():
     v5 = verdicts(start, hi, "5min")
     vtb = verdicts(start, hi, f"{a.bar_minutes}min")
     print(f"verdicts for {len(v5):,} M5 and {len(vtb):,} M{a.bar_minutes} bars in {time.time() - t0:.1f}s")
-    eng = Engine(Params(bar_minutes=a.bar_minutes), arm_from_ns=lo.value, verdicts5=v5, verdicts_tb=vtb)
+    eng = Engine(Params(bar_minutes=a.bar_minutes, pegged=not a.no_peg, manage=not a.no_manage,
+                         seat_rank=a.seat_rank), arm_from_ns=lo.value, verdicts5=v5, verdicts_tb=vtb)
     print(f"replay {start} -> {hi} (armed from {lo}), M{a.bar_minutes} trading bars")
     t0, n_ticks = time.time(), 0
     cur = start
     step = pd.Timedelta(hours=a.chunk_hours)
     while cur < hi:
         nxt = min(cur + step, hi)
-        T, P = ticks(cur, nxt)
+        T, P, B, A, S = ticks(cur, nxt)
         on_tick = eng.on_tick
-        for t, px in zip(T.tolist(), P.tolist()):
-            on_tick(t, px)
+        for t, px, bd, ak, sd in zip(T.tolist(), P.tolist(), B.tolist(), A.tolist(), S.tolist()):
+            on_tick(t, px, bd, ak, sd)
         n_ticks += len(T)
         print(f"  {cur:%m-%d %H:%M} +{len(T):>7,} ticks  trades {len(eng.trades):>3}  working orders {len(eng.orders):>2}  "
               f"{time.time() - t0:6.1f}s", flush=True)
@@ -101,7 +110,8 @@ def report(eng, out):
             "playbooks": "+".join(sorted({pb for _, _, pb in tr["serves"]})),
             "boxes": ",".join(f"{b}{'^' if d == 'up' else 'v'}" for b, d in tr["boxes"]),
             "entry": tr["price"], "stop": tr["stop"], "target": tr["target"], "stop_src": tr["stop_src"],
-            "r_planned": round(tr["r_planned"], 2),
+            "r_planned": round(tr["r_planned"], 2), "level": tr["level_price"],
+            "chased": round(abs(tr["price"] - tr["level_price"]), 2), "trails": tr["trails"],
             "exit_time_pt": _fmt(ex["t"]) if ex else "", "exit": ex["price"] if ex else "", "why": ex["why"] if ex else "open",
             "pnl_pts": round(tr.get("pnl", float("nan")), 2) if ex else "", "r": round(tr.get("r", float("nan")), 2) if ex else "",
         })
