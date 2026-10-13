@@ -2236,8 +2236,8 @@ def _rebuild_range_panes(results, chart_stacks):
 
 
 def _mark_range_box(chart, b, color, label, letter, tagged):
-    """High/low rays from the box start to the pane's last bar, a start marker and a
-    breakout marker (when the box has one in view). Display only: the candles keep
+    """High/low rays from the box start to the pane's last bar, plus a dotted vertical line at
+    the box start and at its breakout (when the box has one in view). Display only: the candles keep
     their own colours. `letter` names the box when the trade has several (A, B, ...), so
     the short chart labels tell them apart; `tagged` is the set of prices that already
     carry an axis tag (boxes sharing an edge price get one tag, not two on top of each other)."""
@@ -2267,22 +2267,21 @@ def _mark_range_box(chart, b, color, label, letter, tagged):
                 "points": pts, "color": color, "lineWidth": 1, "lineStyle": 1,
                 "priceLabel": first, "title": f"{name} {edge}",
                 "label": f"{name} {edge} {px:.2f} (box from {R._to_pt_str(b['start'])}, {broke})"})
-    start_text = f"{letter} {hm(e0)}" if letter else f"start {hm(e0)}"
-    break_text = (f"{letter}{'↑' if up else '↓'}" if letter else f"broke {way} {hm(e1)}")
-    for e, shape, pos, text in ((e0, "arrowDown", "aboveBar", start_text),
-                                (e1, "arrowUp", "belowBar", break_text)):
-        if e == e1 and (st is None or pd.isna(st)):
+    # Start and breakout: a dotted vertical line through the pane with a label on a lane along its
+    # top (drawn by the page script), so nothing sits on the candles or hides a wick.
+    pre = f"{letter} " if letter else ""
+    for e, text, is_end in ((e0, f"{pre}start {hm(e0)}", False),
+                            (e1, f"{pre}broke {way} {hm(e1)}", True)):
+        if is_end and (st is None or pd.isna(st)):
             continue
-        if e == e1:   # the bar holding the breakout, whatever the pane's bar size
+        if is_end:   # the bar holding the breakout, whatever the pane's bar size
             i = bisect.bisect_right(times, e) - 1
             ok = 0 <= i and e - times[i] < 300
         else:
             i = bisect.bisect_left(times, e)
             ok = i < len(times) and times[i] < e + 300 and e >= times[0] - 300
         if ok:
-            chart.setdefault("markers", []).append({"time": times[i], "position": pos, "color": color,
-                                                    "shape": shape, "text": text})
-    chart.get("markers", []).sort(key=lambda m: m["time"])
+            chart.setdefault("vlines", []).append({"time": times[i], "color": color, "label": text})
     chart["title"] += (f"  |  {label} {name} {R._to_pt_str(b['start'])} -> "
                        f"{R._to_pt_str(st) if st is not None and pd.notna(st) else 'open'}, "
                        f"high {hi:.2f} / low {lo:.2f}")
@@ -3447,6 +3446,10 @@ tr.lvl-row.is-done:hover { opacity:0.6; }
 .chart-title { font-size:var(--chart-font, 13px); }
 .chart-title-split .ct-ohlc { font-size:var(--chart-font, 13px); }
 .chart-title-split + .chart-ph { height:calc(100% - 31px); }
+.vline-layer { position:absolute; inset:0; pointer-events:none; overflow:hidden; z-index:3; }
+.vline { position:absolute; top:0; width:0; border-left:1px dotted; opacity:0.75; }
+.vline-tag { position:absolute; white-space:nowrap; font-family:'Courier New', monospace; padding:0 3px;
+             background:rgba(0,0,0,0.55); border-radius:2px; }
 .pane-tip { font-size:var(--chart-font, 14px); line-height:1.4; padding:6px 10px; }
 </style>
 """
@@ -3601,11 +3604,55 @@ function _renderPane(elId, titleId, cd) {
       if (!clash) kept.push(o.y);
     });
   }
+  // Range start / breakout: dotted vertical lines with a label on a lane along the top of the
+  // plot, over a layer that ignores the pointer, so candles and wicks stay visible and clickable.
+  const vlines = (cd.vlines || []).map(v => {
+    const line = document.createElement('div');
+    line.className = 'vline';
+    line.style.borderLeftColor = v.color;
+    const tag = document.createElement('div');
+    tag.className = 'vline-tag';
+    tag.style.color = v.color;
+    tag.textContent = v.label;
+    return { v, line, tag };
+  });
+  let vlayer = null;
+  if (vlines.length) {
+    vlayer = document.createElement('div');
+    vlayer.className = 'vline-layer';
+    vlines.forEach(o => { vlayer.appendChild(o.line); vlayer.appendChild(o.tag); });
+    el.appendChild(vlayer);
+  }
+  function placeVlines() {
+    if (!vlayer) return;
+    const ts = chart.timeScale();
+    const plotW = ts.width(), plotH = Math.max(0, el.clientHeight - ts.height());
+    const perChar = chartFont() * 0.6, rowH = chartFont() + 6;
+    const lanes = [];     // right edge of the last label placed on each lane
+    vlines.map(o => ({ o, x: ts.timeToCoordinate(o.v.time) }))
+      .sort((a, b) => (a.x == null) - (b.x == null) || a.x - b.x)
+      .forEach(({ o, x }) => {
+        const visible = x != null && x >= 0 && x <= plotW;
+        o.line.style.display = o.tag.style.display = visible ? 'block' : 'none';
+        if (!visible) return;
+        const w = o.v.label.length * perChar + 10;
+        const flip = x + 3 + w > plotW;                 // not enough room to the right: label on the left
+        const left = flip ? x - 3 - w : x + 3;
+        let lane = lanes.findIndex(right => left > right + 4);   // first lane this label clears
+        if (lane === -1) lane = lanes.length;
+        lanes[lane] = left + w;
+        o.line.style.left = Math.round(x) + 'px';
+        o.line.style.height = plotH + 'px';
+        o.tag.style.left = Math.round(left) + 'px';
+        o.tag.style.top = (2 + lane * rowH) + 'px';
+        o.tag.style.fontSize = (chartFont() - 1) + 'px';
+      });
+  }
   let thinQueued = false;
   function queueThin() {
     if (thinQueued) return;
     thinQueued = true;
-    requestAnimationFrame(() => { thinQueued = false; thinTags(); _thinMarkers(chart, series, cd.markers); });
+    requestAnimationFrame(() => { thinQueued = false; thinTags(); _thinMarkers(chart, series, cd.markers); placeVlines(); });
   }
   let tip = null;
   if (rayInfo.length) {
