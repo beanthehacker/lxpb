@@ -48,26 +48,37 @@ has two pivots at each edge, as in the reports.
 
 ## Orders
 
-For every episode waiting for its retest:
+Entries: same-type live levels within 2 pt chain into a cluster, ordered at the extreme price (the reports'
+rule); a confirmed swing within 1 pt of that price moves it to the nearest other live level within 10 pt, or
+blocks it (swerve). Levels that cannot be retested yet get none.
 
-* **fade** - a live LXPB level beyond the breakout edge (LLPB above an up breakout, LHPB below
-  a down one);
-* **go-with** - a live level inside the box or within 2 pt beyond the breakout-side edge (LHPB
-  after an up breakout, LLPB after a down one).
+For every episode waiting for its retest, an entry qualifies as:
 
-Same-type live levels within 2 pt chain into a cluster, ordered at the extreme price (the
-reports' rule). A confirmed swing within 1 pt of that price moves it to the nearest other live
-level within 10 pt, or blocks it (swerve). One trade per (box, direction, playbook) seat; the
-first fill takes it, and an order that serves several boxes takes all their seats.
+* **fade** - a level beyond the breakout edge (LLPB above an up breakout, LHPB below a down one);
+* **go-with** - a level inside the box or within 2 pt beyond the breakout-side edge (LHPB after an up
+  breakout, LLPB after a down one).
 
-At the touch the order is **pulled instead of filled** when: the level was touched before it
-could be retested; it is in the news-pull window or the end-of-day no-entry window; the run-in
-into it is weak (4x the baseline bar range); for a fade, the breakout is not the run-in's own;
-no stop or no target can be planned. Otherwise it fills at its price.
+One trade per (box, direction, playbook) seat; the first fill takes it, and one order serves every box it
+qualifies for.
 
-Stop: P0 candle of a spike level, else the thrust candle of the live same-type levels within
-10 pt, widened to 3 pt (older P1) if tighter. Target: swing-extreme (latest confirmed zigzag
-pivot since the level's breakout, 0.25-50 pt away). Exits tick by tick; flat at 12:44 PT.
+**Orders are placed like an account with limited margin would place them, and every gate is judged before
+the touch.** On every tick:
+
+1. an entry within `arm_pts` (4 pt) of price is evaluated as if price were already on it: the breakouts
+   waiting for their retest *including a forming M5 bar read as if it closed at that price*, the run-in into
+   the level (must be strong: 4x the baseline bar range), for a fade that the breakout is the run-in's own,
+   a stop and a target that can be planned, and no blackout (news pull, end-of-day). Pass -> an order is placed
+   with that stop and target; fail -> none (and it is placed later if it starts to pass);
+2. a resting order is re-evaluated the same way and pulled the moment it would fail, or when price is
+   more than `cancel_pts` (6 pt) away, the level is spent, or a swing now sits on it;
+3. at most `max_working_orders` (2) rest at once, nearest first, and none while `max_open_positions` (1) is open
+   (a fill pulls the others).
+
+At the touch it simply fills at its price on the plan made on the previous tick.
+
+Stop: P0 candle of a spike level, else the thrust candle of the live same-type levels within 10 pt, widened to
+3 pt (older P1) if tighter. Target: swing-extreme (latest confirmed zigzag pivot since the level's breakout,
+0.25-50 pt away). Exits tick by tick; flat at 12:44 PT.
 
 ## Run
 
@@ -78,10 +89,9 @@ pivot since the level's breakout, 0.25-50 pt away). Exits tick by tick; flat at 
 
 * No trade management (stop trail, RR floor), no pegged/chasing entry, no liquidity or
   volume-spike tags, no opposite-zigzag target (the default rule is swing-extreme).
-* The weak run-in test runs at the touch, so a weak order is pulled on contact rather than
-  never resting.
-* Provisional (forming bar) reads use the box edges as of the last closed bar; the batch read
-  also lets the forming bar confirm zigzag pivots.
+* Forming-bar reads use the box edges as of the last closed bar; the batch read also lets the forming bar
+  confirm zigzag pivots.
+* No order latency or queue position: a resting order fills when a tick trades at or through its price.
 * The first fill takes a seat, where the reports ranked contenders (spike entry first, else
   earliest touch).
 

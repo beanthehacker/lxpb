@@ -58,6 +58,22 @@ for every chart you build or touch:
 Done for the `ss_m1_confl` / `ss_m2_confl` reports (their CSS and JS blocks). The other reports keep
 their old layout until they are next touched; apply the same rules then.
 
+# Live range engine (`live_range/`): orders as close to real as possible (user preference)
+
+**Standing preference (user, 2026-10-13): the streaming engine places orders the way a real account with limited
+margin would, and judges every gate BEFORE the touch.** Remember it for every change to `live_range`:
+
+- No ladders of resting orders: an order is placed only when price is within `arm_pts` of its level and
+  pulled when price drifts beyond `cancel_pts`; at most `max_working_orders` rest at once and none while
+  `max_open_positions` are open (a fill pulls the rest). The order set is updated on live data, tick by tick.
+- Every filter is evaluated as if price were already on the order, and re-evaluated while it approaches: a
+  weak run-in, a breakout that would not grade strong at that price, no plannable stop or target, a news or
+  end-of-day blackout. An order that would fail is not placed, and is pulled the moment it would fail;
+  it is never pulled at the touch because of what the touch showed. A target or stop that appears later in the
+  run-in makes the order placeable then.
+- A level that cannot be retested yet (the bar after its breakout has not closed) gets no order: touching it
+  only consumes it.
+
 # Data convention: TradingView exports confirm, Sierra Chart ticks extend
 
 **H1 and M5 history comes from TradingView's own continuous ES1! exports.
