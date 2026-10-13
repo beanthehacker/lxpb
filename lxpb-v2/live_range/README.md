@@ -84,3 +84,14 @@ pivot since the level's breakout, 0.25-50 pt away). Exits tick by tick; flat at 
   also lets the forming bar confirm zigzag pivots.
 * The first fill takes a seat, where the reports ranked contenders (spike entry first, else
   earliest touch).
+
+## Results so far (28 Sep - 6 Oct 2026, .scid ticks only)
+
+* Speed: 768k ticks (price changes) replayed in ~210 s, about 3.7k ticks/s, warm-up included.
+* Boxes: `check_boxes.py` - all boxes and all 201 episodes equal `find_range_box_zz`'s.
+* Against the M1 range-box report's 22 trades: 17 appear in the engine's 61 trades at the same level and
+  time (several to the second, e.g. 28 Sep 10:11:29 LLPB 7768.75, 29 Sep 04:49:38 LLPB 7768.00 and 11:00:34
+  LLPB 7727.50). The engine's 61 trades are every box seat it could fill, not only the retests the old
+  pipeline happened to trade, so it has more of them (39 fades, 8 fade+go-with, 14 go-with).
+* Not reproduced: 28 Sep 19:18:45 (the 7740.00 go-with, filled after a swerve and a 48-minute wait), 2 Oct
+  00:05:13 and 4 Oct 23:15:52, plus differences in entry price on three more (cluster / seat order).
