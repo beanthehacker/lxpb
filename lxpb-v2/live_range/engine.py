@@ -87,8 +87,8 @@ class Params:
     # peg_cap in all; a re-quote that lands on the opposite quote fills there. Every re-quote is judged
     # by the same gates as a new order (the order is a new price) and pulled if it would fail.
     # M1/M2 report ledger filters and gates (render_m1_confl_report.py)
-    bo_range_atr: float = 1.5        # strong-breakout gate on every level's P1 run: range >= this x ATR(bo_atr_period)
-    bo_body: float = 0.5             # ... and body >= this share of the run's range (0 range_atr = gate off)
+    bo_range_atr: float = 0.0        # OFF. The reports' --bo-range-atr 1.5: a level's own P1 run must have range >= this x ATR(bo_atr_period)
+    bo_body: float = 0.5             # ... and body >= this share of the run's range
     bo_atr_period: int = 30
     bo_atr_window: int = 150
     liquidity_gate: bool = True      # liquidity.py: >= 20% of the last 5 min of quotes wider than 1 tick -> no order
@@ -99,7 +99,6 @@ class Params:
     globex_open: tuple = (15 * 3600, 15 * 3600 + 5 * 60)
     tag_min_r: float = 1.0           # planned R below this is tagged r_below_min (the report measures, not skips)
     min_r: float = 0.0               # > 0 turns that tag into a gate
-    cluster_hours: float = 3.0       # SF.MAX_ALT_FILL_HOURS_DEFAULT: a cluster's order waits this long after its anchor's retest bar
     box_lookback_days: float = 0.0   # 0 = a box never expires. The report feeds its detector 5 days of M5 history (range_box_tags.LOOKBACK_DAYS); set 5.0 to copy that
     pegged: bool = True
     peg_step: float = 0.25
@@ -121,12 +120,8 @@ def _pt_sod(t_ns):
 
 
 class Engine:
-    def __init__(self, params=None, arm_from_ns=0, on_event=None, verdicts5=None, verdicts_tb=None, tb_from_ns=0):
-        """`tb_from_ns`: the trading bars (levels, run-in, zigzag, swings) start here; before it only the M5 / box
-        machinery runs. The reports build their M1/M2 level ledger from the first bar of their window, so levels that
-        formed earlier do not exist there; set it to the report window's start to compare like with like."""
+    def __init__(self, params=None, arm_from_ns=0, on_event=None, verdicts5=None, verdicts_tb=None):
         self.p = params or Params()
-        self.tb_from = tb_from_ns
         self.arm_from = arm_from_ns          # warm-up: nothing is armed before this time
         self.on_event = on_event
         self.events = []
@@ -261,8 +256,6 @@ class Engine:
 
     def _close_tb(self, g, t):
         tt = g[0] * self.tb_ns
-        if tt < self.tb_from:
-            return
         self.tb.append(tt, g[1], g[2], g[3], g[4])
         self.zz.step(tt, g[2], g[3])
         self._swings()
@@ -449,8 +442,6 @@ class Engine:
                 ent = {"key": level_key(entry), "type": typ, "side": "buy" if is_long else "sell",
                        "price": entry["price"], "level_price": entry["price"], "level": entry, "anchor": anchor,
                        "note": note, "lo_ns": lo_ns, "cluster": len(cl), "cluster_key": ck}
-                if self._expired(ent, t):
-                    continue
                 ents.append(ent)
         # A cluster whose anchor has been retested but whose order has not filled stays alive (the reports'
         # fill window runs on after the retest): a swerved entry belongs to the swerved cluster, not to the level
@@ -460,8 +451,7 @@ class Engine:
             if ck in seen:
                 continue
             fate = self.lv.fate.get(level_key(pe["anchor"]))
-            if (fate is not None and fate[0] == "retested" and pe["key"] in self._live_keys
-                    and pe["key"] not in self.dead and not self._expired(pe, t)):
+            if fate is not None and fate[0] == "retested" and pe["key"] in self._live_keys and pe["key"] not in self.dead:
                 ents.append(pe)
         self._recs = list(ents)
         # Two clusters can end on the same price (a swerve moves one onto another's level): one order there, which
@@ -479,13 +469,6 @@ class Engine:
         ents.sort(key=lambda e: e["price"])
         self.entries = ents
         self._ent_prices = [e["price"] for e in ents]
-
-    def _expired(self, ent, t):
-        """The reports' fill window: an order waits cluster_hours after the retest bar of the cluster's anchor
-        (find_alt_fill starts there); before that retest there is no window yet."""
-        fate = self.lv.fate.get(level_key(ent["anchor"]))
-        return (fate is not None and fate[0] == "retested"
-                and t - fate[1] > int(self.p.cluster_hours * 3600 * S_NS))
 
     def _box_seen(self, e, t=None):
         """A box older than box_lookback_days is not seen: the report feeds its detector 5 days of M5 history."""
@@ -622,17 +605,14 @@ class Engine:
                 break
             if p.seat_rank == "spike_first" and self._outranked(e, res, cands):
                 continue                    # a spike entry in view serves the same seat: that one gets it
+            if self._seat_has_order(res):
+                continue                    # one order per seat: an order already resting there stands
             self._oid += 1
             o = {**e, "id": self._oid, "armed_t": t, "serves": res["serves"], "boxes": res["boxes"],
                  "provisional": res["provisional"], "plan": res["plan"], "level_price": e["price"],
                  "touched": False, "pending": False,
                  "worst": e["price"] + (p.peg_cap if e["side"] == "buy" else -p.peg_cap)}
             self.orders[o["id"]] = o
-            if p.seat_rank == "spike_first" and self._spike(o):
-                mine = set(o["serves"])
-                for w in list(self.orders.values()):
-                    if w is not o and not self._spike(w) and mine & set(w["serves"]):
-                        self._cancel(w, t, "superseded_by_spike")
             self.log("order_armed", t, id=o["id"], type=o["type"], side=o["side"], price=o["price"],
                      serves=o["serves"], note=o["note"], provisional=o["provisional"], px=px,
                      stop=o["plan"][0], target=o["plan"][1],
@@ -657,18 +637,18 @@ class Engine:
         return (abs(e["price"] - px), e["price"])
 
     def _outranked(self, e, res, cands):
-        """A plain entry is held back while a spike entry (placeable now, or already resting) serves one
-        of the same seats: of the contenders for a seat the spike one is the one to rest an order on."""
+        """Of the entries that could be placed right now, a plain one is held back while a spike one serves one of
+        the same seats: the contenders for a seat are ranked once, before any order exists, and only the best is placed."""
         if self._spike(e):
             return False
         mine = set(res["serves"])
-        for d, r in cands:
-            if d is not e and self._spike(d) and mine & set(r["serves"]):
-                return True
-        for o in self.orders.values():
-            if self._spike(o) and mine & set(o["serves"]):
-                return True
-        return False
+        return any(d is not e and self._spike(d) and mine & set(r["serves"]) for d, r in cands)
+
+    def _seat_has_order(self, res):
+        """An order that is already resting for one of these seats stands: it is never pulled for a contender that
+        shows up later, and no second order is put on the same seat."""
+        mine = set(res["serves"])
+        return any(mine & set(o["serves"]) for o in self.orders.values())
 
     def _cancel(self, o, t, why):
         if o.get("pending"):

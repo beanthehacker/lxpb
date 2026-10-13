@@ -75,8 +75,8 @@ def main():
     ap.add_argument("--min-plain-wick", type=float, default=1.0, help="plain-P0 minimum rejection wick, points (0 = off)")
     ap.add_argument("--box-lookback-days", type=float, default=0.0,
                     help="range boxes older than this are not seen (the report's detector gets 5 days of M5 history); 0 = no expiry")
-    ap.add_argument("--cold-levels", action="store_true",
-                    help="build the trading-bar level book from --from on, as the reports do from their window's first bar")
+    ap.add_argument("--bo-range-atr", type=float, default=0.0,
+                    help="the reports' strong-breakout gate on every level's own P1 (1.5 in the reports; 0 = off)")
     ap.add_argument("--seat-rank", default="spike_first", choices=["spike_first", "nearest"])
     a = ap.parse_args()
     lo = pd.Timestamp(a.lo, tz="UTC")
@@ -88,8 +88,7 @@ def main():
     print(f"verdicts for {len(v5):,} M5 and {len(vtb):,} M{a.bar_minutes} bars in {time.time() - t0:.1f}s")
     eng = Engine(Params(bar_minutes=a.bar_minutes, pegged=not a.no_peg, manage=not a.no_manage,
                          seat_rank=a.seat_rank, min_plain_wick=a.min_plain_wick,
-                         box_lookback_days=a.box_lookback_days), arm_from_ns=lo.value, verdicts5=v5, verdicts_tb=vtb,
-                 tb_from_ns=lo.value if a.cold_levels else 0)
+                         box_lookback_days=a.box_lookback_days, bo_range_atr=a.bo_range_atr), arm_from_ns=lo.value, verdicts5=v5, verdicts_tb=vtb)
     print(f"replay {start} -> {hi} (armed from {lo}), M{a.bar_minutes} trading bars")
     t0, n_ticks = time.time(), 0
     cur = start
