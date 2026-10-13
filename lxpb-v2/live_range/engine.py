@@ -244,7 +244,8 @@ class Engine:
         return (box["high"] < price <= box["high"] + tol) if up else (box["low"] - tol <= price < box["low"])
 
     def _clusters(self, typ):
-        levels = sorted((lv for lv in self.lv.live(typ) if level_key(lv) not in self.dead),
+        levels = sorted((lv for lv in self.lv.live(typ)
+                         if level_key(lv) not in self.dead and self.lv.can_retest(lv)),
                         key=lambda x: x["price"])
         out, cur = [], []
         for lv in levels:
@@ -277,16 +278,34 @@ class Engine:
         return [s for s in arr if s[0] >= lo_ns and abs(s[1] - price) <= self.p.swerve_tol]
 
     def _refresh(self, t, why):
+        """Recompute the working orders from the current state and diff them against the resting ones.
+
+        Orders are sticky: one stays while its level is live and some episode it serves still
+        qualifies (so a swerved order does not flap as the cluster around it changes), and a new one
+        is only started for a cluster that holds no resting order's level. Levels that cannot be
+        retested yet (the bar after their breakout has not closed) get no order: touching them
+        only consumes them."""
         if t < self.arm_from:
             return
         eps = [e for e in self.box.active_episodes() if not e["done"]]
         want = {}
         if eps:
+            live_keys = {typ: {level_key(x): x for x in self.lv.live(typ)} for typ in ("LLPB", "LHPB")}
+            for o in self.orders.values():
+                lv = live_keys[o["type"]].get(o["key"])
+                if lv is None or o["key"] in self.dead:
+                    continue
+                q = self._qualify(o["type"], o["price"], eps)
+                if q:
+                    want[o["key"]] = dict(o, serves=[(e["box_id"], e["direction"], pb) for e, pb in q],
+                                          boxes={(e["box_id"], e["direction"]): e for e, _ in q},
+                                          provisional=any(e.get("provisional") for e, _ in q))
             now_lo = t - int(self.p.swerve_lookback_h * 3600 * S_NS)
             for typ in ("LLPB", "LHPB"):
                 is_long = typ == "LHPB"
                 for cl in self._clusters(typ):
-                    prices = [x["price"] for x in cl]
+                    if any(level_key(x) in want for x in cl):
+                        continue                 # an order already rests in this cluster
                     entry = min(cl, key=lambda x: (x["price"] if is_long else -x["price"],
                                                    pd.Timestamp(x["formation_time"]).value))
                     planned = entry["price"]
@@ -297,6 +316,7 @@ class Engine:
                         lo_ns = max(min(pd.Timestamp(x["breakout_time"]).value for x in cl), now_lo)
                         if self._swings_near(planned, is_long, lo_ns):
                             cand = [x for x in self.lv.live(typ) if level_key(x) not in self.dead
+                                    and self.lv.can_retest(x)
                                     and ((x["price"] < planned) if is_long else (x["price"] > planned))
                                     and abs(x["price"] - planned) <= self.p.swerve_max_move]
                             cand.sort(key=lambda x: abs(x["price"] - planned))
@@ -311,7 +331,7 @@ class Engine:
                     q = self._qualify(typ, entry["price"], eps)
                     if not q:
                         continue
-                    k = (typ, entry["price"], pd.Timestamp(entry["formation_time"]).value)
+                    k = level_key(entry)
                     want[k] = {"key": k, "type": typ, "side": "buy" if is_long else "sell", "price": entry["price"],
                                "level": entry, "members": [level_key(x) for x in cl], "note": note,
                                "serves": [(e["box_id"], e["direction"], pb) for e, pb in q],
@@ -324,8 +344,7 @@ class Engine:
         for k, w in want.items():
             if k in have:
                 o = have[k]
-                if set(o["serves"]) != set(w["serves"]):
-                    o["serves"], o["boxes"] = w["serves"], w["boxes"]
+                o["serves"], o["boxes"], o["provisional"] = w["serves"], w["boxes"], w["provisional"]
                 continue
             self._oid += 1
             w.update(id=self._oid, armed_t=t)
