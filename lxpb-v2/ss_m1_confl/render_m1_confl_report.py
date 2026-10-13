@@ -3438,16 +3438,16 @@ tr.lvl-row.is-done:hover { opacity:0.6; }
    The chart stack is exactly one screen wide (--stack-w, set from the visible width by the script
    below; the viewport meta tag makes that the device width) and stays in view while the table is
    panned sideways. Each pane is as wide as the stack and about 60% of the screen's height, the
-   two stacked one above the other. In-chart text is 13px (CHART_FONT in the script). The M5 and M1
+   two stacked one above the other. In-chart text is ~13px on screen (chartFont() in the script). The M5 and M1
    candles keep their own default grey: ranges are drawn with rays and markers only. */
 .chart-row > td { padding:0; }
 .chart-stack { width:var(--stack-w, calc(100vw - 16px)); position:sticky; left:8px;
                margin-left:-16px; padding:8px 0; }
-.chart-pane { height:clamp(340px, 60vh, 600px); }
-.chart-title { font-size:13px; }
-.chart-title-split .ct-ohlc { font-size:13px; }
+.chart-pane { height:clamp(340px, max(60vh, calc(var(--stack-w, 1000px) * 0.3)), 760px); }
+.chart-title { font-size:var(--chart-font, 13px); }
+.chart-title-split .ct-ohlc { font-size:var(--chart-font, 13px); }
 .chart-title-split + .chart-ph { height:calc(100% - 31px); }
-.pane-tip { font-size:14px; line-height:1.4; padding:6px 10px; }
+.pane-tip { font-size:var(--chart-font, 14px); line-height:1.4; padding:6px 10px; }
 </style>
 """
 # Two edits to the shared review JS, for this report only (each asserted, so a change
@@ -3482,9 +3482,12 @@ JS = _SHARED_JS + """
 //     would land on top of each other are thinned out: the most important one stays, and the
 //     full text of a ray shows on hover.
 // ---------------------------------------------------------------------
-const CHART_FONT = 13;
+// In-chart text size in CSS px. A browser that shrinks a wide page to fit the screen (iPad Safari)
+// shows every CSS px smaller, so the size grows by the same factor: it reads as ~13px on screen
+// at any zoom, up to a 22px cap.
+function chartFont() { return Math.max(13, Math.min(22, Math.round(13 / (_baseScale || 1)))); }
 const MAX_BAR_SPACING = 20, MIN_BAR_SPACING = 1;
-const TAG_GAP_PX = CHART_FONT + 7;     // least vertical distance between two axis tags
+function tagGapPx() { return chartFont() + 7; }   // least vertical distance between two axis tags
 // Keep the most informative tag when two collide: entry, stop, target, level, then range edges.
 function _tagPriority(title) {
   const t = (title || '').toLowerCase();
@@ -3511,7 +3514,7 @@ function _markerPriority(text) {
 }
 function _thinMarkers(chart, series, markers) {
   if (!markers || !markers.length) return;
-  const perChar = CHART_FONT * 0.62;       // width of one monospace character
+  const perChar = chartFont() * 0.62;       // width of one monospace character
   const used = {};
   const order = markers.map((m, i) => ({ m, i, x: chart.timeScale().timeToCoordinate(m.time) }));
   order.sort((a, b) => _markerPriority(a.m.text) - _markerPriority(b.m.text) || a.i - b.i);
@@ -3552,7 +3555,7 @@ function _renderPane(elId, titleId, cd) {
   titleEl.appendChild(baseEl);
   titleEl.appendChild(ohlcEl);
   const opts = _baseOpts(timeFmtH1);
-  opts.layout.fontSize = CHART_FONT;
+  opts.layout.fontSize = chartFont();
   const chart = LightweightCharts.createChart(el, Object.assign(opts, {
     autoSize: false, width: el.clientWidth || 800, height: el.clientHeight || 320,
   }));
@@ -3593,7 +3596,7 @@ function _renderPane(elId, titleId, cd) {
     pos.sort((a, b) => a.t.prio - b.t.prio || a.y - b.y);
     const kept = [];
     pos.forEach(o => {
-      const clash = kept.some(y => Math.abs(y - o.y) < TAG_GAP_PX);
+      const clash = kept.some(y => Math.abs(y - o.y) < tagGapPx());
       o.t.show(!clash);
       if (!clash) kept.push(o.y);
     });
@@ -3662,18 +3665,28 @@ _renderStack = function(i) {
   _renderChartPane(i, 'ctx', cd.ctx);
   _renderChartPane(i, 'main', cd.main);
 };
-// The chart stack is exactly the visible width of the screen on any device and orientation: the
-// width a page of this screen would have unzoomed (the visual viewport scaled back up), minus a
-// small gutter. Pinch-zooming does not change it; rotating or resizing does.
+// The chart stack is exactly as wide as what is on screen, whatever the browser did with the page:
+// at 1:1 that is the device width; when the browser shrinks the wide table to fit (iPad Safari), it
+// is the whole fitted page. The width in CSS px that the screen shows at the page's own starting
+// zoom (_baseScale, measured after load and after a rotation) is the visual viewport times its
+// current scale over that base, so pinch-zooming does not change it. Minus a small gutter.
+let _baseScale = null;
 function _layoutStackWidth() {
   const vv = window.visualViewport;
-  const w = vv ? vv.width * vv.scale : document.documentElement.clientWidth;
-  document.documentElement.style.setProperty('--stack-w', Math.max(300, Math.floor(w) - 16) + 'px');
+  const w = (vv && _baseScale) ? vv.width * vv.scale / _baseScale : document.documentElement.clientWidth;
+  const root = document.documentElement.style;
+  root.setProperty('--stack-w', Math.max(300, Math.floor(w) - 16) + 'px');
+  root.setProperty('--chart-font', chartFont() + 'px');
+}
+function _measureBaseScale() {
+  _baseScale = window.visualViewport ? window.visualViewport.scale : 1;
+  _layoutStackWidth();
 }
 _layoutStackWidth();
+window.addEventListener('DOMContentLoaded', _measureBaseScale);
+window.addEventListener('load', () => { _measureBaseScale(); setTimeout(_measureBaseScale, 600); });
+window.addEventListener('orientationchange', () => setTimeout(_measureBaseScale, 600));
 window.addEventListener('resize', _layoutStackWidth);
-window.addEventListener('orientationchange', () => setTimeout(_layoutStackWidth, 250));
-if (window.visualViewport) window.visualViewport.addEventListener('resize', _layoutStackWidth);
 // ---------------------------------------------------------------------
 // Dynamic filters -- see _apply_globex_open_filter's own docstring in
 // render_m5_confl2_report.py for the full authoring convention (this is

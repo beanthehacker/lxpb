@@ -43,14 +43,19 @@ px landscape, 820x1180 portrait) first.** Remember it for every chart you build 
 - The page carries `<meta name="viewport" content="width=device-width, initial-scale=1">`. Without
   it iPad Safari lays the page out at its own default width and scales it, so the charts end up
   half the page or zoomed.
-- The chart stack is exactly one screen wide and sticky-left. Its width is NOT `100vw` and NOT a fixed
-  cap (both are wrong on some browsers when the table is wider than the screen): a script sets
-  `--stack-w` from `visualViewport.width * visualViewport.scale` minus a 16px gutter, on load, resize
-  and rotation. Each pane is as wide as the stack, about 60% of the screen's height
-  (`clamp(340px, 60vh, 600px)`), the M5 context pane above the trading pane.
+- The chart stack is exactly as wide as what is on screen, sticky-left, whatever the browser did with the
+  page. NOT `100vw`, NOT a fixed cap, and NOT `visualViewport.width * scale` (that is the device width,
+  which left the charts at half the page when iPad Safari shrank the 1970px table to fit at ~0.6 zoom;
+  caught from a Safari PDF 2026-10-13). A script measures the page's own starting zoom (`_baseScale`,
+  after load and after a rotation) and sets `--stack-w` to `visualViewport.width * scale / _baseScale`
+  minus a 16px gutter, so a fitted page gets a full-page-wide stack, a 1:1 page a device-wide one, and
+  pinch-zooming changes nothing. In-chart and title text grows by 1/`_baseScale` (13px on screen,
+  capped at 22 CSS px) so it stays readable on a shrunken page. Each pane is as wide as the stack, taller
+  when the stack is wider (`clamp(340px, max(60vh, 0.3 x stack width), 760px)`), the M5 context pane
+  above the trading pane.
 - The candles fill the pane's width: the bar spacing follows the pane width and the number of bars
   (1px minimum, 20px maximum), not a fixed 6px.
-- In-chart text is 13px (`CHART_FONT`): large enough to read on a tablet, small enough that one
+- In-chart text is ~13px on screen (`chartFont()`): large enough to read on a tablet, small enough that one
   trade's tags fit. Never go back to 18px (tags pile on each other) or to 9px (unreadable). Axis tags
   show only the word naming the line (`stop`, `target`, `entry`, `level`, `range high`), since the tag
   prints the price itself. Axis tags and marker texts that would overlap are thinned (the most
@@ -68,7 +73,8 @@ Done for the `ss_m1_confl` / `ss_m2_confl` reports (their own chart JS and CSS i
 `render_m1_confl_report.py`, which draws the panes itself rather than using the shared `_renderPane`).
 The other reports keep their old layout until they are next touched; apply the same rules then.
 Check a chart change with a mobile-emulated browser (Playwright `isMobile: true`) at 1180x820 and
-820x1180, and confirm the stack width equals the viewport width minus 16.
+820x1180, both with `width=device-width` and with `width=1967` (the shrink-to-fit case Safari shows), and
+confirm the stack's width on screen (CSS width x scale) is the screen width minus the gutter.
 
 # The M1 range-box report (`ss_m1_confl/`) is standalone
 
