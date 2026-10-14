@@ -1740,17 +1740,42 @@ def _add_mode_views(chart_main, res, is_long):
 
 
 def _build_context_chart(bars, label, entry_t, exit_t, lo, hi, levels, is_long,
-                         date_only=False, anchor=None):
+                         date_only=False, anchor=None, keep=None, touch_prices=()):
     """One plain candle pane (no LXPB levels) over bars[lo:hi], with the
     trade's own entry/stop/target/level lines and entry/exit markers. `levels`
     is a list of (price, color, lineStyle, title). Returns None when the bars
     do not cover the entry. `anchor` maps an instant to the bar time that
-    contains it (D1 needs it; H1 snaps to the last bar at or before)."""
+    contains it (D1 needs it; H1 snaps to the last bar at or before).
+
+    `keep` -- optional (start, end) UTC pairs: only the bars inside one of them are drawn, and
+    each stretch left out becomes a "[N bars skipped]" marker. The spans are the market structure
+    the trade is decided on; bars that reached one of `touch_prices` (a tick) are kept too, two
+    either side. keep=None draws every bar of [lo, hi]."""
     if bars is None or bars.empty or entry_t < bars.index[0] or entry_t > bars.index[-1] + pd.Timedelta(days=1):
         return None
     win = bars.loc[lo:hi]
     if win.empty:
         return None
+    skipped = []   # (candle position the gap precedes, bars left out)
+    if keep is not None:
+        idx = win.index
+        mask = np.zeros(len(win), dtype=bool)
+        for s0, s1 in keep:
+            mask |= (idx >= s0) & (idx <= s1)
+        lows, highs = win["low"].to_numpy(float), win["high"].to_numpy(float)
+        for tp in touch_prices:
+            hit = (lows <= tp + 0.25) & (highs >= tp - 0.25)
+            mask |= np.convolve(hit.astype(int), np.ones(5, dtype=int), mode="same") > 0
+        mask[:2] = mask[-2:] = True
+        run = 0
+        for k, kept in enumerate(mask):
+            if kept:
+                if run and k:
+                    skipped.append((int(mask[:k].sum()), run))
+                run = 0
+            else:
+                run += 1
+        win = win[mask]
     candles = [{"time": R._to_epoch_utc(t), "open": float(r.open), "high": float(r.high),
                 "low": float(r.low), "close": float(r.close)} for t, r in win.iterrows()]
     times = [c["time"] for c in candles]
@@ -1766,10 +1791,14 @@ def _build_context_chart(bars, label, entry_t, exit_t, lo, hi, levels, is_long,
     if exit_t is not None:
         markers.append({"time": snap(exit_t), "position": "aboveBar" if is_long else "belowBar",
                         "color": "#fbbf24", "shape": "square", "text": "exit"})
+    for pos, n in skipped:
+        markers.append({"time": times[pos], "position": "aboveBar", "color": "#9ca3af", "shape": "square",
+                        "text": f"[{n} bars skipped]"})
     markers.sort(key=lambda m: m["time"])
     lines = [{"price": p, "color": c, "lineWidth": 1, "lineStyle": s, "title": t}
              for p, c, s, t in levels]
-    return {"title": f"{label}  |  {R._to_pt_str(win.index[0])} → {R._to_pt_str(win.index[-1])}",
+    return {"title": f"{label}  |  {R._to_pt_str(win.index[0])} → {R._to_pt_str(win.index[-1])}"
+                     + (f"  [{sum(n for _, n in skipped)} bars skipped]" if skipped else ""),
             "candles": candles, "markers": markers, "priceLines": lines, "rays": [],
             "precision": 2, "dateOnly": date_only}
 
@@ -1778,40 +1807,131 @@ CTX_M5_HOURS_BEFORE = 8
 CTX_M5_HOURS_AFTER = 2
 
 
-def _build_context_charts(res, filled, range_spans=()):
-    """The REAL M5 context pane (R._display_m5(), never the M1 series the strategy trades on)
-    around the trade, or None when the M5 bars do not cover it. Filled trades get
-    entry/stop/target lines and an exit marker; unfilled rows get only the level and the
-    retest instant."""
+def _trade_context(res, filled):
+    """(is_long, entry_t, exit_t, end_t, levels, touch_prices) of a trade for the context panes:
+    UTC instants, and the level/entry/stop/target lines (price, colour, style, title)."""
     is_long = res["is_long"] if "is_long" in res else res["level_type"] == "LHPB"
     if filled:
         entry_t = pd.Timestamp(res["touch_time_alt"]).tz_convert("UTC")
         exit_t = res["resolved"].get("exit_time")
         fill, stop_pts, tgt_pts = res["fill_price"], res["stop_pts"], res["target_pts"]
+        stop_px = fill - stop_pts if is_long else fill + stop_pts
+        tgt_px = fill + tgt_pts if is_long else fill - tgt_pts
         levels = [(res["own_price"], R.LEVEL_COLOR, 0, f"level {res['own_price']:.2f}"),
                   (fill, R.ENTRY_COLOR, 0, f"entry {fill:.2f}"),
-                  (fill - stop_pts if is_long else fill + stop_pts,
-                   SR.EXIT_LOSS_COLOR, 2, "stop"),
-                  (fill + tgt_pts if is_long else fill - tgt_pts,
-                   SR.EXIT_WIN_COLOR, 2, "target")]
+                  (stop_px, SR.EXIT_LOSS_COLOR, 2, "stop"),
+                  (tgt_px, SR.EXIT_WIN_COLOR, 2, "target")]
+        touch_prices = (fill, stop_px, tgt_px)
     else:
         entry_t = pd.Timestamp(res["row"]["retest_time"])
         entry_t = entry_t.tz_localize("UTC") if entry_t.tzinfo is None else entry_t.tz_convert("UTC")
         exit_t = None
         levels = [(res["own_price"], R.LEVEL_COLOR, 0, f"level {res['own_price']:.2f}")]
+        touch_prices = ()
     if exit_t is not None:
         exit_t = pd.Timestamp(exit_t)
         exit_t = exit_t.tz_localize("UTC") if exit_t.tzinfo is None else exit_t.tz_convert("UTC")
     end_t = exit_t if exit_t is not None else entry_t
+    return is_long, entry_t, exit_t, end_t, levels, touch_prices
 
+
+# How much of a range box is kept as every candle in each pane. A longer box (a box can be days or weeks
+# old) keeps the stretch before its breakout whole, plus a few bars around its start and around every
+# crest/trough of the box (the structure the range is made of); only the bars in between are skipped.
+MAIN_KEEP_WHOLE = pd.Timedelta(hours=36)   # M1 trading pane
+CTX_KEEP_WHOLE = pd.Timedelta(days=4)      # M5 context pane
+MAIN_PIVOT_PAD = pd.Timedelta(minutes=12)  # around each pivot in the M1 pane (the pivot is an M5 bar)
+CTX_PIVOT_PAD = pd.Timedelta(minutes=60)
+
+
+def _structure_keep(spans, whole, pad):
+    """(start, end) UTC pairs to keep from range-box `spans` [(start, end, pivots)]: a span no longer than
+    `whole` entirely; a longer one as its last `whole`, plus `pad` either side of its start and of each pivot."""
+    out = []
+    for s0, s1, pivots in spans:
+        if s1 - s0 <= whole:
+            out.append((s0, s1))
+            continue
+        out.append((s1 - whole, s1))
+        out.append((s0 - pad, s0 + pad))
+        for pv in pivots or ():
+            t = pd.Timestamp(pv["time"])
+            t = t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+            out.append((t - pad, t + 5 * pad / 12))   # pivot bar is 5 minutes long
+    return out
+
+
+def _build_context_charts(res, filled, range_spans=()):
+    """The REAL M5 context pane (R._display_m5(), never the M1 series the strategy trades on)
+    around the trade, or None when the M5 bars do not cover it. Filled trades get
+    entry/stop/target lines and an exit marker; unfilled rows get only the level and the
+    retest instant. `range_spans` [(start, end, pivots)] are the drawn range boxes: the pane reaches
+    back to the earliest and keeps their structure (_structure_keep), skipping the rest."""
+    is_long, entry_t, exit_t, end_t, levels, touch_prices = _trade_context(res, filled)
     m5 = R._display_m5()  # the REAL M5 series -- never the patched M1 one (see LC.m5_bars_continuous)
     lo = entry_t - pd.Timedelta(hours=CTX_M5_HOURS_BEFORE)
-    if range_spans:   # the window is one unbroken run of bars: just reach back to the earliest box
-        lo = min(lo, min(s0 for s0, _ in range_spans) - pd.Timedelta(minutes=30))
-    ctx_chart = _build_context_chart(
-        m5, "M5", entry_t, exit_t, lo,
-        end_t + pd.Timedelta(hours=CTX_M5_HOURS_AFTER), levels, is_long)
-    return ctx_chart
+    hi = end_t + pd.Timedelta(hours=CTX_M5_HOURS_AFTER)
+    keep = None
+    if range_spans:
+        lo = min(lo, min(s0 for s0, _, _ in range_spans) - pd.Timedelta(minutes=30))
+        keep = [(entry_t - pd.Timedelta(hours=CTX_M5_HOURS_BEFORE), hi)] + \
+            _structure_keep(range_spans, CTX_KEEP_WHOLE, CTX_PIVOT_PAD)
+    return _build_context_chart(m5, "M5", entry_t, exit_t, lo, hi, levels, is_long,
+                                keep=keep, touch_prices=touch_prices)
+
+
+CTX_H1_BARS_BEFORE = 150
+CTX_H1_BARS_AFTER = 30
+CTX_D1_DAYS_BEFORE = 90
+CTX_D1_DAYS_AFTER = 10
+_D1_CACHE = None
+
+
+def _display_d1():
+    """Daily bars aggregated from the H1 series (R._display_h1), one per ES trading day. A session runs
+    15:00 PT (prior calendar day) to 14:00 PT, so shifting an H1 bar's PT time forward 9h lands every
+    bar of a session on that session's closing PT date. Each bar's `time` is noon PT of that date so the
+    browser's PT date label reads the trading date. Cached."""
+    global _D1_CACHE
+    if _D1_CACHE is None:
+        h1 = R._display_h1()
+        pt = h1.index.tz_convert("America/Los_Angeles")
+        day = (pt + pd.Timedelta(hours=9)).normalize().tz_localize(None)
+        g = h1.groupby(day)
+        d1 = pd.DataFrame({"open": g["open"].first(), "high": g["high"].max(),
+                           "low": g["low"].min(), "close": g["close"].last()})
+        d1.index = pd.DatetimeIndex(
+            [pd.Timestamp(f"{d.date()} 12:00", tz="America/Los_Angeles") for d in d1.index]
+        ).tz_convert("UTC")
+        _D1_CACHE = d1
+    return _D1_CACHE
+
+
+def _d1_bar_time(ts):
+    """The D1 bar `time` (noon PT of the trading date, see _display_d1) of the session containing `ts`."""
+    pt = pd.Timestamp(ts).tz_convert("America/Los_Angeles") + pd.Timedelta(hours=9)
+    return pd.Timestamp(f"{pt.date()} 12:00", tz="America/Los_Angeles").tz_convert("UTC")
+
+
+def _build_htf_charts(res, filled, range_spans=()):
+    """{'h1': ..., 'd1': ...} higher-timeframe panes of a trade (None where the bars do not cover it), every
+    bar drawn, with the same level/entry/stop/target lines as the M5 pane. They reach back to the earliest
+    drawn range box (H1 at most 60 days)."""
+    is_long, entry_t, exit_t, end_t, levels, _ = _trade_context(res, filled)
+    earliest = min((s0 for s0, _, _ in range_spans), default=None)
+    lo_h1 = entry_t - pd.Timedelta(hours=CTX_H1_BARS_BEFORE)
+    lo_d1 = entry_t - pd.Timedelta(days=CTX_D1_DAYS_BEFORE)
+    if earliest is not None:
+        lo_h1 = min(lo_h1, earliest - pd.Timedelta(hours=12))
+        lo_d1 = min(lo_d1, earliest - pd.Timedelta(days=3))
+    h1 = _build_context_chart(
+        R._display_h1(), "H1", entry_t, exit_t, lo_h1,
+        end_t + pd.Timedelta(hours=CTX_H1_BARS_AFTER), levels, is_long)
+    d1 = _build_context_chart(
+        _display_d1(), "D1 (session 15:00 PT prior day \u2192 14:00 PT, labelled by close date)",
+        entry_t, exit_t, lo_d1, end_t + pd.Timedelta(days=CTX_D1_DAYS_AFTER), levels, is_long,
+        date_only=True, anchor=_d1_bar_time)
+    return {"h1": h1, "d1": d1}
 
 
 # Bars always kept on each side of P0 and of P2 (retest) in the M5 pane; the rest may be compressed.
@@ -1838,20 +1958,10 @@ def _row_for_chart(res):
     return row_for_chart
 
 
-# How much of a range box's history is kept whole in each pane. A box that is older than this still
-# gets its rays and a "◄ start" label at the pane's left edge; only the candles before the cap are
-# left out (an old box can be days old: 17 days of M1 bars is 24,000 candles in one chart).
-MAIN_SPAN_CAP = pd.Timedelta(hours=36)    # M1 trading pane
-CTX_SPAN_CAP = pd.Timedelta(days=6)       # M5 context pane
-
-
-def _cap_spans(spans, cap):
-    return [(max(s0, s1 - cap), s1) for s0, s1 in spans]
-
-
 def _build_price_panes(res, range_spans=()):
-    """{'main': M1 pane, 'ctx': M5 pane} of a filled trade. `range_spans`
-    are (start, end) UTC pairs, one per drawn range box, kept whole in both panes."""
+    """{'main': M1 pane, 'ctx': M5 pane, 'h1', 'd1'} of a filled trade. `range_spans` are
+    (start, end, pivots) per drawn range box: their structure is kept in the M1 and M5 panes
+    (_structure_keep) and the H1/D1 panes reach back to the earliest."""
     resolved = res["resolved"]
     stop_pts, target_pts = res["stop_pts"], res["target_pts"]
     row_for_chart = _row_for_chart(res)
@@ -1883,7 +1993,8 @@ def _build_price_panes(res, range_spans=()):
         bars_after_exit=2 * SR.M5_BARS_AFTER_EXIT,
         p0_p2_pad_bars=P0_P2_PAD_BARS,
         extra_context_times=extra_context_times, plain_p0=res["plain_p0"],
-        protect_spans=_cap_spans(range_spans, MAIN_SPAN_CAP))
+        protect_spans=_structure_keep(range_spans, MAIN_KEEP_WHOLE, MAIN_PIVOT_PAD),
+        touch_prices=_trade_context(res, True)[5])
     if chart_main is not None:
         chart_main["title"] += (f"  |  R {res['r_multiple']:.2f}  |  entry via "
                               f"{res['alt_source']} ({res['group_n']} in group)")
@@ -1894,8 +2005,8 @@ def _build_price_panes(res, range_spans=()):
         _annotate_swerve(chart_main, res, res["is_long"])
         _rayify_trade_lines(chart_main, res, row_for_chart)
         _add_mode_views(chart_main, res, res["is_long"])
-    return {"main": chart_main, "ctx": _build_context_charts(res, filled=True,
-                                                range_spans=_cap_spans(range_spans, CTX_SPAN_CAP))}
+    return {"main": chart_main, "ctx": _build_context_charts(res, filled=True, range_spans=range_spans),
+            **_build_htf_charts(res, True, range_spans)}
 
 
 def _build_unfilled_chart_stack(res, args):
@@ -1945,7 +2056,8 @@ def _build_unfilled_chart_stack(res, args):
                               f"{_fail_reason_label(res.get('fail_reason'))} "
                               f"(no stop/target -- never computed)")
 
-    return {"main": chart_main, "ctx": _build_context_charts(res, filled=False)}
+    return {"main": chart_main, "ctx": _build_context_charts(res, filled=False),
+            **_build_htf_charts(res, False)}
 
 
 # --------------------------------------------------------------------------
@@ -2273,8 +2385,8 @@ RANGE_SPAN_PAD = pd.Timedelta(minutes=15)
 
 
 def _range_spans(res):
-    """(start, end) UTC pairs of every box drawn for the trade, padded a little: each
-    box's start..breakout (or the touch, for a box with no break bar), kept whole."""
+    """(start, end, pivots) UTC triples of every box drawn for the trade: each box's start..breakout (or the
+    touch, for a box with no break bar), padded a little, with the box's own crests and troughs."""
     rbx = res.get("range_box") or {}
     touch = pd.Timestamp(res["touch_time_alt"]).tz_convert("UTC")
     spans = []
@@ -2286,7 +2398,7 @@ def _range_spans(res):
             start = pd.Timestamp(b["start"])
             spans.append((start.tz_localize("UTC") if start.tzinfo is None else start.tz_convert("UTC"),
                           (end.tz_localize("UTC") if end.tzinfo is None else end.tz_convert("UTC"))
-                          + RANGE_SPAN_PAD))
+                          + RANGE_SPAN_PAD, b.get("pivots") or []))
     return spans
 
 
@@ -2342,19 +2454,25 @@ def _mark_range_box(chart, b, color, label, letter, tagged):
     pt = b.get("prior_time")
     if b.get("fade_no") == 2 and pt is not None and pd.notna(pt):
         lines.insert(1, (R._to_epoch_utc(pt), f"{pre}1st broke {b['prior_dir']} {hm(R._to_epoch_utc(pt))}", True))
+    # How far from a bar an instant may be and still sit on it: 5 minutes, or the pane's own bar for H1/D1.
+    tol = max(300, int(pd.Series(times).diff().median())) if len(times) > 2 else 300
     for e, text, is_end in lines:
         if is_end and (st is None or pd.isna(st)):
             continue
-        if is_end:   # the bar holding the breakout, whatever the pane's bar size
+        if is_end or tol > 300:   # the bar holding the instant, whatever the pane's bar size
             i = bisect.bisect_right(times, e) - 1
-            ok = 0 <= i and e - times[i] < 300
-        elif e < times[0] - 300:   # the box began before this pane's first bar: label it at the left edge
+            ok = 0 <= i and e - times[i] < tol
+        elif e < times[0] - tol:   # the box began before this pane's first bar: label it at the left edge
             i, ok = 0, True
             text = (f"{pre}\u25c4 start "
                     f"{pd.Timestamp(e, unit='s', tz='UTC').tz_convert('America/Los_Angeles'):%m/%d %H:%M}")
         else:
             i = bisect.bisect_left(times, e)
             ok = i < len(times) and times[i] < e + 300
+        if not is_end and tol > 300 and not ok and e < times[0]:   # H1/D1: box began before the pane
+            i, ok = 0, True
+            text = (f"{pre}\u25c4 start "
+                    f"{pd.Timestamp(e, unit='s', tz='UTC').tz_convert('America/Los_Angeles'):%m/%d %H:%M}")
         if ok:
             chart.setdefault("vlines", []).append({"time": times[i], "color": color, "label": text})
     chart["title"] += (f"  |  {label} {name} {R._to_pt_str(b['start'])} -> "
@@ -2414,8 +2532,8 @@ def _draw_range_boxes(results, chart_stacks):
         letters = [chr(ord("A") + k) for k in range(len(boxes))] if len(boxes) > 1 else [None]
         tagged = set()
         for (_, _, color, label, b), letter in zip(boxes, letters):
-            _mark_range_box(stack.get("main"), b, color, label, letter, tagged)
-            _mark_range_box(stack.get("ctx"), b, color, label, letter, tagged)
+            for pane in ("main", "ctx", "h1", "d1"):
+                _mark_range_box(stack.get(pane), b, color, label, letter, tagged)
         _mark_range_pivots(stack.get("main"),
                            [(letter, color, b) for (_, _, color, _, b), letter in zip(boxes, letters)])
 
@@ -2936,8 +3054,12 @@ def _render_row(idx, res, chart_stacks):
 </tr>
 <tr class="chart-row hidden" data-idx="{idx}" id="chart-row-{idx}">
   <td colspan="{N_COLS}"><div class="chart-stack">
-    <div class="chart-cell chart-pane"><div class="chart-title" id="t-ctx-{idx}"></div><div class="chart-ph" id="c-ctx-{idx}"></div></div>
     <div class="chart-cell chart-pane"><div class="chart-title" id="t-main-{idx}"></div><div class="chart-ph" id="c-main-{idx}"></div></div>
+    <div class="chart-cell chart-pane"><div class="chart-title" id="t-ctx-{idx}"></div><div class="chart-ph" id="c-ctx-{idx}"></div></div>
+    <div class="chart-half-row">
+      <div class="chart-cell chart-half"><div class="chart-title" id="t-d1-{idx}"></div><div class="chart-ph" id="c-d1-{idx}"></div></div>
+      <div class="chart-cell chart-half"><div class="chart-title" id="t-h1-{idx}"></div><div class="chart-ph" id="c-h1-{idx}"></div></div>
+    </div>
   </div></td>
 </tr>"""
             return chart_stack, row_html
@@ -3038,8 +3160,12 @@ def _render_row(idx, res, chart_stacks):
 </tr>
 <tr class="chart-row hidden" data-idx="{idx}" id="chart-row-{idx}">
   <td colspan="{N_COLS}"><div class="chart-stack">
-    <div class="chart-cell chart-pane"><div class="chart-title" id="t-ctx-{idx}"></div><div class="chart-ph" id="c-ctx-{idx}"></div></div>
     <div class="chart-cell chart-pane"><div class="chart-title" id="t-main-{idx}"></div><div class="chart-ph" id="c-main-{idx}"></div></div>
+    <div class="chart-cell chart-pane"><div class="chart-title" id="t-ctx-{idx}"></div><div class="chart-ph" id="c-ctx-{idx}"></div></div>
+    <div class="chart-half-row">
+      <div class="chart-cell chart-half"><div class="chart-title" id="t-d1-{idx}"></div><div class="chart-ph" id="c-d1-{idx}"></div></div>
+      <div class="chart-cell chart-half"><div class="chart-title" id="t-h1-{idx}"></div><div class="chart-ph" id="c-h1-{idx}"></div></div>
+    </div>
   </div></td>
 </tr>"""
         return chart_stack, row_html
@@ -3614,6 +3740,19 @@ tr.lvl-row.is-done:hover { opacity:0.6; }
 .chart-stack { width:var(--stack-w, calc(100vw - 16px)); position:sticky; left:8px;
                margin-left:-16px; padding:8px 0; }
 .chart-pane { height:clamp(340px, max(60vh, calc(var(--stack-w, 1000px) * 0.3)), 760px); }
+/* D1 and H1 below the two full-width panes, side by side at half the width each (one column when the
+   screen is too narrow for two panes of at least 360px). */
+.chart-half-row { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap:8px; }
+.chart-half { min-width:0; height:clamp(300px, max(42vh, calc(var(--stack-w, 1000px) * 0.24)), 520px); }
+/* Full screen (the button on every pane's title bar; Esc or the same button leaves): the pane fills the
+   screen. The browser's own fullscreen is asked for too; this fixed layer is what works where it is refused. */
+.fs-btn { grid-column:3; justify-self:end; background:#1b2330; color:#e5e7eb; border:1px solid #334155;
+          border-radius:4px; padding:0 9px; font-size:var(--chart-font, 14px); line-height:1.5; cursor:pointer; }
+.fs-btn:hover { background:#273449; }
+.chart-cell.fs { position:fixed; inset:0; z-index:100000; width:100vw !important; height:100vh !important;
+                 height:100dvh !important; border-radius:0; margin:0; }
+.chart-cell:fullscreen { width:100vw; height:100vh; border-radius:0; }
+body.fs-open { overflow:hidden; }
 .chart-title { font-size:var(--chart-font, 13px); }
 .chart-title-split .ct-ohlc { font-size:var(--chart-font, 13px); }
 .chart-title-split + .chart-ph { height:calc(100% - 31px); }
@@ -3729,7 +3868,15 @@ function _renderPane(elId, titleId, cd) {
   ohlcEl.className = 'ct-ohlc';
   titleEl.appendChild(baseEl);
   titleEl.appendChild(ohlcEl);
-  const opts = _baseOpts(timeFmtH1);
+  const fsBtn = document.createElement('button');
+  fsBtn.type = 'button';
+  fsBtn.className = 'fs-btn';
+  fsBtn.textContent = '\u26f6';
+  fsBtn.title = 'Full screen';
+  fsBtn.addEventListener('click', (e) => { e.stopPropagation(); _toggleFs(el.closest('.chart-cell'), fsBtn); });
+  fsBtn.addEventListener('dblclick', (e) => e.stopPropagation());
+  titleEl.appendChild(fsBtn);
+  const opts = _baseOpts(cd.dateOnly ? timeFmtD : timeFmtH1);
   opts.layout.fontSize = chartFont();
   const chart = LightweightCharts.createChart(el, Object.assign(opts, {
     autoSize: false, width: el.clientWidth || 800, height: el.clientHeight || 320,
@@ -3873,16 +4020,48 @@ function _renderPane(elId, titleId, cd) {
     }
   }).observe(el);
 }
+const _PANE_NAME = { main: 'M1', ctx: 'M5', d1: 'D1', h1: 'H1' };
 function _renderChartPane(i, key, cd) {
   const title = document.getElementById('t-' + key + '-' + i);
   if (cd) _renderPane('c-' + key + '-' + i, 't-' + key + '-' + i, cd);
-  else if (title) title.textContent = (key === 'ctx' ? 'M5' : 'M1') + '  |  (no bars covering this trade)';
+  else if (title) title.textContent = _PANE_NAME[key] + '  |  (no bars covering this trade)';
 }
+// Full screen for one pane: the browser's fullscreen where it allows it, plus a fixed full-window layer
+// (.fs) that does the same where it does not. Esc, the same button, or leaving browser fullscreen ends it;
+// the pane's ResizeObserver redraws the chart at each size.
+function _exitFs() {
+  document.querySelectorAll('.chart-cell.fs').forEach(c => {
+    c.classList.remove('fs');
+    const b = c.querySelector('.fs-btn');
+    if (b) { b.textContent = '\u26f6'; b.title = 'Full screen'; }
+  });
+  document.body.classList.remove('fs-open');
+  const ex = document.exitFullscreen || document.webkitExitFullscreen;
+  if (ex && (document.fullscreenElement || document.webkitFullscreenElement)) {
+    try { const p = ex.call(document); if (p && p.catch) p.catch(() => {}); } catch (e) { /* ignore */ }
+  }
+}
+function _toggleFs(cell, btn) {
+  if (!cell) return;
+  if (cell.classList.contains('fs')) { _exitFs(); return; }
+  _exitFs();
+  cell.classList.add('fs');
+  document.body.classList.add('fs-open');
+  btn.textContent = '\u2715';
+  btn.title = 'Exit full screen';
+  const rq = cell.requestFullscreen || cell.webkitRequestFullscreen;
+  if (rq) { try { const p = rq.call(cell); if (p && p.catch) p.catch(() => {}); } catch (e) { /* ignore */ } }
+}
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) _exitFs(); });
+document.addEventListener('webkitfullscreenchange', () => { if (!document.webkitFullscreenElement) _exitFs(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') _exitFs(); });
 _renderStack = function(i) {
   const cd = CHARTS[i];
   if (!cd) return;
-  _renderChartPane(i, 'ctx', cd.ctx);
   _renderChartPane(i, 'main', cd.main);
+  _renderChartPane(i, 'ctx', cd.ctx);
+  _renderChartPane(i, 'd1', cd.d1);
+  _renderChartPane(i, 'h1', cd.h1);
 };
 // The chart stack is exactly as wide as what is on screen, whatever the browser did with the page:
 // at 1:1 that is the device width; when the browser shrinks the wide table to fit (iPad Safari), it

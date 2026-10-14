@@ -51,8 +51,9 @@ px landscape, 820x1180 portrait) first.** Remember it for every chart you build 
   minus a 16px gutter, so a fitted page gets a full-page-wide stack, a 1:1 page a device-wide one, and
   pinch-zooming changes nothing. In-chart and title text grows by 1/`_baseScale` (13px on screen,
   capped at 22 CSS px) so it stays readable on a shrunken page. Each pane is as wide as the stack, taller
-  when the stack is wider (`clamp(340px, max(60vh, 0.3 x stack width), 760px)`), the M5 context pane
-  above the trading pane.
+  when the stack is wider (`clamp(340px, max(60vh, 0.3 x stack width), 760px)`). Order (user, 2026-10-14):
+  the M1 trading pane on top, the M5 context pane under it (both full width), then D1 and H1 side by side
+  at half width each (one column only when the screen is under ~740px).
 - The candles fill the pane's width: the bar spacing follows the pane width and the number of bars
   (1px minimum, 20px maximum), not a fixed 6px.
 - In-chart text is ~13px on screen (`chartFont()`): large enough to read on a tablet, small enough that one
@@ -63,6 +64,13 @@ px landscape, 820x1180 portrait) first.** Remember it for every chart you build 
   markers), and a ray's full text shows on hover.
 - Several range boxes on one trade are named A, B, ... in start order; chart labels stay short
   ("A 08:10" at its start, "A↓" at its breakout) and the ray hover text carries the times.
+- Every pane has a full-screen button (top right of its title bar): the browser's fullscreen where
+  allowed plus a fixed full-window layer where not; Esc or the same button leaves.
+- A pane never skips the market structure the trade is decided on. M1 and M5 panes skip bars only in
+  between: a range box is kept whole for its last 36 h (M1) / 4 days (M5), an older one as its start and
+  every crest/trough of the box plus the stretch before its breakout, and any bar that reached the
+  entry, stop or target price is kept (`_structure_keep`, `touch_prices`). D1 and H1 show every bar and
+  reach back to the earliest box. Range rays and start/breakout lines are drawn on all four panes.
 - Candles keep the default grey. Never recolour candles (blue, orange, ...) to show a range, a
   level or anything else; use rays, markers and price tags.
 - A range box's candles, from its start to its breakout, are never compressed into a
@@ -104,6 +112,11 @@ FADE 1 / FADE 2 badge, Exclude/Only chips, "1st"/"2nd" on the chart's breakout l
 fade2 charts. A trade on several overlapping boxes that are not all the same is its own class, `fade-mixed`
 (badge FADE 1+2); user decision 2026-10-14. Run it through `scid_only/run_scid_only.py`
 serially (`--workers 1`), like the others.
+
+`sep_month_fade` is PUBLIC (no sign-in): `proxy.ts` excludes `reports/ss_m1_confl/sep_month_fade.html` and
+`js/row-store.js` from the auth matcher (a literal: Next reads it at build time). Nothing else is public, and
+`/api/rows` stays gated, so the report's Valid/Notes cannot be read or written by a visitor. Publishing another
+report means adding its path to that matcher; do not do it without the user asking.
 
 # Live range engine (`live_range/`): orders as close to real as possible (user preference)
 

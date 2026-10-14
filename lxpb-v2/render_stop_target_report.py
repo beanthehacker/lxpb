@@ -1026,8 +1026,12 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
                    fill_window=None, p1_bar_width=pd.Timedelta(hours=1), p1_label="H1",
                    bars_before_retest=None, bars_after_exit=None, extra_context_times=None,
                    plain_p0=LC.PLAIN_P0_UNTRACKED, p0_p2_pad_bars=None, bar_label="M5",
-                   protect_spans=None):
+                   protect_spans=None, touch_prices=None):
     """5-minute companion pane for build_trade_chart's H1 chart.
+
+    `touch_prices` -- optional prices (e.g. entry, stop, target) whose price level is market
+    structure for the trade: every bar in the window whose high-low reached one of them (within a
+    tick) is kept, with two bars either side, so it never lands in a "[N bars skipped]" gap.
 
     `protect_spans` -- optional (start, end) UTC timestamp pairs whose bars are
     ALL kept, edge to edge: the window reaches back to the earliest start and
@@ -1279,6 +1283,10 @@ def build_m5_chart(row, resolved, stop, target, level_price=None, entry_level=No
             segments.append((epos - M5_CTX_AROUND_RAY_END, epos + M5_CTX_AROUND_RAY_END))
     for s0, s1 in spans:
         segments.append((_pos(s0), _pos(s1)))
+    for tp in (touch_prices or ()):
+        hit = np.flatnonzero(((bars["low"].to_numpy(float) <= tp + 0.25)
+                              & (bars["high"].to_numpy(float) >= tp - 0.25)))
+        segments.extend((int(h) - 2, int(h) + 2) for h in hit)
     if extra_context_times:
         for ts in extra_context_times:
             # Normalize to tz-aware UTC regardless of what the caller passed
