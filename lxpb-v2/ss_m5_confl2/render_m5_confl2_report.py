@@ -62,10 +62,10 @@ the target are ALL M5 LXPB structure:
        * OPPOSITE M5 LEVEL, ZIGZAG ANCHOR (`_opposite_m5_zz_target`, src tag
          m5_opposite_zz): find the most recent CONFIRMED zigzag TROUGH (short,
          LLPB) or CREST (long, LHPB) in the window -- m5_structure.zigzag_pivots,
-         a >=`--zz-threshold-pts` (default 3pt) reversal off bar
+         a >=`--zz-atr-mult` (default 0.75) x ATR(21) reversal off bar
          highs/lows, confirmed on a later bar at least `--zz-min-bars`
-         (default 3) after the extreme, OR a >=5pt reversal confirmed at
-         least 2 bars after it (m5_structure.ZIGZAG_FAST_*). That pivot is where the latest leg
+         (default 2) after the extreme (patterns-pure find_zigzag, the
+         repo's only zigzag). That pivot is where the latest leg
          into the retest began. The target is then the FARTHEST untested
          opposite-type M5 P0 formed at or after that pivot (the pivot's own bar counts): the LOWEST
          price for a short, the HIGHEST for a long -- with no shared-P1
@@ -321,8 +321,8 @@ DYNAMIC_STOP_RADIUS_PTS = SF.DYNAMIC_STOP_RADIUS_PTS
 MAX_ALT_FILL_HOURS_DEFAULT = SF.MAX_ALT_FILL_HOURS_DEFAULT
 MIN_R_DEFAULT = 1.0
 TARGET_MODE_DEFAULT = "both"   # both target rules on by default (see _pick_targets)
-ZZ_THRESHOLD_PTS_DEFAULT = MS.ZIGZAG_THRESHOLD_DEFAULT   # reversal that confirms a zigzag leg
-ZZ_MIN_BARS_DEFAULT = MS.ZIGZAG_MIN_BARS_DEFAULT          # bars required after the extreme to confirm
+ZZ_ATR_MULT_DEFAULT = MS.ATR_MULT   # reversal, x ATR, that confirms a zigzag leg (patterns-pure find_zigzag)
+ZZ_MIN_BARS_DEFAULT = MS.MIN_BARS                         # bars required after the extreme to confirm
 SWERVE_TOL_PTS_DEFAULT = 1.0          # a swing this close to the planned entry triggers the move
 SWERVE_LOOKBACK_HOURS_DEFAULT = 24.0  # how far back before the retest swings are looked for
 # Furthest a swerved entry may be moved. This MUST exceed
@@ -386,7 +386,7 @@ def _leg_start_time(row_d, pivots, bars):
     is_long = row_d["type"] == "LHPB"
     p1 = pd.Timestamp(row_d["breakout_time"])
     p2 = pd.Timestamp(row_d["retest_time"])
-    pivot_time, _ = MS.most_recent_pivot(pivots, "high" if is_long else "low", p2, after=p1)
+    pivot_time, _ = MS.most_recent_pivot(pivots, "crest" if is_long else "trough", p2, after=p1)
     if pivot_time is not None:
         return pivot_time
     lo = bars.index.searchsorted(p1, side="right")
@@ -400,7 +400,7 @@ def _leg_start_time(row_d, pivots, bars):
 
 def select_candidates(ss_confl_min, start, end, confluence_points, plain_p0,
                       untested_until=CONFL_UNTESTED_UNTIL_DEFAULT,
-                      zz_threshold=ZZ_THRESHOLD_PTS_DEFAULT, zz_min_bars=ZZ_MIN_BARS_DEFAULT):
+                      zz_atr_mult=ZZ_ATR_MULT_DEFAULT, zz_min_bars=ZZ_MIN_BARS_DEFAULT):
     """M5-native candidate rows over the one continuous M5 ledger (see the
     "continuous contracts only" convention in CLAUDE.md -- LC.m5_levels()
     now spans every contract rollover in one state-machine run, so a P0
@@ -417,7 +417,7 @@ def select_candidates(ss_confl_min, start, end, confluence_points, plain_p0,
 
     `untested_until` (CONFL_UNTESTED_UNTIL_CHOICES): with "leg-start" a
     partner also has to have stayed untouched past _leg_start_time (zigzag
-    `zz_threshold`/`zz_min_bars`, the target rule's own), not just at P1.
+    `zz_atr_mult`/`zz_min_bars`, the target rule's own), not just at P1.
     The reduced set is the confluence set everywhere after this --
     qualification, clustering and the entry pool alike."""
     if not np.isfinite(confluence_points) or confluence_points < 0:
@@ -431,7 +431,7 @@ def select_candidates(ss_confl_min, start, end, confluence_points, plain_p0,
     if m5_ledger is None or m5_ledger.empty:
         return candidates
     if untested_until == "leg-start":
-        pivots = MS.zigzag_pivots(threshold_pts=zz_threshold, min_bars=zz_min_bars)
+        pivots = MS.zigzag_pivots(atr_mult=zz_atr_mult, min_bars=zz_min_bars)
         bars = LC.m5_bars_continuous()
     retests = LC.retests(m5_ledger)
     retests = retests[(retests["retest_time"] >= start_ts) & (retests["retest_time"] < end_ts)]
@@ -864,14 +864,14 @@ def _live_m5_target_candidates(m5_ledger, level_type, touch_time, min_breakout_l
 
 def _opposite_m5_zz_target(m5_ledger, level_type, price, is_long, touch_time,
                            p1_time=None, p2_time=None,
-                           zigzag_threshold=ZZ_THRESHOLD_PTS_DEFAULT,
+                           zigzag_atr_mult=ZZ_ATR_MULT_DEFAULT,
                            zigzag_min_bars=ZZ_MIN_BARS_DEFAULT):
     """(target_price, target_info) under the OPPOSITE-M5-ZZ rule, or
     (None, None).
 
     Step 1: the most recent CONFIRMED zigzag pivot where the latest leg into
     the retest began: a TROUGH for a short (LLPB), a CREST for a long
-    (LHPB) -- m5_structure's standard threshold zigzag
+    (LHPB) -- patterns-pure's find_zigzag (via m5_structure)
     (`zigzag_pivots`/`most_recent_pivot`), formed and confirmed after P1 and
     before the fill's own candle. That pivot is where the latest leg into the
     retest started.
@@ -887,9 +887,9 @@ def _opposite_m5_zz_target(m5_ledger, level_type, price, is_long, touch_time,
     Pairing: an opposite-TYPE ledger level (LHPB for an LLPB trade); no
     hammer/shooting-star test is involved."""
     after, cutoff = _window_bounds(touch_time, p1_time, p2_time)
-    pivots = MS.zigzag_pivots(threshold_pts=zigzag_threshold, min_bars=zigzag_min_bars)
+    pivots = MS.zigzag_pivots(atr_mult=zigzag_atr_mult, min_bars=zigzag_min_bars)
     pivot_time, pivot_price = MS.most_recent_pivot(
-        pivots, "high" if is_long else "low", cutoff, after=after)
+        pivots, "crest" if is_long else "trough", cutoff, after=after)
     if pivot_time is None:
         return None, None
     opposite_type = "LLPB" if level_type == "LHPB" else "LHPB"
@@ -915,7 +915,7 @@ def _opposite_m5_zz_target(m5_ledger, level_type, price, is_long, touch_time,
 
 def _swing_extreme_target(level_type, price, is_long, touch_time,
                           p1_time=None, p2_time=None,
-                          zigzag_threshold=ZZ_THRESHOLD_PTS_DEFAULT,
+                          zigzag_atr_mult=ZZ_ATR_MULT_DEFAULT,
                           zigzag_min_bars=ZZ_MIN_BARS_DEFAULT):
     """(target_price, target_info) under the SWING-EXTREME rule, or
     (None, None).
@@ -934,10 +934,10 @@ def _swing_extreme_target(level_type, price, is_long, touch_time,
     Pairing: none -- no spike/hammer test; `level_type` only picks the pivot
     kind."""
     after, cutoff = _window_bounds(touch_time, p1_time, p2_time)
-    pivots = MS.zigzag_pivots(threshold_pts=zigzag_threshold, min_bars=zigzag_min_bars)
+    pivots = MS.zigzag_pivots(atr_mult=zigzag_atr_mult, min_bars=zigzag_min_bars)
     if p2_time is not None:
         pivots = pivots[pivots["time"] < pd.Timestamp(p2_time)]
-    kind = "low" if is_long else "high"
+    kind = "trough" if is_long else "crest"
     pivot_time, pivot_price = MS.most_recent_pivot(pivots, kind, cutoff, after=after)
     if pivot_time is None:
         return None, None
@@ -968,13 +968,13 @@ def _pick_targets(m5_ledger, level_type, price, is_long, touch_time, args,
     out = {}
     px, info = _opposite_m5_zz_target(m5_ledger, level_type, price, is_long,
                                       touch_time, p1_time, p2_time,
-                                      zigzag_threshold=args.zz_threshold_pts,
+                                      zigzag_atr_mult=args.zz_atr_mult,
                                       zigzag_min_bars=args.zz_min_bars)
     if px is not None:
         out["opposite-m5-zz"] = (px, info)
     px, info = _swing_extreme_target(level_type, price, is_long, touch_time,
                                      p1_time, p2_time,
-                                     zigzag_threshold=args.zz_threshold_pts,
+                                     zigzag_atr_mult=args.zz_atr_mult,
                                      zigzag_min_bars=args.zz_min_bars)
     if px is not None:
         out["swing-extreme"] = (px, info)
@@ -2970,8 +2970,8 @@ def render(args):
     # hand render() a plain namespace.
     if not getattr(args, "default_target_modes", None):
         args.default_target_modes = DEFAULT_TARGET_MODES_BOTH
-    if not getattr(args, "zz_threshold_pts", None):
-        args.zz_threshold_pts = ZZ_THRESHOLD_PTS_DEFAULT
+    if not getattr(args, "zz_atr_mult", None):
+        args.zz_atr_mult = ZZ_ATR_MULT_DEFAULT
     if not getattr(args, "zz_min_bars", None):
         args.zz_min_bars = ZZ_MIN_BARS_DEFAULT
     if not np.isfinite(args.min_r) or args.min_r < 0:
@@ -2986,7 +2986,7 @@ def render(args):
     candidates = select_candidates(
         args.ss_confl_min, args.start, args.end, args.m5_confluence_points,
         P0_KINDS_LEDGER[args.p0_kinds], untested_until=args.confl_untested_until,
-        zz_threshold=args.zz_threshold_pts, zz_min_bars=args.zz_min_bars)
+        zz_atr_mult=args.zz_atr_mult, zz_min_bars=args.zz_min_bars)
     radius = SR._fmt_pts(args.m5_confluence_points)
     print(f"{len(candidates)} M5 retests ({args.p0_kinds} P0s) have SS Confl >= "
           f"{args.ss_confl_min} (+/-{radius}pt, partners untouched until "
@@ -3731,9 +3731,8 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
         f"bounded to {MIN_DYNAMIC_TARGET_PTS:g}&ndash;{MAX_DYNAMIC_TARGET_PTS:g} points from "
         f"the fill on the favourable side. (1) OPPOSITE M5 LEVEL, ZIGZAG ANCHOR: "
         f"the most recent CONFIRMED zigzag trough (short) / crest (long) in that window (a "
-        f"&ge;{args.zz_threshold_pts:g}pt reversal off bar highs/lows, confirmed "
-        f"&ge;{args.zz_min_bars} bars after the extreme, or a &ge;{MS.ZIGZAG_FAST_THRESHOLD_DEFAULT:g}pt "
-        f"reversal &ge;{MS.ZIGZAG_FAST_MIN_BARS_DEFAULT} bars after it), then the FARTHEST live opposite-type "
+        f"&ge;{args.zz_atr_mult:g} &times; ATR(21) reversal off bar highs/lows, confirmed "
+        f"&ge;{args.zz_min_bars} bars after the extreme), then the FARTHEST live opposite-type "
         f"M5 P0 formed after it (lowest for a short, highest for a long), no shared-P1 confluence required "
         f"(src tag m5_opposite_zz). (2) SWING EXTREME: the most recent confirmed zigzag "
         f"trough (long) / crest (short) formed between P1 and P2, with the pivot's own price as the target "
@@ -5273,13 +5272,14 @@ if __name__ == "__main__":
                              "offers the FARTHER target wins per trade. opposite-m5-zz: the "
                              "farthest live opposite-type M5 P0 (no shared-P1 confluence "
                              "required) formed after the most recent confirmed zigzag trough "
-                             "(short) / crest (long) in that window -- see --zz-threshold-pts "
+                             "(short) / crest (long) in that window -- see --zz-atr-mult "
                              "/ --zz-min-bars. swing-extreme: the most recent confirmed zigzag "
                              "trough (long) / crest (short) formed between P1 and P2, at its own price.")
-    parser.add_argument("--zz-threshold-pts", type=float, default=ZZ_THRESHOLD_PTS_DEFAULT,
-                        help=f"Point reversal off bar highs/lows that confirms a new zigzag leg "
-                             f"for the opposite-m5-zz target rule (default "
-                             f"{ZZ_THRESHOLD_PTS_DEFAULT:g}).")
+    parser.add_argument("--zz-atr-mult", type=float, default=ZZ_ATR_MULT_DEFAULT,
+                        help=f"Reversal, as a multiple of ATR(21), off bar highs/lows that confirms a "
+                             f"new zigzag leg for the opposite-m5-zz target rule: patterns-pure find_zigzag "
+                             f"(default {ZZ_ATR_MULT_DEFAULT:g}).")
+    parser.add_argument("--zz-threshold-pts", type=float, default=None, help=argparse.SUPPRESS)  # removed: points are gone; accepted and ignored so older regen commands still run
     parser.add_argument("--zz-min-bars", type=int, default=ZZ_MIN_BARS_DEFAULT,
                         help=f"Bars required after a zigzag leg's own extreme bar before it can "
                              f"confirm, for the opposite-m5-zz target rule (default "

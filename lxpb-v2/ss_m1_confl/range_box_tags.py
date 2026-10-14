@@ -49,9 +49,8 @@ the outer box they merged into carries the same area.
 import numpy as np
 import pandas as pd
 
-from find_range import _atr_series, _spacing_minutes
-from find_range_box_zz import (ATR_MULT, MIN_EDGE_TOUCHES, _intrabar_order, _zigzag_pivots,
-                               find_range_box_zz)
+from find_range_box_zz import MIN_EDGE_TOUCHES, find_range_box_zz
+from find_zigzag import find_zigzag
 
 M5_MIN = 5
 LOOKBACK_DAYS = 5   # M5 history fed to the detector before each touch
@@ -128,23 +127,8 @@ def boxes_as_of(m5, m1, touch_time, tick_bars, levels=None, lookback_days=LOOKBA
           & (found["n_bottom_edge"] >= MIN_EDGE_TOUCHES))
     found = found[ok].reset_index(drop=True)
     out = expand_episodes(found)
-    out.attrs["zz"] = zigzag_pivots(data, low_tf)
+    out.attrs["zz"] = find_zigzag(data, lower_data=low_tf)   # display only: the very pivots the boxes were built from
     return out
-
-
-ATR_PERIOD = 21   # find_range_box_zz's default; the pivots below must be the detector's own
-
-
-def zigzag_pivots(data, low_tf):
-    """The detector's own zigzag pivots over `data`, a frame of (time, kind "crest"/"trough", price)
-    oldest first (a frame, not a list: it rides on the boxes frame's attrs, which pandas deep-copies): the same zigzag, ATR and intrabar order find_range_box_zz uses with its defaults.
-    Display only (the chart labels of a box's crests and troughs)."""
-    H, L = data["high"].to_numpy(float), data["low"].to_numpy(float)
-    order = _intrabar_order(data.index, _spacing_minutes(data.index), low_tf)
-    piv = _zigzag_pivots(H, L, _atr_series(data, ATR_PERIOD), ATR_MULT, ATR_PERIOD, order)
-    return pd.DataFrame({"time": [data.index[i] for _, i, _, _ in piv],
-                         "kind": [k for k, _, _, _ in piv],
-                         "price": [float(px) for _, _, px, _ in piv]})
 
 
 def box_pivots(box, zz):

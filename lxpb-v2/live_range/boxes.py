@@ -1,7 +1,7 @@
 """Incremental range-box ledger: patterns_pure.find_range_box_zz, one bar at a time.
 
 The batch detector re-reads days of history for every question. This keeps the same state
-machine alive instead: a zigzag on M5 bars (order inside a bar from the M1 bars), the box
+machine alive instead: patterns_pure.find_zigzag.ZigZag on M5 bars (order inside a bar from the M1 bars), the box
 state machine fed one pivot at a time, and one Reader per box that walks the box bar by bar
 and opens an EPISODE when a bar closes strongly beyond an edge (strong = graded on the M1 bars).
 Nothing here looks ahead.
@@ -14,12 +14,11 @@ Forming:   forming(...) reads the M5 bar still being built "as if it closed righ
 import bisect
 import math
 
+from find_zigzag import ATR_MULT, ATR_PERIOD, MIN_BARS, ZigZag
+
 from .series import Series
-from .zigzag import BoxZigzag
 from .levels import key as level_key
 
-ATR_MULT = 0.75
-ATR_PERIOD = 21
 WIDEN_PCT = 20.0
 MERGE_TOL = 2.0
 MIN_EDGE_TOUCHES = 2
@@ -224,13 +223,14 @@ class Reader:
 
 class BoxBook:
     def __init__(self, atr_mult=ATR_MULT, atr_period=ATR_PERIOD, widen_pct=WIDEN_PCT,
-                 merge_tol=MERGE_TOL, min_edge_touches=MIN_EDGE_TOUCHES, edge_tol=EDGE_TOL):
+                 merge_tol=MERGE_TOL, min_edge_touches=MIN_EDGE_TOUCHES, edge_tol=EDGE_TOL,
+                 min_bars=MIN_BARS):
         self.widen_pct, self.merge_tol = widen_pct, merge_tol
         self.min_edge_touches, self.edge_tol = min_edge_touches, edge_tol
         self.atr_period = atr_period
         self.m5, self.m1 = Series(atr_period), Series(atr_period)
         self.grader = Grader(self.m1, M5_NS)
-        self.zz = BoxZigzag(atr_mult, atr_period)
+        self.zz = ZigZag(atr_mult, atr_period, min_bars)
         self.pivots = []
         self.boxes = []
         self.live = []            # open boxes, earliest-started first
@@ -246,7 +246,7 @@ class BoxBook:
 
     def _order(self, t5):
         """+1 if the bar's high came before its low on the M1 bars inside it, -1 if the low came
-        first, 0 if it cannot be told (find_range_box_zz._intrabar_order)."""
+        first, 0 if it cannot be told (find_zigzag.intrabar_order)."""
         m1 = self.m1
         a, b = m1.left(t5), m1.left(t5 + M5_NS)
         if b <= a:
@@ -264,9 +264,9 @@ class BoxBook:
         m5.append(t, o, h, l, c)
         j = len(m5) - 1
         if j == 0:
-            self.zz.begin(h, l)
+            self.zz.step(h, l, m5.atr[0])
             return
-        for piv in self.zz.step(j, h, l, m5.atr[j], self._order(t)):
+        for piv in self.zz.step(h, l, m5.atr[j], self._order(t)):
             self._on_pivot(piv)
         for bid in list(self.readers):
             r = self.readers[bid]

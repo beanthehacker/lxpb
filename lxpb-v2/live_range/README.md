@@ -14,7 +14,7 @@ ticks ──► Engine.on_tick
             ├─ M1 / trading-bar / M5 bars (forming + closed)
             ├─ LevelBook  (lxpb.advance_one_bar, M5 and trading bars)  levels waiting for a retest
             ├─ BoxBook    (incremental find_range_box_zz)               boxes + episodes
-            ├─ StructZigzag / swings on the trading bars                targets, run-in, swerve
+            ├─ ZigZag (find_zigzag) / swings on the trading bars         targets, run-in, swerve
             ├─ order book  (arm / pull / amend)                         one order per level cluster
             └─ positions   (fill, stop, target, end-of-day flat)
 ```
@@ -24,16 +24,21 @@ ticks ──► Engine.on_tick
 | file | what |
 |---|---|
 | `series.py` | growing OHLC series, Wilder ATR kept up to date |
-| `zigzag.py` | `BoxZigzag` (ATR zigzag of the boxes), `StructZigzag` (3/5/10 pt zigzag of the targets) |
 | `levels.py` | `LevelBook`: lxpb state, what happened to each level, which levels a bar would break |
 | `boxes.py` | `BoxBook`: boxes, one `Reader` per box (episodes), forming-bar read |
 | `engine.py` | `Engine`: orders, gates, stop/target planning, fills, exits |
 | `replay.py` | streams `.scid` ticks through the engine; events.jsonl, trades.csv, summary |
 | `check_boxes.py` | the incremental box ledger against `find_range_box_zz` over the same bars |
 
+## The zigzag
+
+There is exactly one, `patterns_pure/find_zigzag.py` (`ZigZag` here, `find_zigzag` in batch): 0.75 x ATR(21) reversal,
+confirmed at least 2 bars after the extreme, same parameters for the boxes (M5 bars) and for the targets / run-in
+(trading bars). This directory has no zigzag code of its own and must not grow one (`../CLAUDE.md`, "Zigzag").
+
 ## Boxes and episodes
 
-`BoxBook` is `find_range_box_zz` made incremental: the ATR zigzag on M5 bars (order inside a bar
+`BoxBook` is `find_range_box_zz` made incremental: `patterns_pure/find_zigzag.ZigZag` on M5 bars (order inside a bar
 from the M1 bars), the box state machine fed one pivot at a time, and a `Reader` per box that
 walks it bar by bar. A bar that closes beyond an edge and grades *strong* on the M1 bars opens
 an **episode** for that edge (one per edge, never invalidated; only a retest of one of the box's

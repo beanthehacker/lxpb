@@ -419,6 +419,65 @@ Example: H1 20 Dec 2024 05:00 PT (spike = the 04:00 PT hammer; 1.76x, 48% body).
   (the sliding row was added 2026-09-21, folding the old bias-served
   constants into the thrust definition).
 
+# Zigzag: patterns-pure `find_zigzag` only
+
+**Every zigzag in this repo is `patterns_pure/find_zigzag.py`, and nothing else.**
+Repo-wide, like the spike-candle and data rules. New code never writes a zigzag of
+its own: no "running high / reversal" loop, no fixed-point pivot finder, no second
+copy "to keep it incremental". It calls the detector. User decision 2026-10-14: the
+two old zigzags (the ATR one behind the range boxes, and `m5_structure`'s 3 pt / 3 bars,
+5 pt / 2, 10 pt / 1 one behind the targets and run-in) were merged into this one.
+
+The rule, all of it in `find_zigzag.py`'s docstring:
+
+- **ATR based, no hard-coded points.** A leg is confirmed when price reverses
+  `0.75 x ATR(21)` off its extreme (`ATR_MULT`, `ATR_PERIOD`), ATR read as of the
+  confirming bar, so every pivot is point-in-time. Nothing is confirmed before the
+  ATR has 21 bars.
+- **At least `MIN_BARS` = 2 bars** between the extreme's bar and the confirming bar.
+  Bars after the extreme are the only evidence of a reversal: the extreme's own bar
+  never counts, so a bar can never confirm its own extreme. A new extreme restarts
+  the count, so a dip taken straight back is not a pivot. The minimum is in bars of the
+  series the zigzag runs on (2 x M5 = 10 min, 2 x M1 = 2 min).
+- **Reversal is cumulative** (the deepest adverse price since the extreme), the next
+  leg starts at the most adverse bar of the one just confirmed, at most one pivot is
+  confirmed per bar, and the last still-extending leg is never a pivot.
+- **Order inside a bar** (a bar that makes a new high and also falls far enough:
+  low first confirms the old crest, high first only moves it) comes from
+  `lower_data` via `intrabar_order`; unknown means the extreme in the direction of
+  travel came first.
+
+| Need | Use |
+|---|---|
+| a whole series | `find_zigzag(data, atr_mult, atr_period, min_bars, lower_data)` -> frame `time, price, kind ("crest"/"trough"), confirm_time, bar, confirm_bar` |
+| bar by bar (live) | `ZigZag(...).step(high, low, atr, order, t)` -> `Pivot(kind, i, price, j)`; `find_zigzag` is this same machine, so live and batch cannot disagree |
+| arrays | `zigzag_pivots(high, low, atr, order, ...)` |
+| "which pivot was known at T" | `most_recent_pivot(frame, kind, cutoff, after)` / `ZigZag.most_recent(...)`: formed AND confirmed strictly before `cutoff` (never use `time` alone) |
+| the continuous M5 / M1 series, memoised | `m5_structure.zigzag_pivots(bars=None, ...)` (a loader, not a zigzag) |
+
+Callers today: `find_range_box_zz` (boxes), `live_range/boxes.py` (live boxes) and
+`live_range/engine.py` (targets, run-in), `ss_m1_confl/range_box_tags.py` (chart pivots),
+and the target / run-in rules of `ss_m5_confl2`, `ss_m1_confl` and `range_breakout`
+(through `m5_structure`). The reports' knobs are `--zz-atr-mult` (0.75) and `--zz-min-bars`
+(2); `--zz-threshold-pts` is gone and accepted-and-ignored so older regen commands run.
+Pivot kinds are `"crest"` / `"trough"` everywhere (the old `"high"` / `"low"` are gone).
+
+Rules:
+
+- Change the zigzag in `find_zigzag.py` only, and every consumer follows. It changes
+  which pivots, boxes, targets and run-ins exist, so it is a strategy change: the user
+  decides it, and reports regenerate only when the user asks.
+- One parameter set for every caller. A caller that wants different `atr_mult` /
+  `min_bars` says so at the call site, and the user decided it.
+- Not zigzags, left alone: `m5_structure.swing_pivots` (a k-bar fractal) and the
+  vendored `find_swings` (H1 swing levels for the cluster-selection report,
+  `trap_variants`, `find_LP`, `find_eqh_eql`, 3DF). `find_swings` is an ATR zigzag too
+  but a byte-identical upstream copy with a local-extreme filter and one scalar ATR;
+  it has NOT been moved onto `find_zigzag` (open decision for the user).
+- Regens pending as of 2026-10-14: every report that reads the range boxes or the
+  zigzag targets / run-in (`ss_m5_confl2`, `ss_m1_confl` incl. `sep_month_fade`,
+  `range_breakout`) still carries the old pivots until regenerated.
+
 # H1 directional bias (`h1_bias.py`)
 
 A bias is plain H1 candle context, NOT a level: a hammer is bullish, a

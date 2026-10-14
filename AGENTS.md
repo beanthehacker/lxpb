@@ -334,6 +334,18 @@ spike, body %) rows: 0.75×/80%, 1.0×/60%, 1.2×/50%, 1.5×/40%. Only
 patterns-pure's `find_spike_thrust` decides it. It is not the P1 "thrust
 candle" of `ss_m5_confl2` / `trade_management.py`.
 
+## Zigzag: patterns-pure only
+
+Repo-wide rule: every zigzag (swing legs, crest/trough pivots, range-box pivots,
+target and run-in pivots) is patterns-pure's `find_zigzag` from the vendored
+`lxpb-v2/patterns_pure` copy (`ZigZag` for a live bar-by-bar feed, `find_zigzag` for a
+series, `most_recent_pivot` for "what was known at T"). Never write a zigzag, a
+fixed-point pivot finder or an incremental copy of your own. It is ATR based
+(0.75 x ATR(21), no hard-coded points) and needs the confirming bar to be at least 2
+bars after the extreme. Full rule, API table and callers: "Zigzag" in
+`lxpb-v2/CLAUDE.md`. Changing it changes every box, target and run-in: a strategy
+change the user decides, with report regens only when asked.
+
 ## Parallelism — up to 4 cores available
 Independent report/analysis runs (e.g. multiple `render_stop_target_report.py
 --stop X --target Y` combos, or other per-parameter `.scid`-backed scripts in

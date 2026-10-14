@@ -4,7 +4,7 @@ State it keeps (nothing is recomputed from history):
   * M1 / M5 bars built from the tick stream,
   * the M5 LXPB level book (what a box's breakout waits on) and the box ledger (BoxBook),
   * the trading LXPB level book (bar_minutes bars) that supplies the prices to trade,
-  * a structure zigzag and swing pivots on the trading bars (targets, run-in, swerve).
+  * the zigzag (find_zigzag) and swing pivots on the trading bars (targets, run-in, swerve).
 
 On every tick: fills and exits are checked at once; once a second the forming M5 bar is read
 as if it closed (provisional breakouts); on every closed bar the books advance. After any change
@@ -38,9 +38,10 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from .boxes import BoxBook, M1_NS, M5_NS
+from find_zigzag import ATR_MULT, ATR_PERIOD, MIN_BARS, ZigZag
+
 from .levels import LevelBook, key as level_key
 from .series import Series
-from .zigzag import StructZigzag
 
 PT = ZoneInfo("America/Los_Angeles")
 UTC = ZoneInfo("UTC")
@@ -62,8 +63,8 @@ class Params:
     # A plain-P0 (neither swing nor spike) is tradable only with this much rejection wick on its formation
     # candle (the M1/M2 reports' --plain-p0-min-wick-pts); weaker ones end at their breakout.
     min_plain_wick: float = 1.0
-    zz_threshold: float = 3.0
-    zz_min_bars: int = 3
+    zz_atr_mult: float = ATR_MULT      # find_zigzag defaults: the repo's only zigzag
+    zz_min_bars: int = MIN_BARS
     tick: float = 0.25
     min_stop: float = 3.0
     stop_radius: float = 10.0
@@ -131,12 +132,12 @@ class Engine:
         self.m1f = None                      # [slot, o, h, l, c] forming bars
         self.tbf = None
         self.m5f = None
-        self.tb = Series(21)                 # closed trading bars
+        self.tb = Series(ATR_PERIOD)         # closed trading bars
         # books
         self.box = BoxBook()
         self.lv5 = LevelBook("m5", verdicts5)
         self.lv = LevelBook("trade", verdicts_tb, min_plain_wick=self.p.min_plain_wick)
-        self.zz = StructZigzag(self.p.zz_threshold, self.p.zz_min_bars)
+        self.zz = ZigZag(self.p.zz_atr_mult, ATR_PERIOD, self.p.zz_min_bars)
         self.swing_hi, self.swing_lo = [], []    # confirmed fractal swings (time_ns, price)
         self.dead = set()                    # trade levels touched on the tick before they could be retested
         # orders / trades
@@ -257,7 +258,7 @@ class Engine:
     def _close_tb(self, g, t):
         tt = g[0] * self.tb_ns
         self.tb.append(tt, g[1], g[2], g[3], g[4])
-        self.zz.step(tt, g[2], g[3])
+        self.zz.step(g[2], g[3], self.tb.atr[-1], 0, tt)
         self._swings()
         for kind, lv in self.lv.on_bar(tt, g[1], g[2], g[3], g[4]):
             self.dead.discard(level_key(lv))
@@ -721,7 +722,7 @@ class Engine:
         is_long = level_type == "LHPB"
         t0 = self._tb_floor(t)
         p1 = pd.Timestamp(level["breakout_time"]).value
-        pt, pp = self.zz.most_recent("high" if is_long else "low", t0, after=p1)
+        pt, pp = self.zz.most_recent("crest" if is_long else "trough", t0, after=p1)
         s = self.tb
         if pt is None:
             lo = bisect.bisect_right(s.t, p1)
@@ -827,7 +828,7 @@ class Engine:
                 stop, src = wide, "wide_p1"
         # target: the most recent confirmed zigzag pivot since the entry level's P1
         p1 = pd.Timestamp(lv["breakout_time"]).value
-        pt, pp = self.zz.most_recent("low" if is_long else "high", self._tb_floor(t), after=p1)
+        pt, pp = self.zz.most_recent("trough" if is_long else "crest", self._tb_floor(t), after=p1)
         if pt is None:
             return "no_target"
         dist = (pp - fill) if is_long else (fill - pp)

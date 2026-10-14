@@ -3,8 +3,8 @@ import pandas as pd
 
 from find_range import (STRONG_BODY, STRONG_RANGE_ATR, _atr_series, _BreakoutGrader,
                         _spacing_minutes)
+from find_zigzag import ATR_MULT, MIN_BARS, intrabar_order, zigzag_pivots  # noqa: F401  (ATR_MULT re-exported)
 
-ATR_MULT = 0.75     # zigzag turns when price reverses this x ATR(atr_period)
 WIDEN_PCT = 20.0    # an edge may pass its starting edge by this % of the starting length
 MERGE_TOL = 2.0     # two boxes whose BOTH edges are this close (points) are one range
 MIN_EDGE_TOUCHES = 2  # a broken box is kept only with this many pivots at EACH edge
@@ -14,6 +14,7 @@ EDGE_TOL = 2.0        # a pivot is "at the edge" when within this many points of
 def find_range_box_zz(data: pd.DataFrame,
                       atr_mult: float = ATR_MULT,
                       atr_period: int = 21,
+                      min_bars: int = MIN_BARS,
                       widen_pct: float = WIDEN_PCT,
                       merge_tol: float = MERGE_TOL,
                       lower_data: pd.DataFrame = None,
@@ -27,19 +28,13 @@ def find_range_box_zz(data: pd.DataFrame,
 
   `data` is OHLC bars at the timeframe to analyse (no resampling here).
 
-  ZigZag. A crest is confirmed when price falls `atr_mult` x ATR(atr_period)
-  off the running high, a trough symmetrically; pivots alternate. ATR is read
-  as of the confirming bar, so every pivot is point-in-time. The last
-  unconfirmed leg is not a pivot.
+  ZigZag. The pivots are `find_zigzag`'s, the repo's only zigzag (`atr_mult` x
+  ATR(atr_period) reversal, confirmed at least `min_bars` bars after the extreme;
+  see its docstring for every rule). Nothing about the zigzag is defined here.
 
-  Order inside a bar. A bar's high and low are applied one after the other, and
-  which came first matters (a wide bar can end one leg and start the next).
-  With `lower_data` it is read from the lower-timeframe bars inside the bar:
-  the first lower bar to reach the bar's high vs the first to reach its low.
-  When that cannot be told (no `lower_data`, no lower bars in the bar, or both
-  extremes in one lower bar) the extreme in the current direction of travel is
-  assumed first, as `find_swings` does. So `lower_data` can change which pivots
-  exist, not only the grades.
+  Order inside a bar. With `lower_data` it is read from the lower-timeframe bars
+  inside the bar (`find_zigzag.intrabar_order`). So `lower_data` can change which
+  pivots exist, not only the grades.
 
   Every pair of consecutive pivots is a candidate: a crest and the trough
   IMMEDIATELY after it, or a trough and the crest immediately after it (so each
@@ -212,8 +207,8 @@ def find_range_box_zz(data: pd.DataFrame,
     return pd.DataFrame(columns=data.columns.tolist() + cols)
 
   H, L = data["high"].to_numpy(float), data["low"].to_numpy(float)
-  order = _intrabar_order(data.index, tf_min, lower_data) if grader is not None else None
-  pivots = _zigzag_pivots(H, L, _atr_series(data, atr_period), atr_mult, atr_period, order)
+  order = intrabar_order(data.index, tf_min, lower_data) if grader is not None else None
+  pivots = zigzag_pivots(H, L, _atr_series(data, atr_period), order, atr_mult, atr_period, min_bars)
   boxes = _boxes_from_pivots(pivots, widen_pct, merge_tol)
 
   idx = data.index
@@ -411,76 +406,6 @@ def _read_states(b, idx, O, H, L, C, n, widen_pct, grader, levels, bo_grade):
     if state:
       log.append((idx[b["end_j"]], state))
   return state, log, failed_t, retest_t, episodes
-
-
-def _zigzag_pivots(H, L, atr, atr_mult, atr_period, order=None):
-  """ZigZag pivots as (kind, bar, price, confirming bar), oldest first, kind
-  "crest" / "trough". Same state machine as find_swings, but the reversal
-  threshold is the ATR as of the bar doing the confirming (nothing is read from
-  later bars) and no pivot can be confirmed before ATR has `atr_period` bars.
-
-  A bar's high and low are applied as two events. `order[j]` is +1 when bar j's
-  high came before its low, -1 when the low came first, 0 / None when unknown;
-  unknown means the extreme in the current direction of travel comes first
-  (the find_swings assumption)."""
-  pivots = []
-  direction = 0
-  run_hi, run_hi_i = H[0], 0
-  run_lo, run_lo_i = L[0], 0
-  for j in range(1, len(H)):
-    h, l = H[j], L[j]
-    thr = atr_mult * atr[j] if j >= atr_period else np.inf
-    if direction == 0:
-      if h > run_hi: run_hi, run_hi_i = h, j
-      if l < run_lo: run_lo, run_lo_i = l, j
-      if run_hi - l >= thr and run_hi_i < j:
-        pivots.append(("crest", run_hi_i, run_hi, j))
-        direction = -1
-        run_lo, run_lo_i = l, j
-      elif h - run_lo >= thr and run_lo_i < j:
-        pivots.append(("trough", run_lo_i, run_lo, j))
-        direction = 1
-        run_hi, run_hi_i = h, j
-      continue
-    o = order[j] if order is not None else 0
-    high_first = o > 0 or (o == 0 and direction == 1)
-    for ev in ("h", "l") if high_first else ("l", "h"):
-      if ev == "h":
-        if direction == 1:
-          if h > run_hi: run_hi, run_hi_i = h, j
-        elif h - run_lo >= thr:
-          pivots.append(("trough", run_lo_i, run_lo, j))
-          direction = 1
-          run_hi, run_hi_i = h, j
-      else:
-        if direction == -1:
-          if l < run_lo: run_lo, run_lo_i = l, j
-        elif run_hi - l >= thr:
-          pivots.append(("crest", run_hi_i, run_hi, j))
-          direction = -1
-          run_lo, run_lo_i = l, j
-  return pivots
-
-
-def _intrabar_order(idx, tf_min, lower):
-  """+1 where a bar's high came before its low in the lower-timeframe bars
-  inside it, -1 where the low came first, 0 where it cannot be told (no lower
-  bars, or high and low in the same lower bar)."""
-  n = len(idx)
-  order = np.zeros(n, dtype=np.int8)
-  lidx = lower.index
-  j = np.searchsorted(idx.to_numpy(), lidx.to_numpy(), side="right") - 1
-  ok = (j >= 0) & (lidx.to_numpy() < idx.to_numpy()[np.clip(j, 0, n - 1)] + pd.Timedelta(minutes=tf_min))
-  df = pd.DataFrame({"j": j[ok], "h": lower["high"].to_numpy(float)[ok],
-                     "l": lower["low"].to_numpy(float)[ok], "p": np.arange(len(lower))[ok]})
-  if df.empty:
-    return order
-  g = df.groupby("j")
-  first_hi = df[df["h"] == g["h"].transform("max")].groupby("j")["p"].min()
-  first_lo = df[df["l"] == g["l"].transform("min")].groupby("j")["p"].min()
-  both = first_hi.index.intersection(first_lo.index)
-  order[both.to_numpy()] = np.sign(first_lo[both].to_numpy() - first_hi[both].to_numpy())
-  return order
 
 
 def _boxes_from_pivots(pivots, widen_pct, merge_tol):
