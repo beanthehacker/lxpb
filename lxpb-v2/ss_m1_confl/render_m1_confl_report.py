@@ -3766,7 +3766,7 @@ tr.lvl-row.is-done:hover { opacity:0.6; }
           border-radius:4px; padding:0 9px; font-size:var(--chart-font, 14px); line-height:1.5; cursor:pointer; }
 .fs-btn:hover { background:#273449; }
 .chart-cell.fs { position:fixed; inset:0; z-index:100000; width:100vw !important; height:100vh !important;
-                 height:100dvh !important; border-radius:0; margin:0; }
+                 height:100dvh !important; border-radius:0; margin:0; overscroll-behavior:contain; touch-action:none; }
 .chart-cell:fullscreen { width:100vw; height:100vh; border-radius:0; }
 body.fs-open { overflow:hidden; }
 .chart-title { font-size:var(--chart-font, 13px); }
@@ -3869,6 +3869,53 @@ function _fitBars(chart, nBars) {
   const spacing = Math.min(MAX_BAR_SPACING, Math.max(MIN_BAR_SPACING, w / (nBars + 3)));
   const pad = Math.max(0, (w / spacing - nBars) / 2);
   ts.setVisibleLogicalRange({ from: -pad - 1, to: nBars - 1 + pad + 1 });
+}
+// Price-axis drag with a finger. The chart library only reacts to a mouse on the right-hand price axis; a
+// finger there just scrolls the page. So a touch that starts on the axis strip stretches / squeezes the
+// price range instead (drag down = candles taller, drag up = shorter, around the centre of the view) and a
+// double tap on the strip returns to the auto-fit. Every series in the pane is given the same fixed range
+// while a stretch is active, so the level rays cannot widen it again.
+function _touchPriceAxis(chart, el, series, otherSeries, onChange) {
+  const all = [series].concat(otherSeries);
+  let manual = null;                       // {mid, half} while stretched, else auto-fit
+  const provider = (orig) => {
+    if (!manual) return orig();
+    return { priceRange: { minValue: manual.mid - manual.half, maxValue: manual.mid + manual.half } };
+  };
+  const refresh = () => { all.forEach(s => s.applyOptions({ autoscaleInfoProvider: provider })); onChange(); };
+  const inAxis = (t) => {
+    const r = el.getBoundingClientRect(), ps = chart.priceScale('right');
+    const x = t.clientX - r.left, y = t.clientY - r.top;
+    return x >= r.width - ps.width() - 4 && x <= r.width && y >= 0 && y <= r.height - chart.timeScale().height();
+  };
+  let drag = null, lastTap = 0;
+  el.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1 || !inAxis(e.touches[0])) return;
+    e.preventDefault(); e.stopPropagation();
+    const now = Date.now();
+    if (now - lastTap < 350) { manual = null; drag = null; lastTap = 0; refresh(); return; }
+    lastTap = now;
+    if (!manual) {
+      const plotH = el.clientHeight - chart.timeScale().height();
+      const top = series.coordinateToPrice(0), bot = series.coordinateToPrice(plotH);
+      if (top == null || bot == null) return;
+      // the visible range holds the data range plus the scale margins (8 % each side)
+      manual = { mid: (top + bot) / 2, half: Math.abs(top - bot) * 0.84 / 2 };
+      refresh();
+    }
+    drag = { y: e.touches[0].clientY, half: manual.half };
+  }, { capture: true, passive: false });
+  el.addEventListener('touchmove', (e) => {
+    if (!drag || !manual) return;
+    e.preventDefault(); e.stopPropagation();
+    const plotH = Math.max(1, el.clientHeight - chart.timeScale().height());
+    const dy = e.touches[0].clientY - drag.y;
+    manual.half = Math.max(1e-6, drag.half * Math.exp(-dy / (plotH * 0.5)));
+    refresh();
+  }, { capture: true, passive: false });
+  const end = (e) => { if (drag) { e.stopPropagation(); drag = null; } };
+  el.addEventListener('touchend', end, true);
+  el.addEventListener('touchcancel', end, true);
 }
 function _renderPane(elId, titleId, cd) {
   const el = document.getElementById(elId);
@@ -4024,6 +4071,7 @@ function _renderPane(elId, titleId, cd) {
   });
   _fitBars(chart, cd.candles.length);
   queueThin();
+  _touchPriceAxis(chart, el, series, rayInfo.map(r => r.series), queueThin);
   // The visible price range moves when the chart is panned or its axis dragged: re-thin then.
   chart.timeScale().subscribeVisibleLogicalRangeChange(queueThin);
   el.addEventListener('pointerup', queueThin);
@@ -4066,7 +4114,10 @@ function _toggleFs(cell, btn) {
   document.body.classList.add('fs-open');
   btn.textContent = '\u2715';
   btn.title = 'Exit full screen';
-  const rq = cell.requestFullscreen || cell.webkitRequestFullscreen;
+  // On a touch device (an iPad with a trackpad included) only the fixed full-window layer is used: Safari's
+  // own fullscreen ends on a scroll / swipe, and then the pane would drop back out while it is being used.
+  const touchy = (navigator.maxTouchPoints || 0) > 0;
+  const rq = touchy ? null : (cell.requestFullscreen || cell.webkitRequestFullscreen);
   if (rq) { try { const p = rq.call(cell); if (p && p.catch) p.catch(() => {}); } catch (e) { /* ignore */ } }
 }
 document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) _exitFs(); });

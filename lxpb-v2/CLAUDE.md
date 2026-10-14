@@ -64,8 +64,12 @@ px landscape, 820x1180 portrait) first.** Remember it for every chart you build 
   markers), and a ray's full text shows on hover.
 - Several range boxes on one trade are named A, B, ... in start order; chart labels stay short
   ("A 08:10" at its start, "A↓" at its breakout) and the ray hover text carries the times.
-- Every pane has a full-screen button (top right of its title bar): the browser's fullscreen where
-  allowed plus a fixed full-window layer where not; Esc or the same button leaves.
+- Every pane has a full-screen button (top right of its title bar): the browser's fullscreen on a
+  mouse device, only the fixed full-window layer on a touch device (Safari's own fullscreen ends on a
+  scroll / swipe); Esc or the same button leaves.
+- Touch price axis (`_touchPriceAxis`): the chart library reacts to a mouse only on the right price
+  axis, so a finger there would scroll the page. A one-finger vertical drag on the axis strip now
+  stretches / squeezes the price range (down = taller candles), a double tap on it returns to auto-fit.
 - A pane never skips the market structure the trade is decided on. M1 and M5 panes skip bars only in
   between: a range box is kept whole for its last 36 h (M1) / 4 days (M5), an older one as its start and
   every crest/trough of the box plus the stretch before its breakout, and any bar that reached the
