@@ -2248,8 +2248,9 @@ def _apply_range_box_tags(results):
                       f"{age:.1f} days before the touch", flush=True)
             res["dyn_tags"].append(RB.TAG_FROM_RANGE if slot == RB.SLOT_FROM else RB.TAG_INTO_RANGE)
             if slot == RB.SLOT_FROM:   # fade1 / fade2: see range_box_tags (second-side breakout of a box)
-                res["fade_no"] = 2 if any(b["fade_no"] == 2 for b in res["range_box"][slot]) else 1
-                res["dyn_tags"].append(RB.TAG_FADE2 if res["fade_no"] == 2 else RB.TAG_FADE1)
+                nos = {b["fade_no"] for b in res["range_box"][slot]}
+                res["fade_no"] = 2 if nos == {2} else (1 if nos == {1} else 0)   # 0 = mixed
+                res["dyn_tags"].append({1: RB.TAG_FADE1, 2: RB.TAG_FADE2, 0: RB.TAG_FADE_MIXED}[res["fade_no"]])
             continue
         for k, win in out["lost"].items():
             w = results[win]
@@ -2792,7 +2793,7 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
                     f'‘{tag}’: {meaning} (find_range_box_zz on M5, 1-minute lower '
                     f'timeframe, read as of the touch): {detail}. Purely informational; not '
                     f'excluded from the headline stats by default.">{label}</span>')
-    for tag, label in ((RB.TAG_FADE1, "FADE 1"), (RB.TAG_FADE2, "FADE 2")):
+    for tag, label in ((RB.TAG_FADE1, "FADE 1"), (RB.TAG_FADE2, "FADE 2"), (RB.TAG_FADE_MIXED, "FADE 1+2")):
         if tag in dyn_tags:
             parts = []
             for b in (res.get("range_box") or {}).get("from") or []:
@@ -2803,12 +2804,13 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
                 else:
                     parts.append(f'{b["low"]:.2f}-{b["high"]:.2f}: first breakout of the box, at '
                                  f'{R._to_pt_str(b["strong_time"])}')
-            what = ("fades the SECOND-side strong breakout of a range: price had broken out one edge, "
-                    "reversed and broke out of the other" if tag == RB.TAG_FADE2 else
-                    "fades the FIRST strong breakout of a range (no earlier strong breakout of either edge)")
+            what = {RB.TAG_FADE2: "fades the SECOND-side strong breakout of a range: price had broken out one edge, "
+                                  "reversed and broke out of the other",
+                    RB.TAG_FADE1: "fades the FIRST strong breakout of a range (no earlier strong breakout of either edge)",
+                    RB.TAG_FADE_MIXED: "fades several overlapping ranges, some at their FIRST strong breakout and some at "
+                                       "their SECOND-side breakout (see each box)"}[tag]
             out += (f'<span class="dyn-tag-badge range-box-tag-badge" title="Dynamic filter &lsquo;{tag}&rsquo;: '
-                    f'this trade {what}. Per box: {"; ".join(parts)}. A trade on several boxes is fade2 if any '
-                    f'of them is a second-side breakout.">{label}</span>')
+                    f'this trade {what}. Per box: {"; ".join(parts)}.">{label}</span>')
     if RB.TAG_SLOT_LOST in dyn_tags:
         lost = []
         for sl in res.get("range_slot_lost") or []:
@@ -3295,6 +3297,14 @@ other row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" class="f-dyn-isolate" data-tag="fade2"> only</label>
     </div>
     <div class="chip-stack">
+      <label class="chip" title="Exclude every trade that fades several overlapping range boxes at different stages: some at their first strong breakout, some at their second-side breakout.">
+        <input type="checkbox" class="f-dyn-exclude" data-tag="fade-mixed">
+        Exclude fade1+2 (mixed) trades</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged fade-mixed, hiding every
+other row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" class="f-dyn-isolate" data-tag="fade-mixed"> only</label>
+    </div>
+    <div class="chip-stack">
       <label class="chip" title="Exclude every go-with trade on the retest of an M5 range whose strong breakout is still waiting for its retest (LHPB long after a breakout up, LLPB short after a breakout below; level inside the box or within 2pt of its breakout-side edge; find_range_box_zz, 1-minute lower timeframe).">
         <input type="checkbox" class="f-dyn-exclude" data-tag="retest-into-range">
         Exclude retest-into-range trades</label>
@@ -3350,7 +3360,7 @@ the box is checked.">Trade management</span>
     head = (f"<th class=\"left\">Trade Id</th>"
             f"<th class=\"left\" title=\"Every dynamic-filter tag this row carries, in one "
             f"place: globex_eth_open, low_liquidity, swerved/swerve_blocked, "
-            f"breakout-from-range (fade1 / fade2), {'' if fade_only else 'retest-into-range, '}range-slot-lost "
+            f"breakout-from-range (fade1 / fade2 / fade-mixed), {'' if fade_only else 'retest-into-range, '}range-slot-lost "
             f"(row-level, constant across target rules) plus r_below_min/eod_flat (the "
             f"ACTIVE target rule's own -- these swap along with Target/R/Outcome when you "
             f"toggle a Target rules checkbox above). Hover a badge for its own detail; the "

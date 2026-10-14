@@ -93,7 +93,7 @@ a trade has several boxes): small squares above/below the M5 extreme's own M1 ca
 the `nth-child` header rule: change them together with any column added or removed.
 
 A fixed month of the fade playbook only (`sep_month_fade`) is the same script with
-`--since-day 2026-09-01 --until-day 2026-09-30 --warmup-days 3 --playbook fade --range-lookback-days 60
+`--since-day 2026-09-01 --until-day 2026-09-30 --warmup-days 5 --playbook fade --range-lookback-days 60
 --label "Sep 2026, whole month"`: trades are those of the Sep trading days; the range boxes behind them
 may be up to `--range-lookback-days` old (the detector re-reads that much M5 before every touch, so it
 costs seconds per touch; `--range-procs` forks it over 4 processes). `--playbook fade` leaves the go-with
@@ -101,7 +101,8 @@ playbook untagged, unlisted and without its filter chip. Every breakout-from-ran
 `fade1` (it fades the range's first strong breakout) or `fade2` (the other edge had already broken out strongly,
 price reversed, and this is the second-side breakout): `range_box_tags.expand_episodes` (`fade_no`, `prior_time`),
 FADE 1 / FADE 2 badge, Exclude/Only chips, "1st"/"2nd" on the chart's breakout label and a "1st broke ..." line on
-fade2 charts. A trade on several boxes is fade2 if any of them is. Run it through `scid_only/run_scid_only.py`
+fade2 charts. A trade on several overlapping boxes that are not all the same is its own class, `fade-mixed`
+(badge FADE 1+2); user decision 2026-10-14. Run it through `scid_only/run_scid_only.py`
 serially (`--workers 1`), like the others.
 
 # Live range engine (`live_range/`): orders as close to real as possible (user preference)

@@ -26,8 +26,9 @@ seat" below.
 FADE 1 / FADE 2. A breakout-from-range trade fades the strong breakout of one edge of its box. It is
 fade1 when that is the box's first strong breakout and fade2 when the other edge had already broken out
 strongly before it (price left one side, reversed, and broke out of the second). The detector gives one
-episode per edge, so a box has at most these two. A trade that takes seats on several boxes is fade2 if
-any of them is a second-side breakout, else fade1 (the per-box answer is in the badge's hover text).
+episode per edge, so a box has at most these two. A trade that takes seats on several boxes is fade1 when
+all of them are first breakouts, fade2 when all are second-side breakouts, and fade-mixed when it is both
+(the per-box answer is in the badge's hover text).
 
 "Waiting for retest" is the detector's own state: a bar closed strong beyond an
 edge and no LXPB level of the box on the real M5 ledger has completed its retest
@@ -60,6 +61,7 @@ GO_WITH_EDGE_TOL = 2.0   # pts: a go-with level may sit this far OUTSIDE the bre
 TAG_SLOT_LOST = "range-slot-lost"
 TAG_FADE1 = "fade1"   # the fade of a box's FIRST strong breakout
 TAG_FADE2 = "fade2"   # the fade of the box's second-side breakout (the other edge broke out first)
+TAG_FADE_MIXED = "fade-mixed"   # a trade on several boxes, some first-breakout and some second-side
 SLOT_FROM = "from"
 SLOT_INTO = "into"
 
