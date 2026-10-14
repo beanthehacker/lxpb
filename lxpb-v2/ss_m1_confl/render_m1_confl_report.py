@@ -1740,7 +1740,7 @@ def _add_mode_views(chart_main, res, is_long):
 
 
 def _build_context_chart(bars, label, entry_t, exit_t, lo, hi, levels, is_long,
-                         date_only=False, anchor=None, keep=None, touch_prices=()):
+                         date_only=False, anchor=None, keep=None, touch_prices=(), arrow_only=False):
     """One plain candle pane (no LXPB levels) over bars[lo:hi], with the
     trade's own entry/stop/target/level lines and entry/exit markers. `levels`
     is a list of (price, color, lineStyle, title). Returns None when the bars
@@ -1750,7 +1750,8 @@ def _build_context_chart(bars, label, entry_t, exit_t, lo, hi, levels, is_long,
     `keep` -- optional (start, end) UTC pairs: only the bars inside one of them are drawn, and
     each stretch left out becomes a "[N bars skipped]" marker. The spans are the market structure
     the trade is decided on; bars that reached one of `touch_prices` (a tick) are kept too, two
-    either side. keep=None draws every bar of [lo, hi]."""
+    either side. keep=None draws every bar of [lo, hi]. `arrow_only` draws just the candles and one small
+    arrow (no text, lines or tags) on the bar the trade is taken on."""
     if bars is None or bars.empty or entry_t < bars.index[0] or entry_t > bars.index[-1] + pd.Timedelta(days=1):
         return None
     win = bars.loc[lo:hi]
@@ -1786,6 +1787,12 @@ def _build_context_chart(bars, label, entry_t, exit_t, lo, hi, levels, is_long,
         pos = bisect.bisect_right(times, int(pd.Timestamp(ts).timestamp())) - 1
         return times[max(pos, 0)]
 
+    if arrow_only:
+        return {"title": label, "candles": candles, "priceLines": [], "rays": [], "precision": 2,
+                "dateOnly": date_only, "minimal": True,
+                "markers": [{"time": snap(entry_t), "position": "belowBar" if is_long else "aboveBar",
+                             "color": R.ENTRY_COLOR, "shape": "arrowUp" if is_long else "arrowDown",
+                             "text": "", "size": 2}]}
     markers = [{"time": snap(entry_t), "position": "belowBar" if is_long else "aboveBar",
                 "color": R.ENTRY_COLOR, "shape": "circle", "text": "entry"}]
     if exit_t is not None:
@@ -1914,9 +1921,9 @@ def _d1_bar_time(ts):
 
 
 def _build_htf_charts(res, filled, range_spans=()):
-    """{'h1': ..., 'd1': ...} higher-timeframe panes of a trade (None where the bars do not cover it), every
-    bar drawn, with the same level/entry/stop/target lines as the M5 pane. They reach back to the earliest
-    drawn range box (H1 at most 60 days)."""
+    """{'h1': ..., 'd1': ...} higher-timeframe panes of a trade (None where the bars do not cover it): every
+    bar, and one small arrow on the bar the trade is taken on, with no labels, lines or text. They reach
+    back to the earliest drawn range box (H1 at most 60 days)."""
     is_long, entry_t, exit_t, end_t, levels, _ = _trade_context(res, filled)
     earliest = min((s0 for s0, _, _ in range_spans), default=None)
     lo_h1 = entry_t - pd.Timedelta(hours=CTX_H1_BARS_BEFORE)
@@ -1926,11 +1933,10 @@ def _build_htf_charts(res, filled, range_spans=()):
         lo_d1 = min(lo_d1, earliest - pd.Timedelta(days=3))
     h1 = _build_context_chart(
         R._display_h1(), "H1", entry_t, exit_t, lo_h1,
-        end_t + pd.Timedelta(hours=CTX_H1_BARS_AFTER), levels, is_long)
+        end_t + pd.Timedelta(hours=CTX_H1_BARS_AFTER), levels, is_long, arrow_only=True)
     d1 = _build_context_chart(
-        _display_d1(), "D1 (session 15:00 PT prior day \u2192 14:00 PT, labelled by close date)",
-        entry_t, exit_t, lo_d1, end_t + pd.Timedelta(days=CTX_D1_DAYS_AFTER), levels, is_long,
-        date_only=True, anchor=_d1_bar_time)
+        _display_d1(), "D1", entry_t, exit_t, lo_d1, end_t + pd.Timedelta(days=CTX_D1_DAYS_AFTER),
+        levels, is_long, date_only=True, anchor=_d1_bar_time, arrow_only=True)
     return {"h1": h1, "d1": d1}
 
 
@@ -1956,6 +1962,14 @@ def _row_for_chart(res):
         if ts.tzinfo is not None:
             row_for_chart[col] = ts.tz_convert("UTC").tz_localize(None)
     return row_for_chart
+
+
+def _drop_level_rays(chart):
+    """The M1 pane's other live M1 LXPB levels (the blue solid/dotted rays above and below the trade,
+    SR.M5_COLOR) are not wanted on this report: only the trade's own entry-level ray and its
+    other lines stay. Their formation bars still count for the pane's window."""
+    if chart:
+        chart["rays"] = [r for r in chart.get("rays", []) if r.get("color") != SR.M5_COLOR]
 
 
 def _build_price_panes(res, range_spans=()):
@@ -2004,6 +2018,7 @@ def _build_price_panes(res, range_spans=()):
         _annotate_mgmt_events(chart_main, res, res["is_long"])
         _annotate_swerve(chart_main, res, res["is_long"])
         _rayify_trade_lines(chart_main, res, row_for_chart)
+        _drop_level_rays(chart_main)
         _add_mode_views(chart_main, res, res["is_long"])
     return {"main": chart_main, "ctx": _build_context_charts(res, filled=True, range_spans=range_spans),
             **_build_htf_charts(res, True, range_spans)}
@@ -2051,6 +2066,7 @@ def _build_unfilled_chart_stack(res, args):
         fill_window=(window_start, window_end), plain_p0=res["plain_p0"])
     if chart_main is not None:
         chart_main["priceLines"] = []
+        _drop_level_rays(chart_main)
         chart_main["title"] += (f"  |  entry via {res['alt_source']} "
                               f"({res['group_n']} in group)  |  "
                               f"{_fail_reason_label(res.get('fail_reason'))} "
@@ -2532,7 +2548,7 @@ def _draw_range_boxes(results, chart_stacks):
         letters = [chr(ord("A") + k) for k in range(len(boxes))] if len(boxes) > 1 else [None]
         tagged = set()
         for (_, _, color, label, b), letter in zip(boxes, letters):
-            for pane in ("main", "ctx", "h1", "d1"):
+            for pane in ("main", "ctx"):
                 _mark_range_box(stack.get(pane), b, color, label, letter, tagged)
         _mark_range_pivots(stack.get("main"),
                            [(letter, color, b) for (_, _, color, _, b), letter in zip(boxes, letters)])
@@ -3882,6 +3898,7 @@ function _renderPane(elId, titleId, cd) {
     autoSize: false, width: el.clientWidth || 800, height: el.clientHeight || 320,
   }));
   const series = _addCandles(chart, cd.precision);
+  if (cd.minimal) series.applyOptions({ lastValueVisible: false, priceLineVisible: false });
   series.setData(cd.candles);
   if (cd.markers && cd.markers.length) series.setMarkers(cd.markers);
   const tags = [];   // every axis tag that may be thinned: {price, prio, show(bool)}

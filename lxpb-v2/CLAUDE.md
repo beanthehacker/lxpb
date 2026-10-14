@@ -70,7 +70,9 @@ px landscape, 820x1180 portrait) first.** Remember it for every chart you build 
   between: a range box is kept whole for its last 36 h (M1) / 4 days (M5), an older one as its start and
   every crest/trough of the box plus the stretch before its breakout, and any bar that reached the
   entry, stop or target price is kept (`_structure_keep`, `touch_prices`). D1 and H1 show every bar and
-  reach back to the earliest box. Range rays and start/breakout lines are drawn on all four panes.
+  reach back to the earliest box, with NO labels, lines or text: just one small arrow on the bar the trade
+  is taken on (user, 2026-10-14). Range rays and start/breakout lines are on the M1 and M5 panes. The M1
+  pane does not draw the other live M1 LXPB levels (the blue rays above and below); only the trade's own.
 - Candles keep the default grey. Never recolour candles (blue, orange, ...) to show a range, a
   level or anything else; use rays, markers and price tags.
 - A range box's candles, from its start to its breakout, are never compressed into a
