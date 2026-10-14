@@ -2247,6 +2247,9 @@ def _apply_range_box_tags(results):
                       f"({slot}): box {b['low']:.2f}-{b['high']:.2f} from {R._to_pt_str(b['start'])}, "
                       f"{age:.1f} days before the touch", flush=True)
             res["dyn_tags"].append(RB.TAG_FROM_RANGE if slot == RB.SLOT_FROM else RB.TAG_INTO_RANGE)
+            if slot == RB.SLOT_FROM:   # fade1 / fade2: see range_box_tags (second-side breakout of a box)
+                res["fade_no"] = 2 if any(b["fade_no"] == 2 for b in res["range_box"][slot]) else 1
+                res["dyn_tags"].append(RB.TAG_FADE2 if res["fade_no"] == 2 else RB.TAG_FADE1)
             continue
         for k, win in out["lost"].items():
             w = results[win]
@@ -2332,8 +2335,13 @@ def _mark_range_box(chart, b, color, label, letter, tagged):
     # Start and breakout: a dotted vertical line through the pane with a label on a lane along its
     # top (drawn by the page script), so nothing sits on the candles or hides a wick.
     pre = f"{letter} " if letter else ""
-    for e, text, is_end in ((e0, f"{pre}start {hm(e0)}", False),
-                            (e1, f"{pre}broke {way} {hm(e1)}", True)):
+    nth = {1: " 1st", 2: " 2nd"}.get(b.get("fade_no"), "")   # 1st breakout of the box, or the 2nd (other side first)
+    lines = [(e0, f"{pre}start {hm(e0)}", False),
+             (e1, f"{pre}broke {way} {hm(e1)}{nth}", True)]
+    pt = b.get("prior_time")
+    if b.get("fade_no") == 2 and pt is not None and pd.notna(pt):
+        lines.insert(1, (R._to_epoch_utc(pt), f"{pre}1st broke {b['prior_dir']} {hm(R._to_epoch_utc(pt))}", True))
+    for e, text, is_end in lines:
         if is_end and (st is None or pd.isna(st)):
             continue
         if is_end:   # the bar holding the breakout, whatever the pane's bar size
@@ -2784,6 +2792,23 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
                     f'‘{tag}’: {meaning} (find_range_box_zz on M5, 1-minute lower '
                     f'timeframe, read as of the touch): {detail}. Purely informational; not '
                     f'excluded from the headline stats by default.">{label}</span>')
+    for tag, label in ((RB.TAG_FADE1, "FADE 1"), (RB.TAG_FADE2, "FADE 2")):
+        if tag in dyn_tags:
+            parts = []
+            for b in (res.get("range_box") or {}).get("from") or []:
+                if b["fade_no"] == 2:
+                    parts.append(f'{b["low"]:.2f}-{b["high"]:.2f}: second side &mdash; it had already broken '
+                                 f'{b["prior_dir"]} at {R._to_pt_str(b["prior_time"])}, then this {"up" if b["edge"] == "upper" else "down"}'
+                                 f' breakout at {R._to_pt_str(b["strong_time"])}')
+                else:
+                    parts.append(f'{b["low"]:.2f}-{b["high"]:.2f}: first breakout of the box, at '
+                                 f'{R._to_pt_str(b["strong_time"])}')
+            what = ("fades the SECOND-side strong breakout of a range: price had broken out one edge, "
+                    "reversed and broke out of the other" if tag == RB.TAG_FADE2 else
+                    "fades the FIRST strong breakout of a range (no earlier strong breakout of either edge)")
+            out += (f'<span class="dyn-tag-badge range-box-tag-badge" title="Dynamic filter &lsquo;{tag}&rsquo;: '
+                    f'this trade {what}. Per box: {"; ".join(parts)}. A trade on several boxes is fade2 if any '
+                    f'of them is a second-side breakout.">{label}</span>')
     if RB.TAG_SLOT_LOST in dyn_tags:
         lost = []
         for sl in res.get("range_slot_lost") or []:
@@ -3254,6 +3279,22 @@ other row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" class="f-dyn-isolate" data-tag="breakout-from-range"> only</label>
     </div>
     <div class="chip-stack">
+      <label class="chip" title="Exclude every fade of a range box's FIRST strong breakout (no earlier strong breakout of either edge).">
+        <input type="checkbox" class="f-dyn-exclude" data-tag="fade1">
+        Exclude fade1 trades</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged fade1, hiding every
+other row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" class="f-dyn-isolate" data-tag="fade1"> only</label>
+    </div>
+    <div class="chip-stack">
+      <label class="chip" title="Exclude every fade of a range box's SECOND-side breakout: price had already broken out one edge, reversed, and broke out of the other.">
+        <input type="checkbox" class="f-dyn-exclude" data-tag="fade2">
+        Exclude fade2 trades</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged fade2, hiding every
+other row -- overrides every Exclude box. Click again to turn off.">
+        <input type="radio" class="f-dyn-isolate" data-tag="fade2"> only</label>
+    </div>
+    <div class="chip-stack">
       <label class="chip" title="Exclude every go-with trade on the retest of an M5 range whose strong breakout is still waiting for its retest (LHPB long after a breakout up, LLPB short after a breakout below; level inside the box or within 2pt of its breakout-side edge; find_range_box_zz, 1-minute lower timeframe).">
         <input type="checkbox" class="f-dyn-exclude" data-tag="retest-into-range">
         Exclude retest-into-range trades</label>
@@ -3309,7 +3350,7 @@ the box is checked.">Trade management</span>
     head = (f"<th class=\"left\">Trade Id</th>"
             f"<th class=\"left\" title=\"Every dynamic-filter tag this row carries, in one "
             f"place: globex_eth_open, low_liquidity, swerved/swerve_blocked, "
-            f"breakout-from-range, {'' if fade_only else 'retest-into-range, '}range-slot-lost "
+            f"breakout-from-range (fade1 / fade2), {'' if fade_only else 'retest-into-range, '}range-slot-lost "
             f"(row-level, constant across target rules) plus r_below_min/eod_flat (the "
             f"ACTIVE target rule's own -- these swap along with Target/R/Outcome when you "
             f"toggle a Target rules checkbox above). Hover a badge for its own detail; the "

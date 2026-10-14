@@ -23,6 +23,12 @@ episode, whether or not trades were taken, and the other edge can still open.
 Each (box, edge, playbook) is a seat that takes one trade; see "One trade per
 seat" below.
 
+FADE 1 / FADE 2. A breakout-from-range trade fades the strong breakout of one edge of its box. It is
+fade1 when that is the box's first strong breakout and fade2 when the other edge had already broken out
+strongly before it (price left one side, reversed, and broke out of the second). The detector gives one
+episode per edge, so a box has at most these two. A trade that takes seats on several boxes is fade2 if
+any of them is a second-side breakout, else fade1 (the per-box answer is in the badge's hover text).
+
 "Waiting for retest" is the detector's own state: a bar closed strong beyond an
 edge and no LXPB level of the box on the real M5 ledger has completed its retest
 since. Once retested, or for weak / failed / no-level / ranging boxes, no tag.
@@ -52,6 +58,8 @@ TAG_FROM_RANGE = "breakout-from-range"
 TAG_INTO_RANGE = "retest-into-range"
 GO_WITH_EDGE_TOL = 2.0   # pts: a go-with level may sit this far OUTSIDE the breakout-side edge
 TAG_SLOT_LOST = "range-slot-lost"
+TAG_FADE1 = "fade1"   # the fade of a box's FIRST strong breakout
+TAG_FADE2 = "fade2"   # the fade of the box's second-side breakout (the other edge broke out first)
 SLOT_FROM = "from"
 SLOT_INTO = "into"
 
@@ -175,6 +183,12 @@ def expand_episodes(found):
             r["edge_done_reason"] = e["done_reason"]
             r["break_time"] = b["break_time"] if own and pd.notna(b["break_time"]) else e["breakout_time"]
             r["strong_time"] = e["breakout_time"]   # the bar that graded strong: what a chart marks as "broke"
+            # FADE 1 / FADE 2: is this the box's first strong breakout, or did the OTHER edge already
+            # break out strongly before it (price left one side, came back and left through the other)?
+            before = [x for x in (b["episodes"] or []) if x is not e and x["breakout_time"] < e["breakout_time"]]
+            r["fade_no"] = 2 if before else 1
+            r["prior_time"] = before[0]["breakout_time"] if before else pd.NaT
+            r["prior_dir"] = ("up" if before[0]["direction"] == "up" else "down") if before else None
             rows.append(r)
     return pd.DataFrame(rows).reset_index(drop=True) if rows else found.iloc[0:0]
 
@@ -189,6 +203,7 @@ def _describe(box, zz=None):
             "break_dir": box["break_dir"], "break_time": box["break_time"],
             "strong_time": box.get("strong_time", box["break_time"]),
             "edge": box["edge"], "edge_done": bool(box["edge_done"]),
+            "fade_no": int(box["fade_no"]), "prior_time": box["prior_time"], "prior_dir": box["prior_dir"],
             "pivots": box_pivots(box, zz)}
 
 
