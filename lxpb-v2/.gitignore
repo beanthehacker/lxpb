@@ -24,6 +24,8 @@ public/reports/range_breakout/2026.html
 # committed .html.gz is only as fresh as the last time someone re-gzipped it
 # after a regen (the renderer writes just the .html).
 public/reports/ss_m1_confl/sep.html
+public/reports/ss_m1_confl/sep_range_box.html
+public/reports/ss_m1_confl/sep_month_fade.html
 public/reports/ss_m2_confl/sep.html
 .vercel
 .env*
