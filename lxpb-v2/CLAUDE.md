@@ -92,6 +92,14 @@ a trade has several boxes): small squares above/below the M5 extreme's own M1 ca
 (`range_box_tags.box_pivots` re-runs the detector's own zigzag; `_mark_range_pivots`). M1 pane only, not the M5 pane. The table's column positions are hard-coded in `SORT_COLS` and
 the `nth-child` header rule: change them together with any column added or removed.
 
+A fixed month of the fade playbook only (`sep_month_fade`) is the same script with
+`--since-day 2026-09-01 --until-day 2026-09-30 --warmup-days 3 --playbook fade --range-lookback-days 60
+--label "Sep 2026, whole month"`: trades are those of the Sep trading days; the range boxes behind them
+may be up to `--range-lookback-days` old (the detector re-reads that much M5 before every touch, so it
+costs seconds per touch; `--range-procs` forks it over 4 processes). `--playbook fade` leaves the go-with
+playbook untagged, unlisted and without its filter chip. Run it through `scid_only/run_scid_only.py`
+serially (`--workers 1`), like the others.
+
 # Live range engine (`live_range/`): orders as close to real as possible (user preference)
 
 **Standing preference (user, 2026-10-13): the streaming engine places orders the way a real account with limited

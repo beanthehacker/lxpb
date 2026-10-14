@@ -64,6 +64,7 @@ Usage (the report is range-box-only; the output goes to public/reports/ss_m1_con
     python scid_only/run_scid_only.py ss_m1_confl/render_m1_confl_report.py ...  # no TradingView exports
 """
 import os
+import re
 import sys
 import json
 import time
@@ -1837,6 +1838,17 @@ def _row_for_chart(res):
     return row_for_chart
 
 
+# How much of a range box's history is kept whole in each pane. A box that is older than this still
+# gets its rays and a "◄ start" label at the pane's left edge; only the candles before the cap are
+# left out (an old box can be days old: 17 days of M1 bars is 24,000 candles in one chart).
+MAIN_SPAN_CAP = pd.Timedelta(hours=36)    # M1 trading pane
+CTX_SPAN_CAP = pd.Timedelta(days=6)       # M5 context pane
+
+
+def _cap_spans(spans, cap):
+    return [(max(s0, s1 - cap), s1) for s0, s1 in spans]
+
+
 def _build_price_panes(res, range_spans=()):
     """{'main': M1 pane, 'ctx': M5 pane} of a filled trade. `range_spans`
     are (start, end) UTC pairs, one per drawn range box, kept whole in both panes."""
@@ -1871,7 +1883,7 @@ def _build_price_panes(res, range_spans=()):
         bars_after_exit=2 * SR.M5_BARS_AFTER_EXIT,
         p0_p2_pad_bars=P0_P2_PAD_BARS,
         extra_context_times=extra_context_times, plain_p0=res["plain_p0"],
-        protect_spans=range_spans)
+        protect_spans=_cap_spans(range_spans, MAIN_SPAN_CAP))
     if chart_main is not None:
         chart_main["title"] += (f"  |  R {res['r_multiple']:.2f}  |  entry via "
                               f"{res['alt_source']} ({res['group_n']} in group)")
@@ -1882,7 +1894,8 @@ def _build_price_panes(res, range_spans=()):
         _annotate_swerve(chart_main, res, res["is_long"])
         _rayify_trade_lines(chart_main, res, row_for_chart)
         _add_mode_views(chart_main, res, res["is_long"])
-    return {"main": chart_main, "ctx": _build_context_charts(res, filled=True, range_spans=range_spans)}
+    return {"main": chart_main, "ctx": _build_context_charts(res, filled=True,
+                                                range_spans=_cap_spans(range_spans, CTX_SPAN_CAP))}
 
 
 def _build_unfilled_chart_stack(res, args):
@@ -2132,6 +2145,39 @@ def _apply_globex_open_filter(results):
 RANGE_BOX_M5 = None   # real M5 bars (set by main before the M1 swap)
 RANGE_BOX_M1 = None   # real 1-minute bars, even for the M2 report
 RANGE_BOX_LEVELS = None  # real M5 LXPB ledger: decides when a broken box stops waiting for its retest
+RANGE_LOOKBACK_DAYS = RB.LOOKBACK_DAYS   # M5 history fed to the box detector before each touch (--range-lookback-days)
+RANGE_PROCS = 1   # processes that read the boxes (--range-procs)
+RANGE_PLAYBOOKS = ("from", "into")       # which playbooks are tagged and listed (--playbook fade -> ("from",))
+
+
+def _boxes_of_one_touch(touch):
+    return RB.boxes_as_of(RANGE_BOX_M5, RANGE_BOX_M1, touch, R._tick_bars_spanning,
+                          levels=RANGE_BOX_LEVELS, lookback_days=RANGE_LOOKBACK_DAYS)
+
+
+def _boxes_for_touches(touches):
+    """RB.boxes_as_of for every touch, spread over RANGE_PROCS forked processes when more than one
+    (each call re-runs the box detector over the whole lookback, seconds apiece). A fork keeps the
+    loaded data and everything the launcher patched; no fork, or any failure, means serial."""
+    out = None
+    if RANGE_PROCS > 1 and len(touches) > 1 and "fork" in mp.get_all_start_methods():
+        try:
+            t0 = time.time()
+            with mp.get_context("fork").Pool(min(RANGE_PROCS, len(touches))) as pool:
+                out = pool.map(_boxes_of_one_touch, touches, chunksize=1)
+            print(f"[range-box] {len(touches)} touches read on {RANGE_PROCS} processes "
+                  f"({time.time() - t0:.0f}s)", flush=True)
+        except Exception as e:   # noqa: BLE001
+            print(f"[range-box] parallel read failed ({e!r}); reading serially", flush=True)
+            out = None
+    if out is None:
+        t0 = time.time()
+        out = []
+        for i, t in enumerate(touches, 1):
+            out.append(_boxes_of_one_touch(t))
+            if time.time() - t0 > 30 and i % 25 == 0:
+                print(f"[range-box] {i}/{len(touches)} touches read ({time.time() - t0:.0f}s)", flush=True)
+    return out
 
 
 def _apply_range_box_tags(results):
@@ -2162,16 +2208,26 @@ def _apply_range_box_tags(results):
         return results
     cache = {}
     claims, boxes_of = [], {}
+    touches = []
+    for res in results:
+        if res["filled"]:
+            t = pd.Timestamp(res["touch_time_alt"])
+            t = t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+            if t not in cache:
+                cache[t] = None
+                touches.append(t)
+    cache = dict(zip(touches, _boxes_for_touches(touches)))
     for idx, res in enumerate(results):
         if not res["filled"]:
             continue
         touch = pd.Timestamp(res["touch_time_alt"])
         touch = touch.tz_localize("UTC") if touch.tzinfo is None else touch.tz_convert("UTC")
-        if touch not in cache:
-            cache[touch] = RB.boxes_as_of(RANGE_BOX_M5, RANGE_BOX_M1, touch,
-                                          R._tick_bars_spanning, levels=RANGE_BOX_LEVELS)
         from_range, into_range = RB.classify(cache[touch], res["level_type"], res["own_price"],
                                               res.get("run_in_start"), touch)
+        if "from" not in RANGE_PLAYBOOKS:
+            from_range = []
+        if "into" not in RANGE_PLAYBOOKS:
+            into_range = []
         res["range_box"] = {"from": [], "into": []}
         for slot, boxes in ((RB.SLOT_FROM, from_range), (RB.SLOT_INTO, into_range)):
             if not boxes:
@@ -2184,6 +2240,12 @@ def _apply_range_box_tags(results):
         res, by_key = results[idx], boxes_of[(idx, slot)]
         if out["won"]:
             res["range_box"][slot] = [by_key[k] for k in out["won"]]
+            for b in res["range_box"][slot]:
+                age = (pd.Timestamp(res["touch_time_alt"]).tz_convert("UTC")
+                       - pd.Timestamp(b["start"]).tz_convert("UTC")) / pd.Timedelta(days=1)
+                print(f"[range-box] trade {idx} {res['level_type']} {res['own_price']:.2f} "
+                      f"({slot}): box {b['low']:.2f}-{b['high']:.2f} from {R._to_pt_str(b['start'])}, "
+                      f"{age:.1f} days before the touch", flush=True)
             res["dyn_tags"].append(RB.TAG_FROM_RANGE if slot == RB.SLOT_FROM else RB.TAG_INTO_RANGE)
             continue
         for k, win in out["lost"].items():
@@ -2277,9 +2339,13 @@ def _mark_range_box(chart, b, color, label, letter, tagged):
         if is_end:   # the bar holding the breakout, whatever the pane's bar size
             i = bisect.bisect_right(times, e) - 1
             ok = 0 <= i and e - times[i] < 300
+        elif e < times[0] - 300:   # the box began before this pane's first bar: label it at the left edge
+            i, ok = 0, True
+            text = (f"{pre}\u25c4 start "
+                    f"{pd.Timestamp(e, unit='s', tz='UTC').tz_convert('America/Los_Angeles'):%m/%d %H:%M}")
         else:
             i = bisect.bisect_left(times, e)
-            ok = i < len(times) and times[i] < e + 300 and e >= times[0] - 300
+            ok = i < len(times) and times[i] < e + 300
         if ok:
             chart.setdefault("vlines", []).append({"time": times[i], "color": color, "label": text})
     chart["title"] += (f"  |  {label} {name} {R._to_pt_str(b['start'])} -> "
@@ -2956,6 +3022,7 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
                    stats, improved_n, max_win_mae, max_loss_mfe, gapped_entries,
                    pctile_html, rows_html, charts, radius, output_path,
                    title_suffix="", storage_suffix=""):
+    fade_only = getattr(args, "playbook", "both") == "fade"
     peg_lead_sentence = (
         f"Entry is a pegged/chasing limit order (re-quotes {args.peg_step:.2f}pt closer to "
         f"market, up to {args.peg_cap:.2f}pt total, on every wrong-side touch of the resting "
@@ -3242,7 +3309,7 @@ the box is checked.">Trade management</span>
     head = (f"<th class=\"left\">Trade Id</th>"
             f"<th class=\"left\" title=\"Every dynamic-filter tag this row carries, in one "
             f"place: globex_eth_open, low_liquidity, swerved/swerve_blocked, "
-            f"breakout-from-range, retest-into-range, range-slot-lost "
+            f"breakout-from-range, {'' if fade_only else 'retest-into-range, '}range-slot-lost "
             f"(row-level, constant across target rules) plus r_below_min/eod_flat (the "
             f"ACTIVE target rule's own -- these swap along with Target/R/Outcome when you "
             f"toggle a Target rules checkbox above). Hover a badge for its own detail; the "
@@ -3298,6 +3365,19 @@ the box is checked.">Trade management</span>
         storage_suffix = f"_r{radius_pts}" + storage_suffix
     if args.confl_untested_until != CONFL_UNTESTED_UNTIL_DEFAULT:
         variant.append(f"partners untouched until {args.confl_untested_until}")
+    if fade_only:
+        variant.append("fade playbook only")
+        storage_suffix = "_fade" + storage_suffix
+        # The go-with playbook is not tagged at all in this report: drop its filter chip.
+        filter_panel = re.sub(
+            r'<div class="chip-stack">(?:(?!</div>).)*?data-tag="retest-into-range">.*?</div>\s*',
+            "", filter_panel, count=1, flags=re.S)
+        assert 'data-tag="retest-into-range"' not in filter_panel
+        filter_panel = filter_panel.replace("(breakout-from-range, retest-into-range)", "(breakout-from-range)")
+    label = (getattr(args, "label", "") or "").strip()
+    if label:
+        variant.append(label)
+        storage_suffix = "_" + re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") + storage_suffix
     if variant:
         title_suffix = f" ({', '.join(variant)})" + title_suffix
     # Only a report that can hold plain-P0 / no-confluence trades gets their chips.
@@ -3325,7 +3405,7 @@ other row -- overrides every Exclude box. Click again to turn off.">
 <h1>M{BAR_MIN} range-box trades{title_suffix}</h1>
 <p class="lead">Range-box trades on {BAR_MIN}-minute bars: the LXPB state machine runs on
 {BAR_MIN}-minute bars built straight from Sierra Chart ticks (there is no TradingView M{BAR_MIN} export), and
-only trades that hold a range-box seat (breakout-from-range / retest-into-range, one trade per
+only trades that hold a range-box seat ({'breakout-from-range, the fade playbook' if fade_only else 'breakout-from-range / retest-into-range'}, one trade per
 box seat) are listed. The M5 chart above the M{BAR_MIN} chart is real M5 data; it and the range
 boxes are the only M5 in this report. Two rules sit on top of --p0-kinds all: a plain-P0 (neither
 swing nor spike) stays tracked to its own retest only if its OWN formation candle also carries
@@ -4347,6 +4427,28 @@ if __name__ == "__main__":
                              "window starts at, instead of the last --trading-days. The "
                              "window runs from that day's 15:00 PT reopen the evening before "
                              "up to now.")
+    parser.add_argument("--until-day", default=None,
+                        help="YYYY-MM-DD trading-day label the window ENDS with (inclusive: it runs to "
+                             "that day's 15:00 PT reopen), instead of up to now. With --since-day this "
+                             "is how a fixed month is rebuilt.")
+    parser.add_argument("--warmup-days", type=int, default=0,
+                        help="trading days of M1 bars/levels BEFORE the window start, so levels "
+                             "formed just before it are known. Only trades in the window are "
+                             "listed. 0 = none (default %(default)s).")
+    parser.add_argument("--range-lookback-days", type=float, default=RB.LOOKBACK_DAYS,
+                        help="calendar days of real M5 history the range-box detector reads before each "
+                             "trade's touch, i.e. how old a box can be and still be found "
+                             "(default %(default)s).")
+    parser.add_argument("--range-procs", type=int, default=4,
+                        help="processes (forked) that read the range boxes, one touch per task; 1 = serial "
+                             "(default %(default)s).")
+    parser.add_argument("--playbook", choices=("both", "fade"), default="both",
+                        help="'fade' keeps only the breakout-from-range (fade) playbook; the go-with "
+                             "retest-into-range playbook is not tagged, listed or filterable. "
+                             "(default %(default)s)")
+    parser.add_argument("--label", default="",
+                        help="short text appended to the page title (e.g. 'Sep 2026, whole month'); it "
+                             "also gives the report its own saved review notes.")
     parser.add_argument("--bar-minutes", type=int, default=1,
                         help="bar size in minutes for the main series (1 = the M1 report, 2 = the M2 variant); "
                              "everything else is unchanged (default %(default)s)")
@@ -4410,13 +4512,31 @@ if __name__ == "__main__":
     lo_utc = (pd.Timestamp(first_label) - pd.Timedelta(days=1) + TM.SESSION_REOPEN_PT
               ).tz_localize("America/Los_Angeles").tz_convert("UTC")
     hi_utc = now_utc
+    if args.until_day:
+        last_label = pd.Timestamp(args.until_day)
+        if last_label not in labels:
+            raise RuntimeError(f"--until-day {args.until_day} is not a trading-day label on record")
+        if last_label < first_label:
+            raise RuntimeError("--until-day is before the first day of the window")
+        hi_utc = min(now_utc, (last_label + TM.SESSION_REOPEN_PT
+                               ).tz_localize("America/Los_Angeles").tz_convert("UTC"))
+        args.trading_days = int(((labels >= first_label) & (labels <= last_label)).sum())
     args.start = lo_utc.tz_localize(None).isoformat()
     args.end = hi_utc.tz_localize(None).isoformat()
-    print(f"[m1] window: last {args.trading_days} trading days = "
+    print(f"[m1] window: {args.trading_days} trading days = "
           f"{lo_utc.tz_convert('America/Los_Angeles'):%a %Y-%m-%d %H:%M} PT -> "
           f"{hi_utc.tz_convert('America/Los_Angeles'):%a %Y-%m-%d %H:%M} PT", flush=True)
 
-    m1_bars = R._tick_bars_spanning(lo_utc, hi_utc, BAR_FREQ)
+    # Warm-up: M1 bars (hence levels) from a few trading days before the window, so a level formed
+    # just before it can still be retested inside it. Candidates start at args.start, not here.
+    bars_lo_utc = lo_utc
+    if args.warmup_days > 0:
+        warm_label = labels[max(0, labels.get_loc(first_label) - args.warmup_days)]
+        bars_lo_utc = (pd.Timestamp(warm_label) - pd.Timedelta(days=1) + TM.SESSION_REOPEN_PT
+                       ).tz_localize("America/Los_Angeles").tz_convert("UTC")
+        print(f"[m1] warm-up from {bars_lo_utc.tz_convert('America/Los_Angeles'):%a %Y-%m-%d %H:%M} PT "
+              f"({args.warmup_days} trading days before the window)", flush=True)
+    m1_bars = R._tick_bars_spanning(bars_lo_utc, hi_utc, BAR_FREQ)
     if m1_bars.empty:
         raise RuntimeError(f"no M1 bars built from ticks over [{lo_utc}, {hi_utc})")
     R._report_series_gaps(m1_bars, "M1 (tick-only, last-N-trading-days)")
@@ -4437,7 +4557,10 @@ if __name__ == "__main__":
 
     RANGE_BOX_M5 = LC.m5_bars_continuous()
     RANGE_BOX_LEVELS = LC.m5_levels(plain_p0=LC.PLAIN_P0_UNTRACKED, verbose=False)
-    rb_lo = lo_utc - pd.Timedelta(days=RB.LOOKBACK_DAYS)
+    RANGE_LOOKBACK_DAYS = args.range_lookback_days
+    RANGE_PROCS = max(1, args.range_procs)
+    RANGE_PLAYBOOKS = ("from",) if args.playbook == "fade" else ("from", "into")
+    rb_lo = lo_utc - pd.Timedelta(days=RANGE_LOOKBACK_DAYS)
     RANGE_BOX_M1 = R._tick_bars_spanning(rb_lo, hi_utc, "1min")
     print(f"[range-box] real M5 {len(RANGE_BOX_M5):,} bars, 1-min {len(RANGE_BOX_M1):,} bars", flush=True)
 

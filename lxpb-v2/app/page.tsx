@@ -27,7 +27,7 @@ const GROUP_ORDER: { key: string; title: string; description: string; test: (rel
   {
     key: "m1_confl",
     title: "M1 Confluence",
-    description: "M1-timeframe LXPB confluence variant -- September 2026 (from 28 Sep), zigzag run-in rule, swing-extreme target, ATR-boundary review filter.",
+    description: "M1 range-box trades, September 2026. sep_range_box: from 28 Sep, both range-box playbooks (fade the breakout, go with the retest). sep_month_fade: the whole of September, fade playbook only, range boxes up to 60 days old.",
     test: (rel) => rel.startsWith("ss_m1_confl/"),
   },
   {

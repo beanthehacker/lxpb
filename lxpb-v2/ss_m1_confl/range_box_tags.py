@@ -117,33 +117,37 @@ def boxes_as_of(m5, m1, touch_time, tick_bars, levels=None, lookback_days=LOOKBA
           & (found["n_top_edge"] >= MIN_EDGE_TOUCHES)
           & (found["n_bottom_edge"] >= MIN_EDGE_TOUCHES))
     found = found[ok].reset_index(drop=True)
-    found["pivots"] = box_pivots(found, data, low_tf)
-    return expand_episodes(found)
+    out = expand_episodes(found)
+    out.attrs["zz"] = zigzag_pivots(data, low_tf)
+    return out
 
 
 ATR_PERIOD = 21   # find_range_box_zz's default; the pivots below must be the detector's own
 
 
-def box_pivots(found, data, low_tf):
-    """The zigzag crests and troughs behind each box, for the charts: one list per row of
-    `found`, each pivot {"time", "kind" ("crest"/"trough"), "price", "brk"} oldest first. They are
-    the detector's own pivots (the same zigzag, ATR and intrabar order, re-run with the
-    detector's defaults), the ones from the box's first pivot to its last inside pivot, plus
-    the pivot that broke it (brk=True) when it has one. Display only."""
+def zigzag_pivots(data, low_tf):
+    """The detector's own zigzag pivots over `data`, a frame of (time, kind "crest"/"trough", price)
+    oldest first (a frame, not a list: it rides on the boxes frame's attrs, which pandas deep-copies): the same zigzag, ATR and intrabar order find_range_box_zz uses with its defaults.
+    Display only (the chart labels of a box's crests and troughs)."""
     H, L = data["high"].to_numpy(float), data["low"].to_numpy(float)
     order = _intrabar_order(data.index, _spacing_minutes(data.index), low_tf)
     piv = _zigzag_pivots(H, L, _atr_series(data, ATR_PERIOD), ATR_MULT, ATR_PERIOD, order)
-    piv = [(data.index[i], kind, float(px)) for kind, i, px, _ in piv]
-    out = []
-    for _, b in found.iterrows():
-        bp = b["break_pivot_time"]
-        rows = []
-        for t, kind, px in piv:
-            brk = pd.notna(bp) and t == bp
-            if b["start_time"] <= t <= b["last_time"] or brk:
-                rows.append({"time": t, "kind": kind, "price": px, "brk": bool(brk)})
-        out.append(rows)
-    return out
+    return pd.DataFrame({"time": [data.index[i] for _, i, _, _ in piv],
+                         "kind": [k for k, _, _, _ in piv],
+                         "price": [float(px) for _, _, px, _ in piv]})
+
+
+def box_pivots(box, zz):
+    """The pivots behind one box (a row of boxes_as_of), each {"time", "kind", "price", "brk"},
+    oldest first: those from its first pivot to its last inside pivot, plus the pivot that
+    broke it (brk=True) when it has one."""
+    if zz is None or zz.empty:
+        return []
+    bp = box["break_pivot_time"]
+    brk = (zz["time"] == bp) if pd.notna(bp) else pd.Series(False, index=zz.index)
+    sel = zz[((zz["time"] >= box["start_time"]) & (zz["time"] <= box["last_time"])) | brk]
+    return [{"time": t, "kind": k, "price": px, "brk": bool(bk)}
+            for t, k, px, bk in zip(sel["time"], sel["kind"], sel["price"], brk[sel.index])]
 
 
 def expand_episodes(found):
@@ -160,9 +164,9 @@ def expand_episodes(found):
     breakout bar (the zigzag break can come earlier: the bar that first closed
     outside the box is not always the one that graded strong)."""
     rows = []
-    for _, b in found.iterrows():
+    for b in found.to_dict("records"):
         for e in b["episodes"] or []:
-            r = b.copy()
+            r = dict(b)
             own = b["break_dir"] == ("up" if e["direction"] == "up" else "down")
             r["state"] = e["state"]
             r["breakout"] = "strong"
@@ -179,13 +183,13 @@ def _contains(box, price):
     return box["low"] <= price <= box["high"]
 
 
-def _describe(box):
+def _describe(box, zz=None):
     return {"start": box["start_time"], "low": float(box["low"]), "high": float(box["high"]),
             "status": box["status"], "state": box["state"], "breakout": box["breakout"],
             "break_dir": box["break_dir"], "break_time": box["break_time"],
             "strong_time": box.get("strong_time", box["break_time"]),
             "edge": box["edge"], "edge_done": bool(box["edge_done"]),
-            "pivots": box.get("pivots") or []}
+            "pivots": box_pivots(box, zz)}
 
 
 def _broke_in_run_in(box, run_in_start, touch):
@@ -228,20 +232,23 @@ def classify(boxes, level_type, level_price, run_in_start=None, touch=None):
     from_range, into_range = [], []
     if boxes is None or boxes.empty:
         return from_range, into_range
+    zz = boxes.attrs.get("zz")
+    # Only boxes still waiting for their retest can carry a tag. The pivot list is taken off the frame
+    # first: iterrows deep-copies a frame's attrs for every row it yields.
+    boxes = boxes[boxes["state"].isin(WAITING_STATES)].copy()
+    boxes.attrs = {}
     price = float(level_price)
     for _, b in boxes.iterrows():
         state = b["state"]
-        if state not in WAITING_STATES:
-            continue
         up = state == STATE_UP
         if level_type == ("LHPB" if up else "LLPB") and _near_breakout_edge(b, price, up):
-            into_range.append(_describe(b))
+            into_range.append(_describe(b, zz))
         elif not _broke_in_run_in(b, run_in_start, touch):
             continue
         elif level_type == "LLPB" and state == STATE_UP and b["high"] < price:
-            from_range.append(_describe(b))
+            from_range.append(_describe(b, zz))
         elif level_type == "LHPB" and state == STATE_DOWN and b["low"] > price:
-            from_range.append(_describe(b))
+            from_range.append(_describe(b, zz))
     return from_range, into_range
 
 
