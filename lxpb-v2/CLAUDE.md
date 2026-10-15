@@ -434,11 +434,15 @@ The rule, all of it in `find_zigzag.py`'s docstring:
   `0.75 x ATR(21)` off its extreme (`ATR_MULT`, `ATR_PERIOD`), ATR read as of the
   confirming bar, so every pivot is point-in-time. Nothing is confirmed before the
   ATR has 21 bars.
-- **At least `MIN_BARS` = 2 bars** between the extreme's bar and the confirming bar.
-  Bars after the extreme are the only evidence of a reversal: the extreme's own bar
-  never counts, so a bar can never confirm its own extreme. A new extreme restarts
-  the count, so a dip taken straight back is not a pivot. The minimum is in bars of the
-  series the zigzag runs on (2 x M5 = 10 min, 2 x M1 = 2 min).
+- **At least `MIN_BARS` = 1 bar** between the extreme's bar and the confirming bar
+  (user decision 2026-10-15; it was 2 from 2026-10-14). The extreme's own bar counts as evidence
+  of the reversal ONLY when `lower_data` proves the order inside it: the bar made its extreme first
+  and fell (rose) afterwards, so a bar can then confirm its own extreme. With the order unknown (no
+  `lower_data`, no lower bars in the bar, both extremes in one lower bar) or the other way round
+  (low first, then the high), it never counts. A new extreme restarts the count. The minimum is in
+  bars of the series the zigzag runs on. Still at most one pivot per bar, so a bounce and the next
+  swing inside one bar confirm on that bar and the next. The range boxes pass M1 as `lower_data`;
+  `m5_structure.zigzag_pivots` (targets, run-in) passes none, so there only `MIN_BARS` = 1 applies.
 - **Reversal is cumulative** (the deepest adverse price since the extreme), the next
   leg starts at the most adverse bar of the one just confirmed, at most one pivot is
   confirmed per bar, and the last still-extending leg is never a pivot.
@@ -459,7 +463,7 @@ Callers today: `find_range_box_zz` (boxes), `live_range/boxes.py` (live boxes) a
 `live_range/engine.py` (targets, run-in), `ss_m1_confl/range_box_tags.py` (chart pivots),
 and the target / run-in rules of `ss_m5_confl2`, `ss_m1_confl` and `range_breakout`
 (through `m5_structure`). The reports' knobs are `--zz-atr-mult` (0.75) and `--zz-min-bars`
-(2); `--zz-threshold-pts` is gone and accepted-and-ignored so older regen commands run.
+(1); `--zz-threshold-pts` is gone and accepted-and-ignored so older regen commands run.
 Pivot kinds are `"crest"` / `"trough"` everywhere (the old `"high"` / `"low"` are gone).
 
 Rules:

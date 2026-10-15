@@ -8,7 +8,8 @@ from find_range import _atr_series, _spacing_minutes
 
 ATR_MULT = 0.75    # a leg is confirmed when price reverses this x ATR(atr_period) off its extreme
 ATR_PERIOD = 21    # project-wide ATR period
-MIN_BARS = 2       # the confirming bar is at least this many bars after the extreme's own bar
+MIN_BARS = 1       # the confirming bar is at least this many bars after the extreme's own bar, unless the
+                   # lower-timeframe order proves the reversal came after the extreme inside that very bar
 
 
 class Pivot(NamedTuple):
@@ -30,17 +31,19 @@ class _Leg:
     self.up, self.ext, self.ext_i = up, ext, ext_i
     self.adv = self.adv_i = None
 
-  def observe(self, j, xv, av, ext_first, thr, min_bars):
+  def observe(self, j, xv, av, ext_first, known, thr, min_bars):
     """Apply bar j's two events (extension, adverse), in the order they happened.
+    `known` is True when that order was read from lower-timeframe bars (not assumed):
+    only then can the extreme's own bar hold evidence of its reversal.
     True when this bar confirms the leg."""
     for ev in (0, 1) if ext_first else (1, 0):
       if ev == 0:
         if xv > self.ext:
           self.ext, self.ext_i, self.adv, self.adv_i = xv, j, None, None
-      elif j > self.ext_i:
+      elif j > self.ext_i or known:     # j == ext_i: this bar made the extreme, then (known order) fell
         if self.adv is None or av < self.adv:
           self.adv, self.adv_i = av, j
-        if self.ext - self.adv >= thr and j - self.ext_i >= min_bars:
+        if self.ext - self.adv >= thr and (j - self.ext_i >= min_bars or j == self.ext_i):
           return True
     return False
 
@@ -84,7 +87,7 @@ class ZigZag:
       up = leg.up
       xv, av = (high, low) if up else (-low, -high)
       ext_first = order == 0 or (order > 0) == up
-      if leg.observe(j, xv, av, ext_first, thr, self.min_bars):
+      if leg.observe(j, xv, av, ext_first, order != 0, thr, self.min_bars):
         return [self._confirm(leg, j)]
     return []
 
@@ -134,7 +137,8 @@ def find_zigzag(data: pd.DataFrame,
   `data`, an OHLC frame at the timeframe to analyse (no resampling here).
 
   A crest is confirmed when, on a bar at least `min_bars` bars after the extreme
-  itself, the lowest low since the running high is `atr_mult` x ATR(atr_period)
+  itself (or on the extreme's own bar when `lower_data` shows the fall came after
+  the high), the lowest low since the running high is `atr_mult` x ATR(atr_period)
   below it; a trough is the mirror image. Pivots alternate. No fixed point
   thresholds: the size of a leg follows the volatility of the series it is run
   on.
@@ -144,10 +148,14 @@ def find_zigzag(data: pd.DataFrame,
     - Reversal is CUMULATIVE: the deepest adverse price since the extreme counts,
       not only the confirming bar's. A new extreme (a higher high while seeking a
       crest) restarts the count, so a dip taken straight back never makes a pivot.
-    - `min_bars` (default 2): the confirming bar is at least that many bars after
-      the extreme's bar, and bars after the extreme are the only evidence of a
-      reversal. The extreme's own bar never counts (the order of its high and low
-      is unknown), so a bar can never confirm its own extreme. min_bars >= 1.
+    - `min_bars` (default 1): the confirming bar is at least that many bars after
+      the extreme's bar. The extreme's own bar counts as evidence of the reversal
+      ONLY when `lower_data` shows that bar made its extreme first and fell (rose)
+      afterwards; with the order unknown (no `lower_data`, no lower bars, both
+      extremes in one lower bar) or the other way round it never counts, so a bar
+      cannot confirm its own extreme on an assumed order. When it does count, the
+      bar can confirm its own extreme (the bar is then `confirm_bar` == `bar`).
+      min_bars >= 1.
     - The next leg starts at the most adverse bar of the one just confirmed (the
       lowest low after a crest), and every bar after it up to the confirming bar
       already counts as evidence for it. At most one pivot is confirmed per bar.

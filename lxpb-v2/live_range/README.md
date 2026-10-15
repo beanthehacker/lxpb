@@ -33,7 +33,7 @@ ticks ──► Engine.on_tick
 ## The zigzag
 
 There is exactly one, `patterns_pure/find_zigzag.py` (`ZigZag` here, `find_zigzag` in batch): 0.75 x ATR(21) reversal,
-confirmed at least 2 bars after the extreme, same parameters for the boxes (M5 bars) and for the targets / run-in
+confirmed at least 1 bar after the extreme (on the extreme's own bar when the M1 order proves the reversal came after it), same parameters for the boxes (M5 bars) and for the targets / run-in
 (trading bars). This directory has no zigzag code of its own and must not grow one (`../CLAUDE.md`, "Zigzag").
 
 ## Boxes and episodes
