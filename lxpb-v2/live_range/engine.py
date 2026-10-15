@@ -30,13 +30,13 @@ trails the stop to one tick beyond that bar; a bar close with remaining reward /
 below rr_floor exits at market.
 """
 import bisect
-import collections
 import math
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+import liquidity as LQ       # the news-spike definition; live_range/__init__.py puts lxpb-v2 on sys.path
 from .boxes import BoxBook, M1_NS, M5_NS
 from find_zigzag import ATR_MULT, ATR_PERIOD, MIN_BARS, ZigZag
 
@@ -92,10 +92,10 @@ class Params:
     bo_body: float = 0.5             # ... and body >= this share of the run's range
     bo_atr_period: int = 30
     bo_atr_window: int = 150
-    liquidity_gate: bool = True      # liquidity.py: >= 20% of the last 5 min of quotes wider than 1 tick -> no order
-    liq_window_s: int = 300
-    liq_wide_share: float = 0.20
-    liq_min_quotes: int = 20
+    news_gate: bool = True           # liquidity.py: a shock second (1s range or quote spread) in the lookback -> no order
+    news_lookback_s: int = LQ.LOOKBACK_S_DEFAULT
+    news_range_pts: float = LQ.SHOCK_RANGE_PTS_DEFAULT
+    news_spread_ticks: float = LQ.SHOCK_SPREAD_TICKS_DEFAULT
     globex_block: bool = True        # 15:00-15:05 PT reopen: the report tags it and excludes it by default
     globex_open: tuple = (15 * 3600, 15 * 3600 + 5 * 60)
     tag_min_r: float = 1.0           # planned R below this is tagged r_below_min (the report measures, not skips)
@@ -153,9 +153,7 @@ class Engine:
         self._recs = []                      # per-cluster entry records before merging by price
         self.anchors = {}                    # cluster (key of its extreme level) -> its earliest-retested member, kept after that member leaves the book
         self._bo_cache = {}                  # (breakout ns, is_long) -> strong-breakout verdict of the level's P1
-        self._liq = collections.deque()      # (t, n_quotes, n_wide) of the last liq_window_s of tape
-        self._liq_n = self._liq_w = 0
-        self._liq_sec, self._liq_val = -1, None
+        self._shock = LQ.ShockTape(self.p.news_lookback_s, self.p.news_range_pts, self.p.news_spread_ticks)
         self._pending = 0                    # working orders with a re-quote not yet seen by the next record
         self._rr_close = None                # M5 close awaiting the RR-floor check on the next tick
         self._live_keys = set()
@@ -220,11 +218,9 @@ class Engine:
                              else (ask >= self._sell_min or bid <= self._buy_max)):
             self._check_orders(t, px, bid, ask, side)
         self._orders_tick(t, px)
-        if bid is not None and nq:
-            wide = round((ask - bid) / self.p.tick) > 1
-            self._liq.append((t, nq, nq if wide else 0))
-            self._liq_n += nq
-            self._liq_w += nq if wide else 0
+        # After the gates above, so the news check judges the tape BEFORE this record. Every record feeds the
+        # 1s price range; only a single-trade quote record (nq) feeds the spread.
+        self._shock.on_record(t, px, round((ask - bid) / self.p.tick) if bid is not None and nq else None)
 
     def _roll(self, t, m1s, px):
         """The tick belongs to a new minute: close what is done, open the new forming bars."""
@@ -513,8 +509,8 @@ class Engine:
         why = self._blackout(t)
         if why:
             return why
-        if self.p.liquidity_gate and self._liq_blocked(t):
-            return "low_liquidity"
+        if self.p.news_gate and self._shock.flagged(t):
+            return "news_spike"
         eps = self._episodes_if_touched(price)
         serves, reason = [], "no_episode"
         for anchor in e["anchors"]:
@@ -541,22 +537,6 @@ class Engine:
         return {"serves": [(ep["box_id"], ep["direction"], pb) for ep, pb in serves],
                 "boxes": {(ep["box_id"], ep["direction"]): ep for ep, _ in serves},
                 "provisional": any(ep.get("provisional") for ep, _ in serves), "plan": plan}
-
-    def _liq_blocked(self, t):
-        """liquidity.gate on the tape: from the last liq_window_s of quotes ending at the tick before this one, the share
-        wider than one tick is at or above liq_wide_share (with at least liq_min_quotes of them). Cached per second."""
-        sec = t // S_NS
-        if sec == self._liq_sec:
-            return self._liq_val
-        lo = t - self.p.liq_window_s * S_NS
-        dq = self._liq
-        while dq and dq[0][0] < lo:
-            _, n, w = dq.popleft()
-            self._liq_n -= n
-            self._liq_w -= w
-        self._liq_sec = sec
-        self._liq_val = self._liq_n >= self.p.liq_min_quotes and self._liq_w >= self.p.liq_wide_share * self._liq_n
-        return self._liq_val
 
     def _orders_tick(self, t, px):
         """Keep the working orders right for this tick: pull the ones that would no longer pass, place the ones that

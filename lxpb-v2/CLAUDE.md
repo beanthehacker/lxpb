@@ -126,6 +126,17 @@ NEAREST edge to the fill when it fades several), inside the same 0.25-50 pt band
 (`_add_range_edge_targets`), so it re-targets trades that already have a zigzag target and never adds or drops a trade (a trade
 with no zigzag target is not in the report, whatever its box edge). `--target-mode range-edge|all` ticks it by default.
 
+News-spike tag (user request 2026-10-15; replaces the old NEWS / THIN `low_liquidity` gate, which averaged the share of
+wide quotes over 5 minutes and so never fired on a 1-5 second headline burst): `liquidity.py` marks a trade `news_spike`
+(badge NEWS SPIKE, Exclude/Only chips, informational, not excluded from the headline stats) when a SHOCK SECOND sits in the
+`--news-lookback-seconds` (120) before the touch, the touch's own second included only up to the touch. A shock second has a
+trade range >= `--news-shock-range-pts` (3.0) or a single-trade quote spread >= `--news-shock-spread-ticks` (2; one tick is the
+normal ES spread). There is no depth-of-book on disk, so spread and range are the only thinness measures. `liquidity.gate`
+(reports) and `liquidity.ShockTape` (the `live_range` engine) are one definition and were checked equal on real ticks. The old
+`--liquidity-gate`, `--liq-window-minutes` and `--liq-wide-spread-share` are accepted and ignored. Measured on Sep 2026 (35
+fade trades): 2 ticks flags 32 of 35, 3 ticks 10, 4 ticks 8, range alone 7, so at 2 ticks the tag no longer separates
+anything; the number is the user's choice (set 2026-10-15). Every report that tags it needs a regen to show it.
+
 Sign-in (user request 2026-10-15): `/login` takes Google OR email + password (NextAuth Credentials in `auth.ts`). Both give the
 session email `ALLOWED_EMAIL`, and the review state in `row_state` is keyed by report/row only, so it is one data set for either
 way in. The password is the `LOGIN_PASSWORD` env var on the Vercel project; it is never written into this public repo (a hash of a
@@ -158,7 +169,7 @@ margin would, and judges every gate BEFORE the touch.** Remember it for every ch
   reports' rule); weaker ones end at their breakout but still serve as stop candidates while untouched.
 - The engine follows the M1/M2 report's pipeline (`live_range/README.md`, "Matching the report"): the anchor
   (earliest-retested cluster member) that the range tag and the run-in are judged from, the box's break candle for the
-  fade test, the liquidity and reopen gates. User decisions (2026-10-13): no cold-level mode, no 3-hour fill window, a
+  fade test, the news-spike and reopen gates. User decisions (2026-10-13): no cold-level mode, no 3-hour fill window, a
   level's own breakout need not be strong (`bo_range_atr` stays 0), boxes never expire, one order per seat that is never
   pulled for a later contender.
 - Trade management (stop trail, RR floor) runs on the trading-bar ledger and bars, as in the reports; seat
@@ -543,7 +554,7 @@ The layout does this by itself, so a new column needs no width tuning:
   bigger.
 - The Tags column is never wider than the Type column (every device): each
   tag badge shows a 2-3 letter code (VS volume spike, SC H1 spike
-  confluence, FB fading bias, BS bias served, NT news/thin, GO Globex open,
+  confluence, FB fading bias, BS bias served, NS news spike, GO Globex open,
   SW/SWB/CR swerve, R< below min R, EOD end-of-day flat, MG management),
   stacked one per line, with the full label and detail in its hover text
   and the legend on the Tags header. A new tag needs a code in that list.

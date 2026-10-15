@@ -111,12 +111,12 @@ the target are ALL M5 LXPB structure:
          available the trade is NOT taken (tag `swerve_blocked`, excluded by
          default) but is still resolved and charted at its original entry.
 
-       * NEWS / THIN BOOK (liquidity.py). The quoted spread measured off
-         the real tape in the minutes before the fill decides whether the
-         book had thinned out past anything normal trade produces -- which
-         catches scheduled releases (FOMC/NFP/CPI/PPI) and unscheduled
-         headline shocks alike, and re-enables trading by itself once the
-         spread comes back in. Tag `low_liquidity`, excluded by default.
+       * NEWS SPIKE (liquidity.py). A shock second -- a 1s trade range of
+         `--news-shock-range-pts` or a quoted spread of
+         `--news-shock-spread-ticks` -- measured off the real tape in the
+         `--news-lookback-seconds` before the touch (the touch's own second
+         up to the touch) marks a news-type event, scheduled (FOMC/NFP/CPI/PPI)
+         or not. Tag `news_spike`, informational: not excluded by default.
 
        * VOLUME SPIKE (volume_spike.py, on by default). Reads the real 1s
          tape for a same-side stop-run around the fill: BidVolume for an
@@ -345,8 +345,9 @@ CREST_REFINE_BASELINE_DEFAULT = "150D"                # trailing window the z-sc
 CREST_REFINE_Z_THRESHOLD_DEFAULT = 3.0                # below this the approach is ordinary -- no change
 CREST_REFINE_ALPHA_DEFAULT = 0.15                     # fraction of the crest-to-planned distance added
 CREST_REFINE_CAP_PTS_DEFAULT = 10.0                   # furthest the entry may be pushed
-LIQ_WINDOW_MINUTES_DEFAULT = LQ.WINDOW_MINUTES_DEFAULT
-LIQ_WIDE_SPREAD_SHARE_DEFAULT = LQ.WIDE_SPREAD_SHARE_MAX_DEFAULT
+NEWS_LOOKBACK_S_DEFAULT = LQ.LOOKBACK_S_DEFAULT
+NEWS_SHOCK_RANGE_PTS_DEFAULT = LQ.SHOCK_RANGE_PTS_DEFAULT
+NEWS_SHOCK_SPREAD_TICKS_DEFAULT = LQ.SHOCK_SPREAD_TICKS_DEFAULT
 VOL_SPIKE_CORE_SECONDS_DEFAULT = VS.CORE_WINDOW_SECONDS_DEFAULT
 VOL_SPIKE_BASELINE_SECONDS_DEFAULT = VS.BASELINE_WINDOW_SECONDS_DEFAULT
 VOL_SPIKE_RATIO_DEFAULT = VS.RATIO_THRESHOLD_DEFAULT
@@ -1619,18 +1620,19 @@ def process_cluster(cluster, args):
         result["fail_reason"] = "no_tick_data_after_fill"
         return result
 
-    # Liquidity gate (liquidity.py): measured off the real tape in the
-    # minutes before this fill, so scheduled releases (FOMC/NFP/CPI/PPI) and
-    # unscheduled headline shocks are both caught, and trading re-enables by
-    # itself once the quoted spread comes back in. Tags rather than skips --
-    # the row and its charts stay in the report behind a dynamic filter (on
-    # by default) so a "skipped for news" trade can still be reviewed.
-    if args.liquidity_gate:
-        blocked, liq = LQ.gate(touch_time_alt, window_minutes=args.liq_window_minutes,
-                               wide_spread_share_max=args.liq_wide_spread_share)
-        result["liquidity"] = liq
-        if blocked:
-            result["dyn_tags"].append("low_liquidity")
+    # News-spike check (liquidity.py): measured off the real tape in the
+    # seconds before the touch -- a 1s range of NEWS_SHOCK_RANGE_PTS or a
+    # quoted spread of NEWS_SHOCK_SPREAD_TICKS inside the lookback. Scheduled
+    # releases and unscheduled headlines are both caught. Tags rather than
+    # skips: the row and its charts stay in the report behind a dynamic filter
+    # so a news-hit trade can still be reviewed.
+    if args.news_spike_check:
+        flagged, spike = LQ.gate(touch_time_alt, lookback_s=args.news_lookback_seconds,
+                                 range_pts=args.news_shock_range_pts,
+                                 spread_ticks=args.news_shock_spread_ticks)
+        result["news_spike"] = spike
+        if flagged:
+            result["dyn_tags"].append("news_spike")
 
     # Volume spike (volume_spike.py): same-side stop-run on the real 1s
     # tape around the fill -- purely informational, tags rather than
@@ -3157,7 +3159,7 @@ def _attr_json(obj):
 
 def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
     """Badge HTML for the ROW-level dynamic-filter tags (globex_eth_open,
-    low_liquidity, swerved, swerve_blocked, crest_refined, spike_confl,
+    news_spike, swerved, swerve_blocked, crest_refined, spike_confl,
     fading_bias, volume-spike) -- the ones that
     don't depend on which target rule is active, so they render once and
     never get rewritten by applyTargetModes() (unlike _mode_tag_badges'
@@ -3167,7 +3169,7 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
     crest_refined and fading_bias can land on either (swerve/crest_refine are
     decided before the fill-window search even runs, and the bias is read off
     the H1 candles before the retest), while globex_eth_open and
-    low_liquidity only ever tag a FILLED result (their own apply_* filters
+    news_spike only ever tag a FILLED result (their own apply_* filters
     skip unfilled rows), so those two branches are simply never reached
     when dyn_tags came from an unfilled row's tags alone."""
     out = ""
@@ -3187,12 +3189,12 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
                 f'daily Globex/ETH reopen window (15:00-15:05 PT) -- excluded by default. '
                 f'Toggle the Dynamic filters checkbox in the panel above to include '
                 f'it.">GLOBEX OPEN</span>')
-    if "low_liquidity" in dyn_tags:
-        out += (f'<span class="dyn-tag-badge liq-tag-badge" title="Dynamic filter '
-                f'‘low_liquidity’: the tape was measurably illiquid at this fill '
-                f'({LQ.describe(res.get("liquidity"))}) -- a news/thin-book window. '
-                f'The strategy skips these; they are left out of the headline stats by '
-                f'default.">NEWS / THIN</span>')
+    if "news_spike" in dyn_tags:
+        out += (f'<span class="dyn-tag-badge news-tag-badge" title="Dynamic filter '
+                f'‘news_spike’: a news-type shock sat just before this touch '
+                f'({LQ.describe(res.get("news_spike"))}). Shock second = 1s trade range or '
+                f'quoted spread past the thresholds in the report header. Informational; '
+                f'not excluded from the headline stats by default.">NEWS SPIKE</span>')
     if "swerved" in dyn_tags:
         sw = res["swerve"]
         sw_str = ", ".join(f"{px:.2f} @ {R._to_pt_str(t)}" for t, px in sw["swings"][:3])
@@ -3462,7 +3464,7 @@ def _render_row(idx, res, chart_stacks, fps):
             # target-rule toggle) -- just whichever row-level tags applied
             # before the fill-window search ran (see _row_tag_badges: e.g.
             # swerve_blocked/crest_refined can land on an unfilled row,
-            # globex_eth_open/low_liquidity never do).
+            # globex_eth_open/news_spike never do).
             base_tags = list(res.get("dyn_tags") or [])
             # Shipped as data-dyn-tags on the unfilled row too, so Exclude /
             # Only act on these rows exactly as they do on a filled one. They
@@ -3819,9 +3821,9 @@ headline stats by default. ENTRY AND TRADE BLOCKS: a confirmed M5 swing within
 its retest, moves the order to the next live same-side M5 level within
 {args.swerve_max_move_pts:g}pt (SWERVED), or blocks the trade if there is none
 (SWERVE BLOCKED, shown at the original entry); a fill whose preceding
-{args.liq_window_minutes:g} minutes of tape show more than
-{args.liq_wide_spread_share * 100:g}% of quotes wider than one tick is a news/thin-book entry
-(NEWS / THIN); and no position is carried past the end of the day -- open trades are flattened
+{args.news_lookback_seconds:g} seconds of tape hold a second with a trade range of at least
+{args.news_shock_range_pts:g}pt or a quoted spread of at least {args.news_shock_spread_ticks:g} ticks is a news-spike entry
+(NEWS SPIKE); and no position is carried past the end of the day -- open trades are flattened
 at market before 12:45 PT (EOD FLAT) and no entry is taken from then until the Globex reopen. Both searches use only completed M5 candles and the live ledger state
 immediately before the fill's M5 bar, with no fixed lookback. Charts/markers/price-lines/
 tooltips, MAE/MFE/Max DD definitions, and the Reviewed/Valid/Replayed/Notes columns below all
@@ -4002,11 +4004,11 @@ other row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" class="f-dyn-isolate" data-tag="globex_eth_open"> only</label>
     </div>
     <div class="chip-stack">
-      <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="low_liquidity">
-        Exclude news / thin-book entries</label>
-      <label class="chip chip-iso" title="Only: show ONLY rows tagged low_liquidity, hiding every
+      <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="news_spike">
+        Exclude news-spike entries</label>
+      <label class="chip chip-iso" title="Only: show ONLY rows tagged news_spike, hiding every
 other row -- overrides every Exclude box. Click again to turn off.">
-        <input type="radio" class="f-dyn-isolate" data-tag="low_liquidity"> only</label>
+        <input type="radio" class="f-dyn-isolate" data-tag="news_spike"> only</label>
     </div>
     <div class="chip-stack">
       <label class="chip"><input type="checkbox" class="f-dyn-exclude" data-tag="swerve_blocked">
@@ -4242,7 +4244,7 @@ the box is checked.">Trade management</span>
         "most recent confirmed zigzag trough (long) / crest (short) formed between P1 and P2, at its own price.")
     head = (f"<th class=\"left\">Trade Id</th>"
             f"<th class=\"left\" title=\"Every dynamic-filter tag this row carries, in one "
-            f"place: globex_eth_open, low_liquidity, swerved/swerve_blocked, crest_refined, "
+            f"place: globex_eth_open, news_spike, swerved/swerve_blocked, crest_refined, "
             f"spike_confl, fading_bias, bias_served, volume-spike "
             f"(row-level, constant across target rules) plus r_below_min/eod_flat (the "
             f"ACTIVE target rule's own -- these swap along with Target/R/Outcome when you "
@@ -4586,7 +4588,7 @@ tr.lvl-row.outcome-hidden, tr.chart-row.outcome-hidden { display:none !important
    under the rules currently ticked, so it is dimmed and left out of the
    stats -- the same treatment an unfilled row gets from Python. */
 tr.lvl-row.no-target-row td { color:var(--text-faint); font-style:italic; }
-.liq-tag-badge { background:#3f1d2e; color:#fda4af; }
+.news-tag-badge { background:#3f1d2e; color:#fda4af; }
 .swerve-tag-badge { background:#1e3a2f; color:#86efac; }
 .vol-spike-tag-badge { background:#3f2d0e; color:#fdba74; }
 .spike-confl-tag-badge { background:#0e3a2f; color:#6ee7b7; }
@@ -5323,16 +5325,25 @@ if __name__ == "__main__":
     parser.add_argument("--crest-refine-cap-pts", type=float, default=CREST_REFINE_CAP_PTS_DEFAULT,
                         help=f"Furthest the entry may be pushed by this rule (default "
                              f"{CREST_REFINE_CAP_PTS_DEFAULT:g}pt).")
-    parser.add_argument("--liquidity-gate", action=argparse.BooleanOptionalAction, default=True,
-                        help="Tag trades whose entry landed in a measurably illiquid tape "
-                             "(news/thin book -- see liquidity.py). ON by default.")
-    parser.add_argument("--liq-window-minutes", type=float, default=LIQ_WINDOW_MINUTES_DEFAULT,
-                        help=f"Tape window measured before each fill (default "
-                             f"{LIQ_WINDOW_MINUTES_DEFAULT:g} min).")
-    parser.add_argument("--liq-wide-spread-share", type=float,
-                        default=LIQ_WIDE_SPREAD_SHARE_DEFAULT,
-                        help=f"Share of quotes wider than one tick at or above which the tape "
-                             f"counts as illiquid (default {LIQ_WIDE_SPREAD_SHARE_DEFAULT:g}).")
+    parser.add_argument("--news-spike-check", action=argparse.BooleanOptionalAction, default=True,
+                        help="Tag trades whose touch came right after a news-type shock second "
+                             "(see liquidity.py). ON by default.")
+    parser.add_argument("--news-lookback-seconds", type=float, default=NEWS_LOOKBACK_S_DEFAULT,
+                        help=f"Seconds of tape read before each touch (default "
+                             f"{NEWS_LOOKBACK_S_DEFAULT:g}).")
+    parser.add_argument("--news-shock-range-pts", type=float, default=NEWS_SHOCK_RANGE_PTS_DEFAULT,
+                        help=f"A second whose trade range is at least this many points is a shock "
+                             f"second (default {NEWS_SHOCK_RANGE_PTS_DEFAULT:g}).")
+    parser.add_argument("--news-shock-spread-ticks", type=float, default=NEWS_SHOCK_SPREAD_TICKS_DEFAULT,
+                        help=f"A second with a quoted spread of at least this many ticks is a shock "
+                             f"second (default {NEWS_SHOCK_SPREAD_TICKS_DEFAULT:g}; one tick is "
+                             f"the normal ES spread).")
+    # Removed 2026-10-15 (the five-minute wide-spread-share gate); accepted and ignored so older
+    # regen commands still run.
+    parser.add_argument("--liquidity-gate", action=argparse.BooleanOptionalAction, default=None,
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--liq-window-minutes", type=float, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--liq-wide-spread-share", type=float, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--volume-spike-check", action=argparse.BooleanOptionalAction,
                         default=True,
                         help="Tag trades whose fill sat near an unusual same-side (bid for "

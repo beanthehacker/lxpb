@@ -250,7 +250,7 @@ const tradeTime = (t: Trade) => t.entryTime || t.retest;
 
 export const TAG_LABELS: Record<string, string> = {
   globex_eth_open: "Globex/ETH open fill (15:00-15:05 PT)",
-  low_liquidity: "News / thin book",
+  news_spike: "News spike (1s shock before the touch)",
   swerve_blocked: "Swerve-blocked (not taken)",
   swerved: "Swerved",
   crest_refined: "Crest-refined entry",

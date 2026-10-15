@@ -61,7 +61,7 @@ H1 RANGE BREAKOUT -> M5 LXPB RETEST. Rules set by the user 2026-09-25:
 
 Everything downstream of the trade itself -- tick-accurate exit resolution
 (render_stop_target_report.resolve_trades via ss_m5_confl2's
-_resolve_target_mode), MAE/MFE, trade management, liquidity / volume-spike /
+_resolve_target_mode), MAE/MFE, trade management, news-spike / volume-spike /
 H1-bias / trap tags, the row layout, the chart stack (D1, H1, M5, 1s trio,
 bid/ask volume, 1-minute, footprints) and the live filter panel -- is
 ss_m5_confl2's own code, called rather than copied. This module supplies the
@@ -466,12 +466,13 @@ def process_setup(i, s, args):
     if bars is None or bars.empty:
         res["fail_reason"] = "no_tick_data_after_fill"
         return res
-    if args.liquidity_gate:
-        blocked, liq = LQ.gate(touch, window_minutes=args.liq_window_minutes,
-                               wide_spread_share_max=args.liq_wide_spread_share)
-        res["liquidity"] = liq
-        if blocked:
-            res["dyn_tags"].append("low_liquidity")
+    if args.news_spike_check:
+        flagged, spike = LQ.gate(touch, lookback_s=args.news_lookback_seconds,
+                                 range_pts=args.news_shock_range_pts,
+                                 spread_ticks=args.news_shock_spread_ticks)
+        res["news_spike"] = spike
+        if flagged:
+            res["dyn_tags"].append("news_spike")
     if args.volume_spike_check:
         spiked, vspike = VS.detect(touch, lt, core_window_seconds=args.volume_spike_core_seconds,
                                    baseline_window_seconds=args.volume_spike_baseline_seconds,
@@ -1135,7 +1136,9 @@ def _args_from_cli(argv=None):
                    help="default N for the target rule; live in the page (default %(default)s)")
     p.add_argument("--eod-flat", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--news-pull-window", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--liquidity-gate", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--news-spike-check", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--liquidity-gate", action=argparse.BooleanOptionalAction, default=None,
+                   help=argparse.SUPPRESS)   # removed 2026-10-15; accepted and ignored
     p.add_argument("--volume-spike-check", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--max-rows", type=int, default=None, help="smoke test: first N trades only")
     p.add_argument("--workers", type=int, default=1)
@@ -1153,8 +1156,9 @@ def _args_from_cli(argv=None):
     a.zz_min_bars = C2.ZZ_MIN_BARS_DEFAULT
     a.swerve, a.crest_refine = False, False
     a.swerve_tol_pts, a.swerve_max_move_pts = C2.SWERVE_TOL_PTS_DEFAULT, C2.SWERVE_MAX_MOVE_PTS_DEFAULT
-    a.liq_window_minutes = C2.LIQ_WINDOW_MINUTES_DEFAULT
-    a.liq_wide_spread_share = C2.LIQ_WIDE_SPREAD_SHARE_DEFAULT
+    a.news_lookback_seconds = C2.NEWS_LOOKBACK_S_DEFAULT
+    a.news_shock_range_pts = C2.NEWS_SHOCK_RANGE_PTS_DEFAULT
+    a.news_shock_spread_ticks = C2.NEWS_SHOCK_SPREAD_TICKS_DEFAULT
     a.volume_spike_core_seconds = C2.VOL_SPIKE_CORE_SECONDS_DEFAULT
     a.volume_spike_baseline_seconds = C2.VOL_SPIKE_BASELINE_SECONDS_DEFAULT
     a.volume_spike_ratio = C2.VOL_SPIKE_RATIO_DEFAULT

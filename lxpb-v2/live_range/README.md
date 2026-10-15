@@ -97,7 +97,7 @@ the touch.** On every tick:
    waiting for their retest, the run-in into the level (strong: 4x the median bar range, measured from the anchor's P1
    to the planned entry, not the chased price), for a fade that the breakout is the run-in's own, a stop and a
    target that can be planned, and no blackout (news pull, end-of-day, the 15:00-15:05 PT reopen) and no
-   thin tape (`liquidity.py`: 20% or more of the last 5 minutes' quotes wider than 1 tick). Pass -> an order is placed
+   news-type shock (`liquidity.py`: a 1s trade range of 3 pt or more, or a quote spread of 2 ticks or more, in the last 120 s up to the tick before). Pass -> an order is placed
    with that stop and target; fail -> none (and it is placed later if it starts to pass);
 2. a resting order is re-evaluated the same way and pulled the moment it would fail, or when price is
    more than `cancel_pts` (6 pt) away, the level is spent, or a swing now sits on it;
@@ -141,7 +141,7 @@ cannot:
 | tag price = anchor price; run-in from the anchor's P1 to the planned entry | same |
 | fade: box break candle (zigzag `break_time`) vs the run-in start | same (`break_t` is checked against `find_range_box_zz`) |
 | news pull 05:29:55-05:30:40 PT, EOD entry block 12:45-15:00 PT, flat 12:44 PT | same |
-| liquidity gate (tag `low_liquidity`, excluded by default), 15:00-15:05 PT reopen (tag `globex_eth_open`, excluded by default) | gates, switchable (`liquidity_gate`, `globex_block`) |
+| news-spike check (tag `news_spike`, informational), 15:00-15:05 PT reopen (tag `globex_eth_open`, excluded by default) | gates, switchable (`news_gate`, `globex_block`) |
 | peg: 0.25 pt step, 1 pt cap, bid/ask and aggressor side | same |
 | stop (spike P0 else thrust, widened to 3 pt), target (swing extreme 0.25-50 pt), stop trail, RR floor 0.2 | same |
 | `r_below_min` (planned R < 1), `plain_p0`, `no_confl`, `swerved`, `eod_flat` tags | recorded on every trade (`tags`); `min_r` makes the R tag a gate (off) |
