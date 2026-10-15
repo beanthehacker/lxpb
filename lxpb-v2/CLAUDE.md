@@ -119,6 +119,13 @@ fade2 charts. A trade on several overlapping boxes that are not all the same is 
 (badge FADE 1+2); user decision 2026-10-14. Run it through `scid_only/run_scid_only.py`
 serially (`--workers 1`), like the others.
 
+Target rules of the M1 report (checkboxes in its Target rules row; the farther target wins when several are on): `opposite-zz`,
+`swing-extreme` (the default, the only one ticked) and `range-edge` (user request 2026-10-15): the HIGH of the range box an LLPB
+fade trades back to, the LOW of the box an LHPB fade trades back to, taken from the box(es) whose fade seat the trade holds (the
+NEAREST edge to the fill when it fades several), inside the same 0.25-50 pt band. It is computed after the boxes are read
+(`_add_range_edge_targets`), so it re-targets trades that already have a zigzag target and never adds or drops a trade (a trade
+with no zigzag target is not in the report, whatever its box edge). `--target-mode range-edge|all` ticks it by default.
+
 `sep_month_fade` is PUBLIC (no sign-in): `proxy.ts` excludes `reports/ss_m1_confl/sep_month_fade.html` and
 `js/row-store.js` from the auth matcher (a literal: Next reads it at build time). Nothing else is public, and
 `/api/rows` stays gated, so the report's Valid/Notes cannot be read or written by a visitor. Publishing another

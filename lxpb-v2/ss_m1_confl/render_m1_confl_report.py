@@ -33,10 +33,12 @@ What it does, in order
      else one tick beyond the most protective breakout-candle extreme among the live same-side
      levels around the fill (src thrust), widened to the last older P1 candle when closer than
      MIN_STOP_PTS (src wide_p1). No stop = no trade.
-  6. TARGET. Two rules, both read from the level's own P1..fill window, each a live checkbox in
-     the report (the farther target wins when both are on): OPPOSITE LEVEL, ZIGZAG ANCHOR
+  6. TARGET. Two zigzag rules, both read from the level's own P1..fill window, each a live checkbox
+     in the report (the farther target wins when several are on): OPPOSITE LEVEL, ZIGZAG ANCHOR
      (opposite_zz) and SWING EXTREME (swing_extreme: the last confirmed zigzag pivot between
-     P1 and P2). No target = no trade; a bracket below --min-r is still taken and tagged
+     P1 and P2). A third, RANGE EDGE (range_edge), is added once the range boxes are read: the
+     box HIGH an LLPB fade targets / box LOW an LHPB fade targets (nearest, when it fades several
+     boxes); it re-targets trades that already have a zigzag target. No target = no trade; a bracket below --min-r is still taken and tagged
      r_below_min.
   7. BLOCKS, as tags with live Exclude/Only chips: SWERVED / SWERVE BLOCKED (a confirmed swing
      on the planned entry moves it to the next live level, or blocks it), NEWS / THIN (wide
@@ -734,8 +736,21 @@ def _dynamic_stop_thrust(m5_ledger, level_type, alt_price, is_long, touch_time_a
 # P0 formed after that pivot. The same up-to-50pt favourable band bounds both.
 # --------------------------------------------------------------------------
 
-TARGET_MODES = ("opposite-zz", "swing-extreme")   # every rule _pick_targets computes
-DEFAULT_TARGET_MODES_BOTH = TARGET_MODES              # what "--target-mode both" starts ticked
+ZIGZAG_TARGET_MODES = ("opposite-zz", "swing-extreme")   # the rules _pick_targets computes while a trade is resolved
+RANGE_EDGE_MODE = "range-edge"   # the fade's range box edge; needs the boxes, so _add_range_edge_targets adds it afterwards
+TARGET_MODES = ZIGZAG_TARGET_MODES + (RANGE_EDGE_MODE,)   # every rule a row can carry
+DEFAULT_TARGET_MODES_BOTH = ZIGZAG_TARGET_MODES       # what "--target-mode both" starts ticked
+DEFAULT_TARGET_MODES_ALL = TARGET_MODES               # what "--target-mode all" starts ticked
+
+
+def _population_modes(args):
+    """The rules that decide, while a trade is resolved, whether it has a target at all: the zigzag
+    ones. The range-edge rule needs the range boxes, which are read after every trade is resolved
+    (and only the trades that hold a seat on a box matter), so it re-targets trades that already
+    have a zigzag target and never adds or drops a trade. With only range-edge ticked by default,
+    the zigzag rules still decide which trades exist."""
+    on = tuple(m for m in args.default_target_modes if m in ZIGZAG_TARGET_MODES)
+    return on or ZIGZAG_TARGET_MODES
 
 
 def _window_bounds(touch_time, p1_time, p2_time=None):
@@ -991,6 +1006,63 @@ def _pick_targets(m5_ledger, level_type, price, is_long, touch_time, args,
     if px is not None:
         out["swing-extreme"] = (px, info)
     return out
+
+
+def _range_edge_target(res):
+    """(target_price, target_info) under the RANGE-EDGE rule, or (None, None).
+
+    A fade trades back to the range it faded: an LLPB (short, above a breakout-up box) targets the
+    box HIGH, an LHPB (long, below a breakout-below box) the box LOW. The boxes are the ones whose
+    fade seat the trade took (res['range_box']['from'], their edges frozen at the strong breakout).
+    With several the NEAREST edge to the fill is used (the first one price runs into). Same
+    MIN..MAX_DYNAMIC_TARGET_PTS favourable band as every rule; a trade with no box seat, or an
+    edge outside the band, has no range-edge target."""
+    boxes = (res.get("range_box") or {}).get("from") or []
+    is_long, fill = res["is_long"], res["fill_price"]
+    best = None
+    for b in boxes:
+        px = float(b["low"] if is_long else b["high"])
+        dist = (px - fill) if is_long else (fill - px)
+        if MIN_DYNAMIC_TARGET_PTS <= dist <= MAX_DYNAMIC_TARGET_PTS and (best is None or dist < best[0]):
+            best = (dist, px, b)
+    if best is None:
+        return None, None
+    _, px, b = best
+    return px, {"src": "range_edge", "level": None, "pivot_time": b["start"], "pivot_price": px,
+                "edge": "low" if is_long else "high", "box_low": float(b["low"]),
+                "box_high": float(b["high"]), "boxes": len(boxes)}
+
+
+def _add_range_edge_targets(results, args):
+    """Add the range-edge rule (see _range_edge_target) to every filled trade that holds a fade seat on
+    a range box, resolved like the other rules (bracket, outcome, management, tags), so it shows up in
+    the page's Target rules row next to them. Must run after _apply_range_box_tags and before the
+    panes are rebuilt (the M1 pane ships a target ray and exit markers per rule). The row's own
+    (server-rendered) rule is re-picked among the rules ticked by default; the browser re-picks live."""
+    ledger = None
+    n = 0
+    for res in results:
+        if not res.get("filled"):
+            continue
+        px, info = _range_edge_target(res)
+        if px is None:
+            continue
+        touch = pd.Timestamp(res["touch_time_alt"])
+        bars = SF.build_minute_bars(touch)
+        if bars is None or bars.empty:
+            continue
+        if ledger is None:
+            ledger = LC.m5_levels(verbose=False, plain_p0=P0_KINDS_LEDGER[args.p0_kinds])
+        res["modes"][RANGE_EDGE_MODE] = _resolve_target_mode(
+            px, info, res["fill_price"], res["stop_pts"], res["level_type"], res["is_long"],
+            touch, bars, ledger, args)
+        n += 1
+        picks = {m: (v["target_price"],) for m, v in res["modes"].items()}
+        active = _active_mode(picks, res["fill_price"], enabled=args.default_target_modes)
+        if active is not None and active != res["active_mode"]:
+            _apply_mode(res, active)
+    print(f"[range-edge] target added to {n} of {sum(1 for r in results if r.get('filled'))} filled trades", flush=True)
+    return results
 
 
 def _active_mode(targets, price, enabled=TARGET_MODES):
@@ -1275,7 +1347,7 @@ def process_cluster(cluster, args):
         target_p2 = _rt if pd.notna(_rt) else None
     targets = _pick_targets(m5_ledger, level_type, fill_price, is_long, touch_time_alt,
                             args, p1_time=target_p1, p2_time=target_p2)
-    active = _active_mode(targets, fill_price, enabled=args.default_target_modes)
+    active = _active_mode(targets, fill_price, enabled=_population_modes(args))
     if active is None:
         result["fail_reason"] = "no_target"
         return result
@@ -2618,8 +2690,13 @@ def _target_title(info):
     if not info:
         return "no target info"
     level = info.get("level")
+    if info.get("src") == "range_edge":
+        return (f"Range edge: the {info['edge']} of the range box this trade fades, "
+                f"{info['pivot_price']:.2f} (box {info['box_low']:.2f}-{info['box_high']:.2f} from "
+                f"{R._to_pt_str(info['pivot_time'])}"
+                + (f"; nearest of {info['boxes']} boxes" if info["boxes"] > 1 else "") + ")")
     if info.get("src") == "swing_extreme":
-        kind = "crest" if info["pivot_kind"] == "high" else "trough"
+        kind = info["pivot_kind"]
         return (f"Most recent confirmed zigzag {kind} (P1&hellip;P2): "
                 f"{info['pivot_price']:.2f} at {R._to_pt_str(info['pivot_time'])} "
                 f"-- the pivot's own price is the target")
@@ -2705,6 +2782,7 @@ def render(args):
     results, chart_stacks = process_clusters(clusters, args)
     results = _apply_globex_open_filter(results)
     results = _apply_range_box_tags(results)
+    results = _add_range_edge_targets(results, args)
     _rebuild_range_panes(results, chart_stacks)
     _draw_range_boxes(results, chart_stacks)
     # The report is the range-box one: only trades that hold a box seat are kept.
@@ -3202,7 +3280,7 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
         if args.pegged_entry else
         "Entry is a plain static limit order (no chasing).")
     target_lead_sentence = (
-        f"TARGET = two rules, both reading only what the market built BETWEEN THIS LEVEL'S OWN "
+        f"TARGET = two zigzag rules (plus the optional range-edge rule, below), both reading only what the market built BETWEEN THIS LEVEL'S OWN "
         f"P1 AND ITS FILL (wholly after its breakout candle, wholly before the candle it fills in) and both "
         f"bounded to {MIN_DYNAMIC_TARGET_PTS:g}&ndash;{MAX_DYNAMIC_TARGET_PTS:g} points from "
         f"the fill on the favourable side. (1) OPPOSITE M{BAR_MIN} LEVEL, ZIGZAG ANCHOR: "
@@ -3212,7 +3290,10 @@ def _finish_report(args, results, clusters, candidates, filled, skipped, reason_
         f"M{BAR_MIN} P0 formed after it (lowest for a short, highest for a long), no shared-P1 confluence required "
         f"(src tag opposite_zz). (2) SWING EXTREME: the most recent confirmed zigzag "
         f"trough (long) / crest (short) formed between P1 and P2, with the pivot's own price as the target "
-        f"(src tag swing_extreme). Both are precomputed for every trade and both are "
+        f"(src tag swing_extreme). (3) RANGE EDGE (off unless ticked; src tag range_edge): the "
+        f"HIGH of the range box a short (LLPB) fades, the LOW of the box a long (LHPB) fades, "
+        f"the nearest one when it fades several, inside the same band; it re-targets the trades above and "
+        f"never adds or drops one. All are precomputed for every trade and all are "
         f"live checkboxes in the Target rules row of the panel above: untick one and every row "
         f"re-resolves against the other, or becomes a dimmed NO TARGET row "
         f"if neither is on. With both ticked (the default here: "
@@ -3475,6 +3556,8 @@ the bracket the page was GENERATED with -- regen to chart a different default.">
       Opposite M1 level, zigzag anchor (P1&hellip;fill)</label>
     <label class="chip"><input type="checkbox" class="f-target-mode" data-mode="swing-extreme" __SWING_CHECKED__>
       Swing extreme: last zigzag trough/crest (P1&hellip;P2)</label>
+    <label class="chip"><input type="checkbox" class="f-target-mode" data-mode="range-edge" __RANGE_CHECKED__>
+      Range edge: faded box high (LLPB) / low (LHPB)</label>
   </div>
   <div class="filter-row">
     <span class="filter-label" title="Live, in-browser toggle for the plug-n-play trade-management
@@ -3497,7 +3580,9 @@ the box is checked.">Trade management</span>
         "the one offering the FARTHER target. opposite_zz: the farthest live opposite M1 P0 (lowest for a "
         "short, highest for a long; no shared-P1 confluence required) formed after the most recent "
         "confirmed zigzag trough (short) / crest (long) in that window. swing_extreme: the "
-        "most recent confirmed zigzag trough (long) / crest (short) formed between P1 and P2, at its own price.")
+        "most recent confirmed zigzag trough (long) / crest (short) formed between P1 and P2, at its own price. "
+        "range_edge: the faded range box's HIGH for an LLPB / LOW for an LHPB (the nearest one when the trade "
+        "fades several boxes).")
     head = (f"<th class=\"left\">Trade Id</th>"
             f"<th class=\"left\" title=\"Every dynamic-filter tag this row carries, in one "
             f"place: globex_eth_open, low_liquidity, swerved/swerve_blocked, "
@@ -3613,7 +3698,9 @@ and body &ge; {args.bo_body:g} of that range -- else the whole setup is dropped.
    .replace("__OPPZZ_CHECKED__",
             "checked" if "opposite-zz" in args.default_target_modes else "")
    .replace("__SWING_CHECKED__",
-            "checked" if "swing-extreme" in args.default_target_modes else "")}
+            "checked" if "swing-extreme" in args.default_target_modes else "")
+   .replace("__RANGE_CHECKED__",
+            "checked" if "range-edge" in args.default_target_modes else "")}
 {stats_bar_html}
 <div class="table-wrap"><table id="lvl-table">
 <thead><tr>{head}</tr></thead>
@@ -4618,7 +4705,7 @@ if __name__ == "__main__":
                              f"still taken, charted and resolved; the report's dynamic filter "
                              f"excludes those rows from the headline stats by default.")
     parser.add_argument("--target-mode",
-                        choices=("both", "opposite-zz", "swing-extreme"),
+                        choices=("both", "opposite-zz", "swing-extreme", "range-edge", "all"),
                         default=TARGET_MODE_DEFAULT,
                         help="Which target rule(s) are ON BY DEFAULT in the rendered page. "
                              "Both rules are ALWAYS computed and both are live "
@@ -4630,7 +4717,9 @@ if __name__ == "__main__":
                              "(short) / crest (long) in that window -- see --zz-atr-mult "
                              "/ --zz-min-bars. swing-extreme: the most recent confirmed zigzag "
                              "trough (long) / crest (short) formed between P1 and P2, at its own price "
-                             "(default).")
+                             "(default). range-edge: the faded range box's high (LLPB) / low (LHPB); it "
+                             "re-targets trades that have a zigzag target, so the zigzag rules still "
+                             "decide which trades exist. all: all three start ticked.")
     parser.add_argument("--zz-atr-mult", type=float, default=ZZ_ATR_MULT_DEFAULT,
                         help=f"Reversal, as a multiple of ATR(21), off bar highs/lows that confirms a "
                              f"new zigzag leg for the opposite-zz target rule: patterns-pure find_zigzag "
@@ -4771,6 +4860,7 @@ if __name__ == "__main__":
     BAR_FREQ = f"{BAR_MIN}min"
     P1_BAR_WIDTH = pd.Timedelta(minutes=BAR_MIN)
     args.default_target_modes = (DEFAULT_TARGET_MODES_BOTH if args.target_mode == "both"
+                                 else DEFAULT_TARGET_MODES_ALL if args.target_mode == "all"
                                  else (args.target_mode,))
     args.output = args.output or os.path.join(
         _REPO_ROOT, "public", "reports", ("ss_m1_confl" if args.bar_minutes == 1 else f"ss_m{args.bar_minutes}_confl"),
