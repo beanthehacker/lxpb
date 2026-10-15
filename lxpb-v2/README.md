@@ -33,6 +33,10 @@ deploy path anymore -- set the Vercel project's **Root Directory** to
    - `AUTH_SECRET` -- any random string (`openssl rand -base64 32`).
    - `ALLOWED_EMAIL` -- the only Google account allowed in (defaults to
      `nisarg92modi@gmail.com` if unset).
+   - `LOGIN_PASSWORD` -- the password for the email + password sign-in on
+     `/login` (same user as the Google sign-in, so the same stored review
+     data). Never commit it: this repo is public. Unset = password sign-in
+     is refused and only Google works.
 3. Deploy. `data/`, `sierra-chart/`, `patterns_pure/`, and `*.log` files
    are excluded from the deployment via `.vercelignore` -- only
    `public/reports/` and the app code get uploaded.

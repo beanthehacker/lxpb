@@ -126,6 +126,11 @@ NEAREST edge to the fill when it fades several), inside the same 0.25-50 pt band
 (`_add_range_edge_targets`), so it re-targets trades that already have a zigzag target and never adds or drops a trade (a trade
 with no zigzag target is not in the report, whatever its box edge). `--target-mode range-edge|all` ticks it by default.
 
+Sign-in (user request 2026-10-15): `/login` takes Google OR email + password (NextAuth Credentials in `auth.ts`). Both give the
+session email `ALLOWED_EMAIL`, and the review state in `row_state` is keyed by report/row only, so it is one data set for either
+way in. The password is the `LOGIN_PASSWORD` env var on the Vercel project; it is never written into this public repo (a hash of a
+short password would not protect it either).
+
 `sep_month_fade` is PUBLIC (no sign-in): `proxy.ts` excludes `reports/ss_m1_confl/sep_month_fade.html` and
 `js/row-store.js` from the auth matcher (a literal: Next reads it at build time). Nothing else is public, and
 `/api/rows` stays gated, so the report's Valid/Notes cannot be read or written by a visitor. Publishing another
