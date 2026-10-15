@@ -4,30 +4,48 @@ Read this first when running in a cloud container (paths under `/home/user/`). E
 about the code lives in `lxpb-v2/CLAUDE.md`: read it before working in `lxpb-v2/`. Its rules apply
 here too, except where this section says otherwise.
 
+## Setup is automatic
+
+`.claude/hooks/session-start.sh` (registered in `.claude/settings.json`) runs at the start of every
+cloud session and needs nothing from the user except ONE environment variable, set once in the cloud
+environment's settings (Environment variables):
+
+    LXPB_SCID_DRIVE_IDS=EPU26=<google drive file id>,EPZ26=<google drive file id>
+
+The IDs are for the user's own Drive copies of the `.scid` files (shared "anyone with the link"). This
+repo is public, so the IDs never go in it. The hook (idempotent, about 2 minutes on a fresh container,
+seconds after that):
+
+1. installs the Python packages that are missing (pyarrow, tzdata, scipy, scikit-learn, matplotlib,
+   gdown; pandas 3.0.5 / numpy 2.5.3 come with the image and are what the cloud reports were checked with);
+2. makes `scidReader` importable from any script, through a `.pth` file in site-packages;
+3. downloads each listed `F.US.<SYM>.scid` into `/home/user/scid` unless a whole copy from the same
+   Drive ID is already there (`F.US.<SYM>.scid.driveid` records the ID). A new Drive ID re-downloads.
+
+Its printout opens the session: the reader in use and each `.scid` file with its first and last tick.
+If it says `LXPB_SCID_DRIVE_IDS is not set` or a download failed, tell the user exactly that, and do
+not stand in for the data.
+
 ## What the container has
 
 - **This repo** at `/home/user/lxpb`.
-- **`scidReader`** comes from the user's other repo, `beanthehacker/acheron`, checked out at
-  `/home/user/acheron` when the session was started with it selected. The reader is
-  `/home/user/acheron/AcheronUtils/scidReader.py`. `render_labels_report.py` (and the `data/`
-  builders) put the Windows path `D:\acheron\AcheronUtils` on `sys.path`, which does not exist
-  here: `scid_only/run_scid_only.py` adds `/home/user/acheron/AcheronUtils` first
-  (`LXPB_SCID_READER` overrides it). Any other script that imports `render_labels_report`, or a
-  module that imports it (`m5_structure`, the report modules), must do
-  `sys.path.insert(0, "/home/user/acheron/AcheronUtils")` itself before that import.
-  If `/home/user/acheron` is missing, attach the repo (`add_repo`, if the session has it) or ask the
-  user to start the session with `acheron` selected. Never write a replacement reader.
+- **`scidReader`**: the user's private `beanthehacker/acheron` repo has the original
+  (`AcheronUtils/scidReader.py`), used when the session was started with that repo selected
+  (`/home/user/acheron`). Without it, `lxpb-v2/scid_only/scidReader.py` is used: written from Sierra
+  Chart's published `.scid` layout and checked to give identical frames on whole files. Never copy
+  acheron's code into this public repo. `render_labels_report.py` (and the `data/` builders) only
+  put the Windows path `D:\acheron\AcheronUtils` on `sys.path`; in the cloud the hook's `.pth` makes
+  the import work anyway, and `scid_only/run_scid_only.py` also puts the reader folder first
+  (`LXPB_SCID_READER` overrides it).
 - **Ticks**: Sierra Chart `.scid` files in `/home/user/scid` (`LXPB_SCID_DIR` overrides):
 
   | file | front month | offset onto the continuous scale |
   |---|---|---|
   | `F.US.EPU26.scid` | 2026-06-14 22:00 UTC to the roll, 2026-09-14 22:00 UTC | +67.75 |
-  | `F.US.EPZ26.scid` | from 2026-09-14 22:00 UTC; the current upload ends ~2026-10-06 17:30 UTC | 0.00 |
+  | `F.US.EPZ26.scid` | from 2026-09-14 22:00 UTC; the upload of 2026-10-06 ends ~17:30 UTC that day | 0.00 |
 
-  The environment's setup script (the user's cloud environment settings) downloads them from the
-  user's Google Drive; the file IDs live there, not in this repo. If the files are missing or
-  truncated, the setup script did not run or failed: tell the user, and do not stand in for the
-  data. Newer ticks arrive only when the user uploads a newer `.scid`.
+  Newer ticks arrive only when the user uploads a newer `.scid` (as a new Drive file with its ID in
+  `LXPB_SCID_DRIVE_IDS`, so the hook downloads it again).
 - **No TradingView exports, and none are needed here.** Run every report through
   `lxpb-v2/scid_only/run_scid_only.py`, which builds the H1 and M5 series from the ticks at the
   offsets stored in `lxpb-v2/data/scid_offsets.json`. Consequences (see its docstring):
@@ -36,9 +54,8 @@ here too, except where this section says otherwise.
   `/tmp/lxpb_scid_only_cache`), never in `data/levels_cache/`. Do not ask the user for exports in a
   cloud session. The exception is the next roll (EPZ26 -> EPH27, Mon 2026-12-14 15:00 PT): past it
   there is neither a `.scid` nor a stored offset for EPH27, so ask the user.
-- **Tools**: the reports need Python 3 with pandas, numpy and pyarrow; research scripts have also
-  used scipy, scikit-learn and matplotlib. The setup script installs them. If a module is missing, `pip install` it
-  for the session and tell the user to add it to the setup script. Chromium for Playwright is at
+- **Tools**: everything the reports and research scripts use is installed by the hook. If a script
+  needs another package, `pip install` it for the session and add it to the hook's list. Chromium for Playwright is at
   `/opt/pw-browsers` and the Node Playwright package at `/opt/node-tools/node_modules/playwright`,
   for checking report pages (the iPad layout rules in `lxpb-v2/CLAUDE.md`).
 - **The worktree rule** in `lxpb-v2/CLAUDE.md` and its `E:\` paths are for the user's Windows

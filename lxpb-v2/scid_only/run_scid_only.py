@@ -24,7 +24,8 @@ fresh and would not inherit these patches (and would write the repo's caches).
 
 Environment (all optional):
     LXPB_SCID_DIR       folder with F.US.<SYM>.scid          (default /home/user/scid)
-    LXPB_SCID_READER    folder holding scidReader.py         (default /home/user/acheron/AcheronUtils)
+    LXPB_SCID_READER    folder holding scidReader.py         (default /home/user/acheron/AcheronUtils
+                        when that checkout exists, else this folder's own scidReader.py)
     LXPB_SCID_CACHE     scratch ledger cache dir             (default <tmp>/lxpb_scid_only_cache)
     LXPB_SCID_CONTRACTS comma list, oldest first, whose offsets are in
                         scid_offsets.json                    (default EPU26,EPZ26)
@@ -37,7 +38,10 @@ import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # lxpb-v2/
 SCID_DIR = os.environ.get("LXPB_SCID_DIR", "/home/user/scid")
-READER_DIR = os.environ.get("LXPB_SCID_READER", "/home/user/acheron/AcheronUtils")
+_ACHERON_READER = "/home/user/acheron/AcheronUtils"
+READER_DIR = os.environ.get("LXPB_SCID_READER") or (
+    _ACHERON_READER if os.path.exists(os.path.join(_ACHERON_READER, "scidReader.py"))
+    else os.path.dirname(os.path.abspath(__file__)))     # scid_only/scidReader.py: same frames, no acheron needed
 CACHE = os.environ.get("LXPB_SCID_CACHE", os.path.join(tempfile.gettempdir(), "lxpb_scid_only_cache"))
 CONTRACTS = os.environ.get("LXPB_SCID_CONTRACTS", "EPU26,EPZ26").split(",")
 
