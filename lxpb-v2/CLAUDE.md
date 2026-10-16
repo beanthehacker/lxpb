@@ -18,6 +18,21 @@ is in a worktree, stay in it.
   needs from the main checkout (see the lxpb-v2 env setup memory) rather
   than regenerating or re-exporting.
 
+# Opening .html files on this Windows machine: Chrome only, no links (user, 2026-10-16)
+
+**Whenever a `.html` file (a report, a smoke-test output, a chart page) is generated or updated for the
+user to look at, open it straight from disk in the default Chrome**, e.g. PowerShell
+`Start-Process "C:\Program Files\Google\Chrome\Application\chrome.exe" -ArgumentList "file:///<abs path, forward slashes, spaces as %20>"`.
+
+- **Never give links to it** in the reply (no `file:///` markdown link, no relative-path link), and never
+  show it in Claude Code's own browser: no built-in browser pane (`mcp__Claude_Browser__*`,
+  `preview_start`), no `show_pane`, no `SendUserFile` with `display: "render"`. Name the file in plain
+  text (its path) after opening it, nothing clickable.
+- No local server for it: Chrome opens the file from disk. Reports that load `/js/row-store.js` by site
+  path need it inlined into the local copy first, and review notes will not persist from disk (no
+  `/api/rows`); say so.
+- This overrides the general "link the file" convention of the app's system prompt for `.html` files here.
+
 # Report regens: only when the user asks
 
 **Never regenerate a report unless the user explicitly asks for a regen in
@@ -89,6 +104,27 @@ The other reports keep their old layout until they are next touched; apply the s
 Check a chart change with a mobile-emulated browser (Playwright `isMobile: true`) at 1180x820 and
 820x1180, both with `width=device-width` and with `width=1967` (the shrink-to-fit case Safari shows), and
 confirm the stack's width on screen (CSS width x scale) is the screen width minus the gutter.
+
+# M1 fade playbook: the ENGINE decides the trades, not the report (user, 2026-10-16)
+
+**Standing rule: for the M1 range-fade playbook, a trade exists only if the live engine (`live_range/`) takes it.** The
+algorithm is range first: a range box with a strong breakout exists, THEN the LXPB ledger is read only as a cache lookup
+for "which level can be traded for the fade seat of that box". Questions like "did the fade trades occur today", "why was
+level X not traded", "is this a valid fade trade" are answered by replaying ticks through the engine
+(`python scid_only/run_scid_only.py live_range/replay.py --from <day 22:00 UTC prior> --warmup-days 5 --out <dir>`,
+events.jsonl shows every order armed / amended / cancelled with its reason), NEVER from the `ss_m1_confl` report's rows.
+
+The `ss_m1_confl` report's own trade pipeline is OLD LOGIC for this playbook and is not evidence about it:
+
+- its fill (find the retest first, cluster every ±2 pt chain of levels over hours, rest one order at the cluster's
+  extreme for up to 3 h, then 'unfilled_within_window') and its range-box tag (read at the touch, afterwards) are
+  superseded. Do not explain a missing or extra fade trade with report clusters, its 3 h window, `weak_run_in` rows or
+  `keeping N of M rows tagged ...`. Example of the mistake (2026-10-16): 7790.25 LHPB was said to be "swallowed by the
+  7794.25 cluster whose order went unfilled"; that is the report's artefact, not a rule of the playbook.
+- the report is still the chart / review page for trades, and the source of its own sep_month_fade numbers, until the user
+  moves it onto the engine; say so when quoting it, and do not use it to decide what the playbook would have traded.
+- ledger rows (`lxpb_levels_cache.m1_levels`, wick filter, fate) are fine as the lookup the engine reads; the
+  report-level selection on top of them (candidates, clusters, anchors by earliest retest, tags) is not.
 
 # The M1 range-box report (`ss_m1_confl/`) is standalone
 
@@ -464,6 +500,16 @@ The rule, all of it in `find_zigzag.py`'s docstring:
   `lower_data`, no lower bars in the bar, both extremes in one lower bar) or the other way round
   (low first, then the high), it never counts. A new extreme restarts the count. The minimum is in
   bars of the series the zigzag runs on. Still at most one pivot per bar, so a bounce and the next
+- **A leg's starting bar counts its own far side** (user decision 2026-10-16): when the lower-timeframe order proves a bar made its
+  extreme first and moved away afterwards, that move is evidence for the next leg even if the same bar just confirmed the previous
+  pivot (before, it was lost: M5 Oct 16 2026 05:50 PT high 7802.75 then low 7798.50 missed the 7798.50 trough). A crest and the
+  trough right after it can share one bar. Changed without any regression run; every report that reads the zigzag needs a regen.
+- **Range box extension grace** (user decision 2026-10-16, `find_range_box_zz.extends_box`, mirrored in `live_range/boxes.py`): a pivot past
+  the box's allowable edge (starting edge + 20% of the starting height) by LESS than 1 pt (measured from the farther of that limit and the
+  box's current edge, so it repeats with no overall cap) still WIDENS the box instead of breaking it, when the pivot's own candle is mostly
+  inside the box as it stood: >= 75% of its range inside, or >= 50% inside with the close inside. The next candle is not read. Written
+  and wired into both the batch detector and the live book with NO test or replay run; `check_boxes.py` (live vs batch) not run yet.
+  Every report and the engine need a regen / replay to show it.
   swing inside one bar confirm on that bar and the next. The range boxes pass M1 as `lower_data`;
   `m5_structure.zigzag_pivots` (targets, run-in) passes none, so there only `MIN_BARS` = 1 applies.
 - **Reversal is cumulative** (the deepest adverse price since the extreme), the next

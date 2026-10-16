@@ -14,6 +14,7 @@ Forming:   forming(...) reads the M5 bar still being built "as if it closed righ
 import bisect
 import math
 
+from find_range_box_zz import extends_box
 from find_zigzag import ATR_MULT, ATR_PERIOD, MIN_BARS, ZigZag
 
 from .series import Series
@@ -324,7 +325,10 @@ class BoxBook:
                 over, beyond = price - b["seed_high"], price > b["high"]
             else:
                 over, beyond = b["seed_low"] - price, price < b["low"]
-            if beyond and over > wp * (b["seed_high"] - b["seed_low"]):
+            m5 = self.m5
+            if beyond and over > wp * (b["seed_high"] - b["seed_low"]) and not extends_box(
+                    kind, m5.o[i], m5.h[i], m5.l[i], m5.c[i], b["high"], b["low"], b["seed_high"], b["seed_low"],
+                    price, self.widen_pct):
                 hi, lo = max(b["high"], price), min(b["low"], price)
                 outer = self._twin(hi, lo, [o for o in self.live[:pos] if o["status"] == "open"])
                 if outer is not None:

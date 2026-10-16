@@ -1,5 +1,10 @@
 # live_range: the range-box playbooks as a streaming engine
 
+**This engine is the source of truth for the M1 fade playbook (user, 2026-10-16).** Range first; the LXPB ledger is only a
+cache lookup of the levels that can be traded for a box's fade seat. To answer "was a fade trade taken / why was level X
+not traded", replay ticks through `replay.py` and read `events.jsonl`; the report's rows, clusters and tags are old logic
+and are not evidence (see `../CLAUDE.md`).
+
 The `ss_m1_confl` / `ss_m2_confl` reports find trades first and tag them with range boxes
 afterwards (exploration only). This package is the other way round: an incremental, tick-driven
 engine that keeps a ledger of range boxes and LXPB levels alive, works out *before* the retest

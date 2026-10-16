@@ -1,6 +1,11 @@
 """
 render_m1_confl_report.py
 =========================
+NOTE (user, 2026-10-16): for the M1 FADE playbook the trades are decided by the live engine
+(live_range/), range first and the ledger only as a cache lookup of tradable levels. The retest-first
+fill and the range-box tagging below are OLD LOGIC and say nothing about which fade trades the
+playbook takes; see lxpb-v2/CLAUDE.md, "M1 fade playbook: the ENGINE decides the trades".
+
 M1 range-box trade report. It finds the M1 LXPB retest trades, tags each one against the
 real-M5 range boxes around it, keeps the ones that sit in a box playbook (breakout-from-range
 or retest-into-range, one trade per box seat) and writes a review page: one row per trade,

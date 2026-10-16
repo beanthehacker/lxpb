@@ -67,7 +67,7 @@ class ZigZag:
     if min_bars < 1:
       raise ValueError("min_bars must be at least 1")
     self.atr_mult, self.atr_period, self.min_bars = atr_mult, atr_period, min_bars
-    self.H, self.L, self.T = [], [], []
+    self.H, self.L, self.T, self.O = [], [], [], []
     self.pivots = []
     self._legs = []                 # [crest leg, trough leg] until the first pivot, then the one sought
     self._kinds, self._formed, self._confirmed, self._prices = [], [], [], []
@@ -77,6 +77,7 @@ class ZigZag:
     self.H.append(high)
     self.L.append(low)
     self.T.append(t)
+    self.O.append(order)
     if j == 0:
       self._legs = [_Leg(True, high, 0), _Leg(False, -low, 0)]
       return []
@@ -94,8 +95,15 @@ class ZigZag:
   def _confirm(self, leg, j):
     piv = Pivot("crest" if leg.up else "trough", leg.ext_i, leg.ext if leg.up else -leg.ext, j)
     # The next leg starts at the most adverse bar of this one; every later bar up
-    # to and including j is already evidence of its reversal.
+    # to and including j is already evidence of its reversal. So is that bar's OWN
+    # far side, when the lower-timeframe order proves it made its extreme first and
+    # moved away afterwards (the same rule as for any extreme's own bar): without it,
+    # a bar that confirmed the previous pivot and then fell (rose) would lose that
+    # move, and the leg's real extreme would be missed.
     nxt = _Leg(not leg.up, -leg.adv, leg.adv_i)
+    a, o = leg.adv_i, self.O[leg.adv_i]
+    if o != 0 and (o > 0) == nxt.up:
+      nxt.adv, nxt.adv_i = (self.L[a] if nxt.up else -self.H[a]), a
     for k in range(leg.adv_i + 1, j + 1):
       av = self.L[k] if nxt.up else -self.H[k]
       if nxt.adv is None or av < nxt.adv:
@@ -158,7 +166,12 @@ def find_zigzag(data: pd.DataFrame,
       min_bars >= 1.
     - The next leg starts at the most adverse bar of the one just confirmed (the
       lowest low after a crest), and every bar after it up to the confirming bar
-      already counts as evidence for it. At most one pivot is confirmed per bar.
+      already counts as evidence for it. That most adverse bar's OWN far side counts
+      too when `lower_data` proves the order inside it (extreme first, then the move
+      away; 2026-10-16: a bar that confirmed the previous pivot and then fell used to
+      lose that fall, so the leg's real extreme was missed, e.g. M5 Oct 16 2026 05:50 PT).
+      A crest and the trough right after it can therefore share one bar.
+      At most one pivot is confirmed per bar.
     - The last, still-extending leg is not a pivot.
 
   Order inside a bar. A bar's high and low are two events and which came first

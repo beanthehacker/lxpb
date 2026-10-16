@@ -9,6 +9,28 @@ WIDEN_PCT = 20.0    # an edge may pass its starting edge by this % of the starti
 MERGE_TOL = 2.0     # two boxes whose BOTH edges are this close (points) are one range
 MIN_EDGE_TOUCHES = 2  # a broken box is kept only with this many pivots at EACH edge
 EDGE_TOL = 2.0        # a pivot is "at the edge" when within this many points of it
+EXTEND_PTS = 1.0      # a pivot LESS than this far past the allowable edge still widens the box ...
+EXTEND_INSIDE_FULL = 0.75  # ... when its own candle has at least this share of its range inside the box, or
+EXTEND_INSIDE_HALF = 0.5   # at least this share AND closes inside the box (user rule 2026-10-16; repeatable, no cap)
+
+
+def extends_box(kind, o, h, l, c, box_high, box_low, seed_high, seed_low, price, widen_pct=WIDEN_PCT):
+  """True when a pivot that is past the box's allowable edge (the starting edge pushed out by `widen_pct` of
+  the starting height) should still WIDEN the box instead of ending it: it is less than `EXTEND_PTS` past the
+  farther of that allowable edge and the box's current edge (so an earlier extension moves the reference and
+  the rule can repeat), and its own candle (open o, high h, low l, close c) is mostly inside the box as it
+  stands (before this pivot): at least `EXTEND_INSIDE_FULL` of the candle's range inside, or at least
+  `EXTEND_INSIDE_HALF` inside with the close inside. The next candle is not read."""
+  span = seed_high - seed_low
+  if kind == "crest":
+    over = price - max(box_high, seed_high + widen_pct / 100 * span)
+  else:
+    over = min(box_low, seed_low - widen_pct / 100 * span) - price
+  rng = h - l
+  if not (0 < over < EXTEND_PTS) or rng <= 0:
+    return False
+  share = max(0.0, min(h, box_high) - max(l, box_low)) / rng
+  return share >= EXTEND_INSIDE_FULL or (share >= EXTEND_INSIDE_HALF and box_low <= c <= box_high)
 
 
 def find_range_box_zz(data: pd.DataFrame,
@@ -48,6 +70,11 @@ def find_range_box_zz(data: pd.DataFrame,
       the STARTING crest, or a trough below it by no more than that: the box
       is WIDENED and the new edge recorded. (Per side, against the starting
       edge, so a box can end up at most 1.4 x L tall.)
+    - past that limit by LESS than `EXTEND_PTS` (1 pt) beyond the farther of that
+      limit and the box's current edge, with the pivot's own candle mostly inside
+      the box as it stands (>= 75% of its range inside, or >= 50% with the close
+      inside): the box is WIDENED to the pivot anyway (user rule 2026-10-16;
+      repeatable, no overall cap; the next candle is not read; `extends_box`).
     - past that limit: a) if some other live box that started earlier
       (an outer box) has BOTH edges within `merge_tol` (2) points of this
       box's edges once the pivot is included, this box is MERGED into it
@@ -209,10 +236,10 @@ def find_range_box_zz(data: pd.DataFrame,
   H, L = data["high"].to_numpy(float), data["low"].to_numpy(float)
   order = intrabar_order(data.index, tf_min, lower_data) if grader is not None else None
   pivots = zigzag_pivots(H, L, _atr_series(data, atr_period), order, atr_mult, atr_period, min_bars)
-  boxes = _boxes_from_pivots(pivots, widen_pct, merge_tol)
+  O, C = data["open"].to_numpy(float), data["close"].to_numpy(float)
+  boxes = _boxes_from_pivots(pivots, widen_pct, merge_tol, (O, H, L, C))
 
   idx = data.index
-  O, C = data["open"].to_numpy(float), data["close"].to_numpy(float)
   rows = []
   for b in boxes:
     ended = b["end_j"] is not None
@@ -408,8 +435,9 @@ def _read_states(b, idx, O, H, L, C, n, widen_pct, grader, levels, bo_grade):
   return state, log, failed_t, retest_t, episodes
 
 
-def _boxes_from_pivots(pivots, widen_pct, merge_tol):
-  """The box state machine on a (kind, bar, price, confirming bar) pivot list."""
+def _boxes_from_pivots(pivots, widen_pct, merge_tol, bars=None):
+  """The box state machine on a (kind, bar, price, confirming bar) pivot list. `bars` = (open, high, low,
+  close) arrays of the bars the pivots index; without them the extension rule (`extends_box`) is off."""
   boxes, live = [], []          # live: earliest-started first
 
   def twin(hi, lo, others):
@@ -433,7 +461,9 @@ def _boxes_from_pivots(pivots, widen_pct, merge_tol):
       else:
         over = b["seed_low"] - price
         beyond = price < b["low"]
-      if beyond and over > widen_pct / 100 * (b["seed_high"] - b["seed_low"]):
+      if beyond and over > widen_pct / 100 * (b["seed_high"] - b["seed_low"]) and not (
+          bars is not None and extends_box(kind, bars[0][i], bars[1][i], bars[2][i], bars[3][i],
+                                           b["high"], b["low"], b["seed_high"], b["seed_low"], price, widen_pct)):
         hi = max(b["high"], price)
         lo = min(b["low"], price)
         outer = twin(hi, lo, [o for o in live[:pos] if o["status"] == "open"])
