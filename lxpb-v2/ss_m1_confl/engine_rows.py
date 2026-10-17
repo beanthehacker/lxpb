@@ -62,7 +62,10 @@ def _box_view(b):
     up = b["direction"] == "up"
     st = _ts(b["breakout_time"]) if b.get("breakout_time") is not None else pd.NaT
     bt = _ts(b["break_t"]) if b.get("break_t") is not None else st
-    return {"start": _ts(b["start_t"]), "low": b["low"], "high": b["high"], "status": b["status"],
+    start = _ts(b["h1_start_t"]) if b.get("h1_start_t") is not None else _ts(b["start_t"])
+    return {"start": start, "low": b["low"], "high": b["high"], "status": b["status"],
+            "h1": bool(b.get("h1")), "m5_low": b.get("m5_low", b["low"]), "m5_high": b.get("m5_high", b["high"]),
+            "merged_n": len(b.get("merged_ids") or ()),
             "state": "waiting-for-retest", "breakout": "strong", "break_dir": "up" if up else "down",
             "break_time": bt, "strong_time": st, "edge": "upper" if up else "lower", "edge_done": False,
             "fade_no": 2 if b["fade2"] else 1,
@@ -83,14 +86,14 @@ def _outcome(tr):
 
 def _result(tr, led, min_r):
     is_long = tr["side"] == "buy"
-    lvl, anc = tr["level"], tr["anchor"]
+    lvl, anc = tr["level"], tr["decided"]       # anc: the level that qualified on its own; lvl: the entry (a better cluster price or the same level)
     anchor_row = led.row(anc)
     own_price = float(anc["price"])
     alt_price = float(tr["level_price"])
     fill = float(tr["price"])
     same = lv_key(lvl) == lv_key(anc)
     sw = tr.get("swerve")
-    source = "swerved" if sw else ("own" if same else "m5")
+    source = "own" if same else "cluster"
     ex = tr["exit"]
     meta = tr.get("plan_meta") or {}
     stop_pts, tgt_pts = tr["stop_pts"], tr["target_pts"]
@@ -125,8 +128,6 @@ def _result(tr, led, min_r):
         tags.append("plain_p0")
     if tr["cluster_n"] == 1:
         tags.append("no_confl")
-    if sw:
-        tags.append("swerved")
     if "globex_eth_open" in tr["tags"]:
         tags.append("globex_eth_open")
     tags += [RB.TAG_FROM_RANGE, {1: RB.TAG_FADE1, 2: RB.TAG_FADE2, 0: RB.TAG_FADE_MIXED}[fade_no]]

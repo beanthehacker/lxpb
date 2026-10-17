@@ -115,8 +115,21 @@ unbroken H1 range box (patterns-pure `find_range_box_zz` on the CLOSED H1 bars, 
 closes; `box_merge_tol` 2 pt lets an M5 edge poke out of the H1 box) are ONE range: they share their seats, so only one trade is
 taken per merged range, direction and playbook. Judged point in time when both boxes have a breakout waiting (nothing needs the
 other box to have broken out in advance), links never come apart, seat ranking is unchanged (first order placed keeps it).
-The replay seeds `--h1-days` (25) of H1/M5 history from before the stream (`Engine.seed_h1`). Side study:
+The replay seeds `--h1-days` (25) of H1/M5 history from before the stream (`Engine.seed_h1`).
+**The merged range IS the H1 box (user, 2026-10-16: "only one range box is considered, whatever the timeframe").** Once M5 boxes are
+merged, the range they form has the edges of the tightest known open H1 range box that holds every member (`Engine.range_edges`;
+e.g. 7792.50-7809.50, not the M5 box's 7798.50-7808.25). Those edges decide whether a fade level is "beyond the edge" (the level's own
+price must be below the low / above the high), they are what the report draws (start = the H1 box's start; the pivot squares are
+still the M5 box's), and the M5 member box still supplies the strong breakout and its timing. A box on its own, or one no single
+open H1 box holds, keeps its M5 edges.  Side study:
 `box_merge_study/h1_merge_engine.py` (merge off vs on); `fill_candidates.py` lists the LXPB candidates and range edges per fill.
+
+**Engine rule 3, NO CLUSTER ANCHOR (user, 2026-10-16).** Each LXPB level is judged independently as a fade (its OWN price outside the
+range edge, its own P1 run-in, its own stop / target). The cluster (same-type levels chained within 2 pt) is used only afterwards, to
+look for a BETTER entry price (more extreme) among the level's own members, and that better price must itself qualify as a fade on
+its own. Do not reintroduce an anchor / earliest-retested member / "classify by the cluster's first level". The old swerve move (to
+the next level) is gone for the same reason; a level with a swing on it is simply skipped. Oct 16 2026 (fade 2 off): the only fade
+trade is the 06:35:56 PT long at 7790.25 (+3.50 pt), the level that is the extreme of the 7790.25 / 7791.50 cluster.
 
 **Engine rule 2, FADE 2 IS OFF (user, 2026-10-16, `Params.fade2` = False, replay / report flag `--fade2` brings it back).** A fade
 of a box's second-side breakout (its OTHER edge had already broken out strongly before) is not traded, tagged or drawn; only

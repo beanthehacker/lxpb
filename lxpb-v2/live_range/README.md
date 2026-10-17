@@ -60,25 +60,23 @@ has two pivots at each edge, as in the reports.
 
 The engine was built rule by rule to match the old M1/M2 report's retest-first pipeline; that pipeline was DELETED on 2026-10-16 and the M1 fade report now lists the engine's own trades ("Matching the report" below is history).
 
-**Entry and cluster.** Same-type live levels within 2 pt of each other chain into a cluster, ordered at the extreme
-price (the reports' rule). Only levels the report would trade are candidates: a plain-P0 needs 1 pt of rejection wick
-(`min_plain_wick`). A confirmed swing within 1 pt of
-the price moves the order to the nearest other live level within 10 pt, or blocks it (swerve). Levels that cannot be
-retested yet get none.
-
-**Anchor.** A cluster's anchor is its earliest-retested member (the nearest to price while nothing is retested, and
-kept after it is retested and leaves the book). The reports classify with the anchor's price and measure the run-in
-from the anchor's P1, so the engine does too; the entry price (the extreme, or the swerved level) only decides where
-the order rests. A swerved cluster keeps its order alive after its anchor is gone. Two clusters that end on the same
-price share one order.
+**Entry and cluster (no cluster anchor, user 2026-10-16).** Every live LXPB level is judged INDEPENDENTLY: is its own price
+outside the range edge, is the run-in from its own P1 strong, is the breakout the run-in's own, can a stop and a target be
+planned (a plain-P0 needs 1 pt of rejection wick, `min_plain_wick`; a level with a confirmed swing on it is skipped; a level that
+cannot be retested yet gets no order). Only then is its CLUSTER (same-type live levels chained within 2 pt) consulted, and only
+for one question: is there a BETTER entry price among its members (lower for a long, higher for a short)? The better price must
+itself qualify as a fade on its own (outside the range edge, strong run-in from its own P1, ...); the most extreme qualifying
+member wins and the order rests there once price is within `arm_pts` of IT (it is tagged `better_entry`, src tag `cluster`).
+There is no anchor, no earliest-retested member and no swerve-to-the-next-level; the old swerve move is gone because every
+level is already a candidate on its own.
 
 **Playbooks.** For every strong breakout of a range box (a box that has two pivots at each edge; a box never expires)
 waiting for its retest:
 
-* **fade** - an LLPB whose anchor lies above the top edge of a box that broke UP (an LHPB below the bottom edge of a
+* **fade** - an LLPB whose own price lies above the top edge of a box that broke UP (an LHPB below the bottom edge of a
   box that broke DOWN), and the breakout is the run-in's own: the box's break candle (for the edge the zigzag broke
   through, else the strong-breakout bar) ends after the run-in leg began;
-* **go-with** - an LHPB whose anchor lies inside the box or within 2 pt beyond its top edge after an UP breakout (an
+* **go-with** - an LHPB whose own price lies inside the box or within 2 pt beyond its top edge after an UP breakout (an
   LLPB at the bottom edge after a DOWN breakout).
 
 The breakout must be *strong*: a bar that closes beyond an edge and grades strong on the M1 bars (1.5 x ATR, body at
@@ -99,7 +97,7 @@ a fill. `--seat-rank nearest` drops the spike preference (an option only).
 the touch.** On every tick:
 
 1. an entry within `arm_pts` (4 pt) of price is evaluated as if price were already on it: the breakouts
-   waiting for their retest, the run-in into the level (strong: 4x the median bar range, measured from the anchor's P1
+   waiting for their retest, the run-in into the level (strong: 4x the median bar range, measured from the level's own P1
    to the planned entry, not the chased price), for a fade that the breakout is the run-in's own, a stop and a
    target that can be planned, and no blackout (news pull, end-of-day, the 15:00-15:05 PT reopen). There is no news-spike
    check in this playbook (removed 2026-10-16). Pass -> an order is placed
@@ -175,6 +173,7 @@ Where the engine differs because it is live, or because the report cannot be cop
   the smaller box inside one known, unbroken H1 range box share their seats (one trade per merged range, direction, playbook).
   The H1 range boxes are `find_range_box_zz` over the closed H1 bars (M5 as lower data), re-read whenever an H1 bar closes;
   `seed_h1` gives it history from before the stream. `range_merge` events and `Engine.merge_links` list every link.
+* **The merged range is the H1 box**: its edges (the tightest open H1 box holding every member, `Engine.range_edges`) qualify the fade level and are drawn; the M5 member box still supplies the breakout. Unmerged boxes keep their M5 edges.
 * **Fade 2 off** (`Params.fade2` False): a box's second-side breakout (the other edge broke out strongly first) is not
   qualified for the fade playbook; only fade 1 is traded. `replay.py --fade2` turns it back on.
 * Oct 16 2026 with defaults: fade trades 20:51 (-1.00R) and 06:35:55 (+0.25R) only (plus the go-with at 04:01, not fade);

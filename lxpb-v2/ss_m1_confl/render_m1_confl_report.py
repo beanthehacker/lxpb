@@ -1272,7 +1272,9 @@ def _row_tag_badges(res, dyn_tags, level_type, entry_touch_str):
             detail = "; ".join(
                 f'{b["low"]:.2f}-{b["high"]:.2f} from {R._to_pt_str(b["start"])} '
                 f'({b["state"] or b["status"]}'
-                f'{", " + b["breakout"] + " breakout" if b["breakout"] else ""})'
+                f'{", " + b["breakout"] + " breakout" if b["breakout"] else ""}'
+                + (f'; H1 range box holding {b["merged_n"]} merged M5 boxes, the breakout box itself was '
+                   f'{b["m5_low"]:.2f}-{b["m5_high"]:.2f}' if b.get("h1") else "") + ")"
                 for b in boxes[:4])
             out += (f'<span class="dyn-tag-badge range-box-tag-badge" title="Dynamic filter '
                     f'‘{tag}’: {meaning} (find_range_box_zz on M5, 1-minute lower '
@@ -1828,7 +1830,7 @@ boxes are the only higher timeframes in this report. Only the fade playbook is s
 CSS = SR.CSS + """
 <style>
 .src-tag { font-size:0.75em; color:var(--text-dim); margin-left:4px; }
-.src-tag.m5 { color:#38bdf8; }
+.src-tag.m5, .src-tag.cluster { color:#38bdf8; }
 .src-tag.own { color:var(--text-dim); }
 .src-tag.chase { color:#f59e0b; margin-left:6px; cursor:help; }
 .unfilled-row td { color:var(--text-faint); font-style:italic; }

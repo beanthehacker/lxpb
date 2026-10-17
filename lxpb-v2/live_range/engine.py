@@ -180,17 +180,17 @@ class Engine:
         self.orders = {}
         self.seats = GroupSeats(self) if self.p.box_merge_overlap > 0 else {}   # (box_id, direction, playbook) -> trade id
         self.uf, self.merge_links = {}, []   # merged ranges: box id -> parent; (t, box, box, overlap, H1 box) per link
+        self.members = {}                    # merged range root -> ids of its M5 boxes
         self._merge_no, self._link_seen = {}, (None, None)
         self._h1_rows, self._m5_rows, self._h1f, self._h1_open = [], [], None, []   # closed H1 bars, M5 bars, forming H1, open H1 boxes
         self.trades = []
         self.open = []
         self._oid = 0
         self._blocked = set()
-        self.entries = []                    # cluster-extreme levels an order could rest on, by price
+        self.entries = []                    # one entry per live level (no cluster anchor), by price
         self._ent_prices = []
         self._eps_cache = None
-        self._recs = []                      # per-cluster entry records before merging by price
-        self.anchors = {}                    # cluster (key of its extreme level) -> its earliest-retested member, kept after that member leaves the book
+        self._entry_by_key = {}              # level key -> its entry record
         self._bo_cache = {}                  # (breakout ns, is_long) -> strong-breakout verdict of the level's P1
         self._pending = 0                    # working orders with a re-quote not yet seen by the next record
         self._rr_close = None                # M5 close awaiting the RR-floor check on the next tick
@@ -438,9 +438,10 @@ class Engine:
         for e in eps:
             up = e["direction"] == "up"
             box = e["box"]
-            if typ == ("LHPB" if up else "LLPB") and self._near_edge(box, price, up, self.p.go_with_edge_tol):
+            lo, hi = self.range_edges(box)[:2]      # the merged range's H1 box edges, else the M5 box's own
+            if typ == ("LHPB" if up else "LLPB") and self._near_edge({"low": lo, "high": hi}, price, up, self.p.go_with_edge_tol):
                 pb = "go_with"
-            elif typ == ("LLPB" if up else "LHPB") and ((price > box["high"]) if up else (price < box["low"])):
+            elif typ == ("LLPB" if up else "LHPB") and ((price > hi) if up else (price < lo)):
                 pb = "fade"
                 if not self.p.fade2 and self._is_fade2(e):
                     continue                # fade 2 is off: only the box's first strong breakout is faded
@@ -478,68 +479,32 @@ class Engine:
 
     # ------------------------------------------------------------------ entries and the per-tick order book
     def _rebuild_entries(self, t):
-        """The prices an order could rest on, from the live levels: one per cluster (the extreme price), moved
-        past a swing when one sits on it. The cluster's ANCHOR is its member nearest to price (the first one
-        retested; the reports classify and measure the run-in from it). Rebuilt whenever the levels or swings
-        change (closed bars, a level spent on a tick), not per tick."""
-        ents, new_anchors = [], {}
+        """The entries an order could rest on: ONE PER LIVE LEVEL (there is no cluster anchor). Every level is judged on its
+        own in `_evaluate` (is its own price outside the range edge, is its own run-in strong, ...). A level with a
+        confirmed swing sitting on it is not an entry. The cluster (same-type live levels chained within cluster_pts) only
+        answers one question afterwards: is there a BETTER entry price among the level's own cluster members (`better`:
+        the more extreme ones, most extreme first)? Rebuilt whenever the levels or swings change (closed bars, a level
+        spent on a tick), not per tick."""
+        ents = []
         self._live_keys = {level_key(x) for x in self.lv.state["touch_lv1"]}
         now_lo = t - int(self.p.swerve_lookback_h * 3600 * S_NS)
         for typ in ("LLPB", "LHPB"):
             is_long = typ == "LHPB"
             for cl in self._clusters(typ):
-                entry = min(cl, key=lambda x: (x["price"] if is_long else -x["price"],
-                                               pd.Timestamp(x["formation_time"]).value))
-                anchor = min(cl, key=lambda x: (-x["price"] if is_long else x["price"],
-                                                pd.Timestamp(x["formation_time"]).value))
-                ck = level_key(entry)
-                prev = self.anchors.get(ck)
-                if prev is not None and all(level_key(x) != level_key(prev) for x in cl):
-                    fate = self.lv.fate.get(level_key(prev))
-                    if fate is not None and fate[0] == "retested":
-                        anchor = prev           # the member retested first stays the anchor after it leaves the book
-                new_anchors[ck] = anchor
-                planned = entry["price"]
-                note, swerve = None, None
-                lo_ns = max(pd.Timestamp(anchor["breakout_time"]).value, now_lo)
-                if self.p.swerve and self._swings_near(planned, is_long, lo_ns):
-                    moved = self._swerve(typ, planned, lo_ns)
-                    if moved is None:
-                        continue
-                    swerve = {"planned_price": planned, "price": float(moved["price"]), "blocked": False, "moved": True,
-                              "swings": [(pd.Timestamp(s[0], tz="UTC"), float(s[1]))
-                                         for s in self._swings_near(planned, is_long, lo_ns)]}
-                    entry, note = moved, f"swerved {planned:.2f}->{moved['price']:.2f}"
-                ent = {"key": level_key(entry), "type": typ, "side": "buy" if is_long else "sell",
-                       "price": entry["price"], "level_price": entry["price"], "level": entry, "anchor": anchor,
-                       "note": note, "lo_ns": lo_ns, "cluster": len(cl), "cluster_key": ck,
-                       "members": list(cl), "swerve": swerve}
-                ents.append(ent)
-        # A cluster whose anchor has been retested but whose order has not filled stays alive (the reports'
-        # fill window runs on after the retest): a swerved entry belongs to the swerved cluster, not to the level
-        # it moved to, so it must outlive its anchor in the book.
-        seen = {e["cluster_key"] for e in ents}
-        for ck, pe in {e["cluster_key"]: e for e in self._recs}.items():
-            if ck in seen:
-                continue
-            fate = self.lv.fate.get(level_key(pe["anchor"]))
-            if fate is not None and fate[0] == "retested" and pe["key"] in self._live_keys and pe["key"] not in self.dead:
-                ents.append(pe)
-        self._recs = list(ents)
-        # Two clusters can end on the same price (a swerve moves one onto another's level): one order there, which
-        # serves what each of the clusters' trades would have, so it keeps every anchor.
-        merged = {}
-        for e in ents:
-            m = merged.get(e["key"])
-            if m is None:
-                merged[e["key"]] = m = {**e, "anchors": [e["anchor"]]}
-            elif all(level_key(a) != level_key(e["anchor"]) for a in m["anchors"]):
-                m["anchors"].append(e["anchor"])
-                m["note"] = m["note"] or e["note"]
-        ents = list(merged.values())
-        self.anchors = new_anchors
+                ext = sorted(cl, key=lambda x: (x["price"] if is_long else -x["price"], pd.Timestamp(x["formation_time"]).value))
+                ck = level_key(ext[0])
+                for lv in cl:
+                    lo_ns = max(pd.Timestamp(lv["breakout_time"]).value, now_lo)
+                    if self.p.swerve and self._swings_near(lv["price"], is_long, lo_ns):
+                        continue                # a confirmed swing sits on this level: not an entry
+                    better = [m for m in ext if (m["price"] < lv["price"] if is_long else m["price"] > lv["price"])]
+                    ents.append({"key": level_key(lv), "type": typ, "side": "buy" if is_long else "sell",
+                                 "price": lv["price"], "level_price": lv["price"], "level": lv,
+                                 "note": None, "lo_ns": lo_ns, "cluster": len(cl), "cluster_key": ck,
+                                 "members": list(cl), "swerve": None, "better": better})
         ents.sort(key=lambda e: e["price"])
         self.entries = ents
+        self._entry_by_key = {e["key"]: e for e in ents}
         self._ent_prices = [e["price"] for e in ents]
 
     def _box_seen(self, e, t=None):
@@ -591,7 +556,7 @@ class Engine:
             self._h1_refresh()
 
     def _h1_refresh(self):
-        """The still-open H1 range boxes as of the last CLOSED H1 bar: [(low, high)]."""
+        """The still-open H1 range boxes as of the last CLOSED H1 bar: [(low, high, start ns)]."""
         if self.p.box_merge_overlap <= 0 or len(self._h1_rows) < 30:
             self._h1_open = []
             return
@@ -605,16 +570,36 @@ class Engine:
         m5 = pd.DataFrame([r[1:] for r in m5r], columns=cols, index=pd.to_datetime([r[0] for r in m5r], unit="ns", utc=True))
         b = find_range_box_zz(h1, lower_data=m5)
         op = b[b["status"] == "open"]
-        self._h1_open = [(float(lo), float(hi)) for lo, hi in zip(op["low"], op["high"])]
+        self._h1_open = [(float(lo), float(hi), pd.Timestamp(st).value)
+                         for lo, hi, st in zip(op["low"], op["high"], op["start_time"])]
 
     def _h1_holds(self, a, b):
-        """(low, high) of the tightest open H1 range box that holds both M5 boxes (edges within box_merge_tol), or None."""
+        """(low, high, start ns) of the tightest open H1 range box that holds all the given M5 boxes (edges within
+        box_merge_tol), or None."""
         tol, best = self.p.box_merge_tol, None
-        for lo, hi in self._h1_open:
-            if all(lo - tol <= x["low"] and x["high"] <= hi + tol for x in (a, b)):
+        boxes = a if isinstance(a, (list, tuple)) else (a, b)
+        for lo, hi, st in self._h1_open:
+            if all(lo - tol <= x["low"] and x["high"] <= hi + tol for x in boxes):
                 if best is None or hi - lo < best[1] - best[0]:
-                    best = (lo, hi)
+                    best = (lo, hi, st)
         return best
+
+    def range_edges(self, box):
+        """(low, high, start ns or None, member ids) of the range a box belongs to. The M5 boxes merged into one range
+        are ONE range and its edges are the H1 range box's (the tightest known open one that holds every member); a box
+        on its own, or whose members no single open H1 box holds, keeps its own M5 edges (user, 2026-10-16: only one
+        range box is considered, whatever the timeframe)."""
+        own = (float(box["low"]), float(box["high"]), None, (box["id"],))
+        if self.p.box_merge_overlap <= 0:
+            return own
+        ids = self.members.get(self.find(box["id"]))
+        if not ids or len(ids) < 2:
+            return own
+        mem = [self.box.boxes[i] for i in sorted(ids)]
+        hb = self._h1_holds(mem, None)
+        if hb is None:
+            return own
+        return (hb[0], hb[1], hb[2], tuple(sorted(ids)))
 
     def find(self, b):
         while self.uf.get(b, b) != b:
@@ -643,7 +628,12 @@ class Engine:
                     self._merge_no[(a, b)] = sec
                     continue
                 ra, rb = self.find(a), self.find(b)
-                self.uf[max(ra, rb)] = min(ra, rb)
+                if ra != rb:
+                    root, gone = min(ra, rb), max(ra, rb)
+                    self.uf[gone] = root
+                    self.members[root] = self.members.get(root, {root}) | self.members.pop(gone, {gone}) | {a, b}
+                else:
+                    self.members.setdefault(ra, {ra}).update((a, b))
                 self.merge_links.append((t, a, b, round(frac, 2), f"{hb[0]:.2f}-{hb[1]:.2f}"))
                 self.log("range_merge", t, a=a, b=b, overlap=round(frac, 2), h1=f"{hb[0]:.2f}-{hb[1]:.2f}")
 
@@ -680,29 +670,28 @@ class Engine:
     def _evaluate(self, e, price, t):
         """Would an order on entry/order `e` pass every gate if price were on `price` (its level, or a chased
         price) right now? A dict (the boxes and playbooks it serves, the planned stop and target) or the reason
-        it would not. As in the report: the box tag is judged with the price of the cluster's anchor, the
-        run-in is measured from the anchor's P1 to the PLANNED entry (not the chased price), and the stop
-        and target are planned from the price that fills."""
+        it would not. The level is judged on its OWN: its own price must be outside the range edge, its run-in is
+        measured from its own P1 to its price (not the chased price), and the stop and target are planned from the
+        price that fills."""
         typ = e["type"]
         why = self._blackout(t)
         if why:
             return why
         eps = self._episodes_if_touched(price)
         serves, reason = [], "no_episode"
-        for anchor in e["anchors"]:
-            q = self._qualify(typ, anchor["price"], eps)
-            if not q:
-                continue
-            run = self._run_in(typ, anchor, e["level_price"], t)
+        lvl = e["level"]
+        q = self._qualify(typ, lvl["price"], eps)
+        if q:
+            run = self._run_in(typ, lvl, e["level_price"], t)
             if not self._strong_run_in(typ, run, e["level_price"]):
                 reason = "weak_run_in"
-                continue
-            for ep, pb in q:
-                if pb == "fade" and (run is None or self._fade_break_ns(ep) + M5_NS <= run[0]):
-                    reason = "breakout_not_run_in" if reason == "no_episode" else reason
-                    continue                # the breakout is not the run-in's own
-                if all((ep["box_id"], ep["direction"], pb) != (x["box_id"], x["direction"], p2) for x, p2 in serves):
-                    serves.append((ep, pb))
+            else:
+                for ep, pb in q:
+                    if pb == "fade" and (run is None or self._fade_break_ns(ep) + M5_NS <= run[0]):
+                        reason = "breakout_not_run_in" if reason == "no_episode" else reason
+                        continue                # the breakout is not the run-in's own
+                    if all((ep["box_id"], ep["direction"], pb) != (x["box_id"], x["direction"], p2) for x, p2 in serves):
+                        serves.append((ep, pb))
         if not serves:
             return reason
         plan = self._plan({"level": e["level"], "type": typ}, price, t)
@@ -745,7 +734,7 @@ class Engine:
         if lo >= hi:
             return
         have = {o["key"] for o in self.orders.values()}
-        cands = []
+        decided = []
         for e in self.entries[lo:hi]:
             if e["key"] in have or e["key"] in self.dead:
                 continue
@@ -753,7 +742,28 @@ class Engine:
                 continue                    # the tape was through it already: touched, not approached
             res = self._evaluate(e, e["price"], t)
             if not isinstance(res, str):
-                cands.append((e, res))
+                decided.append((e, res))
+        # Each level that qualifies on its own is then checked against its own cluster for a better entry price: a more
+        # extreme member that ALSO qualifies as a fade on its own (it may not violate the outside-the-range rule). The
+        # order rests at that better price and only once price is within arm_pts of IT.
+        cands, seen = [], set()
+        for e, res in decided:
+            best = (e, res)
+            for m in e["better"]:
+                em = self._entry_by_key.get(level_key(m))
+                if em is None or em["key"] in self.dead or em["key"] in have or self._level_touched(em["side"], em["price"], px):
+                    continue
+                rm = self._evaluate(em, em["price"], t)
+                if not isinstance(rm, str):
+                    best = (em, rm)
+                    break
+            be, br = best
+            if be["key"] in seen or abs(be["price"] - px) > p.arm_pts:
+                continue
+            seen.add(be["key"])
+            if be is not e:
+                be = {**be, "decided": e["level"], "note": f"better price in cluster {e['price']:.2f}->{be['price']:.2f}"}
+            cands.append((be, br))
         if not cands:
             return
         cands.sort(key=lambda c: self._seat_rank(c[0], px))
@@ -765,7 +775,7 @@ class Engine:
             if self._seat_has_order(res):
                 continue                    # one order per seat: an order already resting there stands
             self._oid += 1
-            o = {**e, "id": self._oid, "armed_t": t, "serves": res["serves"], "boxes": res["boxes"],
+            o = {**e, "decided": e.get("decided", e["level"]), "id": self._oid, "armed_t": t, "serves": res["serves"], "boxes": res["boxes"],
                  "provisional": res["provisional"], "plan": res["plan"], "level_price": e["price"],
                  "touched": False, "pending": False,
                  "worst": e["price"] + (p.peg_cap if e["side"] == "buy" else -p.peg_cap)}
@@ -1037,7 +1047,10 @@ class Engine:
         for kind, i, price, j in self.box.pivots:
             if b["start_i"] <= i <= b["last_i"] or i == b.get("break_i"):
                 piv.append({"kind": kind, "time": m5.t[i], "price": float(price), "brk": i == b.get("break_i")})
-        return {"id": bid, "direction": direction, "low": float(b["low"]), "high": float(b["high"]),
+        lo, hi, h1_start, members = self.range_edges(b)
+        return {"id": bid, "direction": direction, "low": lo, "high": hi,
+                "m5_low": float(b["low"]), "m5_high": float(b["high"]), "h1_start_t": h1_start,
+                "merged_ids": list(members), "h1": h1_start is not None,
                 "start_t": b["start_t"], "break_t": b.get("break_t"), "breakout_time": ep.get("breakout_time"),
                 "status": b["status"], "provisional": bool(ep.get("provisional")), "fade2": bool(prior),
                 "prior_time": prior[0]["breakout_time"] if prior else None,
@@ -1053,7 +1066,7 @@ class Engine:
               "eod": eod, "trails": 0, "level_price": o["level_price"], "level_spike": bool(o["level"].get("is_spike")), "p0_kind": o["level"].get("p0_kind"),
               "boxes": [(b, d) for b, d, _ in serves], "exit": None,
               # what the M1 fade report shows of the trade (nothing here decides anything)
-              "armed_t": o.get("armed_t"), "level": o["level"], "anchor": o["anchor"], "cluster_n": o["cluster"],
+              "armed_t": o.get("armed_t"), "level": o["level"], "decided": o.get("decided", o["level"]), "cluster_n": o["cluster"],
               "members": o.get("members") or [o["level"]], "swerve": o.get("swerve"),
               "mfe": 0.0, "mae": 0.0, "dd": 0.0, "trail_log": [],
               "box_info": [self._box_snapshot(b, d, o["boxes"].get((b, d))) for b, d, _ in serves
@@ -1064,17 +1077,17 @@ class Engine:
         tr["stop_pts"], tr["target_pts"], tr["r_planned"] = stop_pts, tgt_pts, tgt_pts / stop_pts
         # the report's row tags that describe the trade (informational there; the ones it excludes by default are gates here)
         tags = []
-        if o["anchor"].get("p0_kind") == "plain-P0":
+        if o["level"].get("p0_kind") == "plain-P0":
             tags.append("plain_p0")
         if o["cluster"] == 1:
             tags.append("no_confl")
         if o.get("note"):
-            tags.append("swerved")
+            tags.append("better_entry")
         if tr["r_planned"] < self.p.tag_min_r:
             tags.append("r_below_min")
         if not self.p.globex_block and self.p.globex_open[0] <= sod < self.p.globex_open[1]:
             tags.append("globex_eth_open")
-        tr["tags"], tr["anchor_price"] = tags, o["anchor"]["price"]
+        tr["tags"] = tags
         self.trades.append(tr)
         self.open.append(tr)
         for s in serves:

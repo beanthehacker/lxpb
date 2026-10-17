@@ -2,7 +2,7 @@
 
   python scid_only/run_scid_only.py box_merge_study/fill_candidates.py --day 2026-10-16
 
-For every trade it prints the LXPB levels (candidates) of the entry's cluster, the anchor, the swerve, other live
+For every trade it prints the LXPB levels (candidates) of the entry's cluster, the level that qualified on its own (decided), other live
 same-type levels within 10 pt, and each range box the trade serves with its edges.
 M1 FADE PLAYBOOK ONLY: go-with trades are printed but marked, they are not part of it.
 Uses the engine's defaults (1 s decisions, H1-backed range merge on, fade 2 off).
@@ -47,7 +47,7 @@ class Spy(Engine):
         chain = next((cl for cl in snap[1][typ] if any(level_key(x) == ck for x in cl)), [])
         ids = {level_key(x) for x in chain}
         others = [lv for lv in snap[2][typ] if abs(float(lv["price"]) - o["level_price"]) <= 10 and level_key(lv) not in ids]
-        info = {"t": t, "serves": list(serves), "entry": o["level_price"], "note": o.get("note"), "anchor": o["anchor"],
+        info = {"t": t, "serves": list(serves), "entry": o["level_price"], "note": o.get("note"), "anchor": o["decided"],
                 "cluster": chain, "others": others, "armed": armed, "boxes": []}
         for (b, d, pb) in serves:
             ep = o["boxes"].get((b, d))
@@ -75,7 +75,7 @@ def main():
         print(f"\n=== trade {tr['id']} {pt(tr['t'])} {tr['type']} {tr['side']} fill {tr['price']:.2f} stop {tr['stop']:.2f} "
               f"target {tr['target']:.2f}" + ("" if fade else "   [GO-WITH, not part of the fade playbook]"))
         print(f"  entry level {info['entry']:.2f}" + (f"  ({info['note']})" if info["note"] else "")
-              + f"; anchor {lv_txt(eng, info['anchor'])}")
+              + f"; qualified on its own: {lv_txt(eng, info['anchor'])}")
         print(f"  order placed {pt(info['armed'])}. LXPB cluster it came from: {len(info['cluster'])} levels "
               f"(chained within 2 pt; the entry is the extreme, unless swerved):")
         for lv in sorted(info["cluster"], key=lambda x: float(x["price"])):

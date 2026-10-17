@@ -149,7 +149,7 @@ def report(eng, out):
             "entry": tr["price"], "stop": tr["stop"], "target": tr["target"], "stop_src": tr["stop_src"],
             "r_planned": round(tr["r_planned"], 2), "level": tr["level_price"],
             "chased": round(abs(tr["price"] - tr["level_price"]), 2), "trails": tr["trails"],
-            "anchor": tr["anchor_price"], "tags": " ".join(tr["tags"]),
+            "decided": tr["decided"]["price"], "tags": " ".join(tr["tags"]),
             "exit_time_pt": _fmt(ex["t"]) if ex else "", "exit": ex["price"] if ex else "", "why": ex["why"] if ex else "open",
             "pnl_pts": round(tr.get("pnl", float("nan")), 2) if ex else "", "r": round(tr.get("r", float("nan")), 2) if ex else "",
         })
