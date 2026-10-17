@@ -11,6 +11,12 @@ as if it closed (provisional breakouts); on every closed bar the books advance. 
 the working orders are recomputed from the current state and diffed against the ones already
 resting: new ones armed, stale ones pulled, each with a reason in the event log.
 
+M1 FADE REPORT: THE FADE PLAYBOOK ONLY (user, 2026-10-16). This engine decides the trades of the M1 fade playbook
+(`ss_m1_confl`, `sep_month_fade`). The go-with playbook below is NOT part of that playbook or its report: its trades
+(`playbooks` = go_with in trades.csv, `serves` ending in 'go_with') are not fade trades, must not be counted in fade
+results or totals, and must be dropped from any fade comparison. Known side effect: the engine still takes them, and
+a go-with position occupies the single `max_open_positions` slot, so it can keep a fade order from being placed.
+
 The playbooks (one trade per box seat):
   fade      the breakout is confirmed and waiting for its retest; rest an order on a live LXPB
             level BEYOND the breakout edge (LLPB above an up breakout, LHPB below a down one).
@@ -36,8 +42,8 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-import liquidity as LQ       # the news-spike definition; live_range/__init__.py puts lxpb-v2 on sys.path
 from .boxes import BoxBook, M1_NS, M5_NS
+from find_range_box_zz import find_range_box_zz
 from find_zigzag import ATR_MULT, ATR_PERIOD, MIN_BARS, ZigZag
 
 from .levels import LevelBook, key as level_key
@@ -46,6 +52,7 @@ from .series import Series
 PT = ZoneInfo("America/Los_Angeles")
 UTC = ZoneInfo("UTC")
 S_NS = 10**9
+H1_NS = 3600 * S_NS
 
 
 @dataclass
@@ -92,10 +99,6 @@ class Params:
     bo_body: float = 0.5             # ... and body >= this share of the run's range
     bo_atr_period: int = 30
     bo_atr_window: int = 150
-    news_gate: bool = True           # liquidity.py: a shock second (1s range or quote spread) in the lookback -> no order
-    news_lookback_s: int = LQ.LOOKBACK_S_DEFAULT
-    news_range_pts: float = LQ.SHOCK_RANGE_PTS_DEFAULT
-    news_spread_ticks: float = LQ.SHOCK_SPREAD_TICKS_DEFAULT
     globex_block: bool = True        # 15:00-15:05 PT reopen: the report tags it and excludes it by default
     globex_open: tuple = (15 * 3600, 15 * 3600 + 5 * 60)
     tag_min_r: float = 1.0           # planned R below this is tagged r_below_min (the report measures, not skips)
@@ -113,11 +116,44 @@ class Params:
     manage: bool = True
     rr_floor: float = 0.2
     trail_min_wick: float = 0.20
+    # Production gets data once per SECOND (user, 2026-10-16): the algo decides on a clock of decision_s seconds from the
+    # snapshot of the previous second (last price and quotes before the boundary). 0 = decide on every tape record
+    # (the old behaviour, only for comparison). Fills of resting orders and stop / target hits stay on the real tick:
+    # the exchange does that, not the algo.
+    decision_s: float = 1.0
+    # Range merge (user, 2026-10-16). Two M5 range boxes whose price ranges overlap by at least this share of the SMALLER box
+    # and that both sit inside one known, still unbroken H1 range box (patterns-pure find_range_box_zz on the closed H1
+    # bars, M5 as lower data) are ONE range and share their seats: one trade per merged range, direction and playbook.
+    # Judged point in time when both boxes have a breakout waiting; links never come apart. 0 = off.
+    box_merge_overlap: float = 0.5
+    box_merge_tol: float = 2.0       # points an M5 box edge may poke out of the H1 box and still count as inside it
+    h1_window: int = 600             # trailing H1 bars the H1 range detector reads
+    # FADE 2 is OFF (user, 2026-10-16): a box's second-side breakout (the other edge had already broken out strongly before
+    # it) is not traded; only fade 1 (the box's first strong breakout) is. True brings fade 2 back.
+    fade2: bool = False
 
 
 def _pt_sod(t_ns):
     ts = pd.Timestamp(t_ns, unit="ns", tz="UTC").tz_convert(PT)
     return ts.hour * 3600 + ts.minute * 60 + ts.second, ts
+
+
+class Plan(tuple):
+    """(stop, target, stop source) of a planned trade; `meta` carries what the report shows about where they came from."""
+    meta = None
+
+
+class GroupSeats(dict):
+    """The engine's seats, except that a seat taken by one box of a merged range is taken for every box of it."""
+
+    def __init__(self, eng):
+        super().__init__()
+        self.eng = eng
+
+    def __contains__(self, key):
+        b, d, pb = key
+        root = self.eng.find(b)
+        return any(self.eng.find(k0) == root and k1 == d and k2 == pb for (k0, k1, k2) in self.keys())
 
 
 class Engine:
@@ -142,7 +178,10 @@ class Engine:
         self.dead = set()                    # trade levels touched on the tick before they could be retested
         # orders / trades
         self.orders = {}
-        self.seats = {}                      # (box_id, direction, playbook) -> trade id
+        self.seats = GroupSeats(self) if self.p.box_merge_overlap > 0 else {}   # (box_id, direction, playbook) -> trade id
+        self.uf, self.merge_links = {}, []   # merged ranges: box id -> parent; (t, box, box, overlap, H1 box) per link
+        self._merge_no, self._link_seen = {}, (None, None)
+        self._h1_rows, self._m5_rows, self._h1f, self._h1_open = [], [], None, []   # closed H1 bars, M5 bars, forming H1, open H1 boxes
         self.trades = []
         self.open = []
         self._oid = 0
@@ -153,7 +192,6 @@ class Engine:
         self._recs = []                      # per-cluster entry records before merging by price
         self.anchors = {}                    # cluster (key of its extreme level) -> its earliest-retested member, kept after that member leaves the book
         self._bo_cache = {}                  # (breakout ns, is_long) -> strong-breakout verdict of the level's P1
-        self._shock = LQ.ShockTape(self.p.news_lookback_s, self.p.news_range_pts, self.p.news_spread_ticks)
         self._pending = 0                    # working orders with a re-quote not yet seen by the next record
         self._rr_close = None                # M5 close awaiting the RR-floor check on the next tick
         self._live_keys = set()
@@ -162,6 +200,9 @@ class Engine:
         self._prov_keys = frozenset()
         self.last_t = 0
         self.last_px = None
+        self.last_bid = self.last_ask = None
+        self._dec_ns = int(self.p.decision_s * S_NS)
+        self._dec_slot = None
         self._sell_min = math.inf            # cheapest working sell / dearest working buy: cheap per-tick filter
         self._buy_max = -math.inf
         self._next_exit = math.inf
@@ -177,11 +218,20 @@ class Engine:
         return ev
 
     # ------------------------------------------------------------------ tick entry point
-    def on_tick(self, t, px, bid=None, ask=None, side=0, nq=1):
+    def on_tick(self, t, px, bid=None, ask=None, side=0):
         """One tape record: trade price `px`, the quotes `bid` / `ask` around it and its aggressor `side`
         (+1 a buyer lifted the offer, -1 a seller hit the bid, 0 unknown). Without quotes an order simply
-        fills when price reaches it. `nq` is how many single-trade tape records this record stands for (the
-        liquidity gate counts records, and identical consecutive ones are collapsed into one)."""
+        fills when price reaches it.
+
+        The algo's own decisions (arm / pull / re-quote orders, RR-floor exit) run on the `decision_s` clock: the
+        first record of a new second first lets the algo decide on the snapshot of what came before it (`_decide`),
+        then the record is applied. Bars, fills of resting orders and stop / target hits are applied per record."""
+        if self._dec_ns:
+            slot = t // self._dec_ns
+            if slot != self._dec_slot:
+                if self._dec_slot is not None and self.last_px is not None:
+                    self._decide(slot * self._dec_ns, self.last_px, self.last_bid, self.last_ask)
+                self._dec_slot = slot
         m1s = t // M1_NS
         f = self.m1f
         if f is None:
@@ -209,18 +259,36 @@ class Engine:
                 elif px < h[3]:
                     h[3] = px
                 h[4] = px
-        self.last_t, self.last_px = t, px
+        self.last_t, self.last_px, self.last_bid, self.last_ask = t, px, bid, ask
+        if self.open:
+            for tr in self.open:        # excursions of the open trades, for the report (nothing decides on them)
+                d = (px - tr["price"]) if tr["side"] == "buy" else (tr["price"] - px)
+                if d > tr["mfe"]:
+                    tr["mfe"] = d
+                elif -d > tr["mae"]:
+                    tr["mae"] = -d
+                if tr["mfe"] - d > tr["dd"]:
+                    tr["dd"] = tr["mfe"] - d
         if self.open and (px <= self._lo_t or px >= self._hi_t or t >= self._next_exit):
             self._check_exits(t, px)
-        if self._rr_close is not None:
+        if not self._dec_ns and self._rr_close is not None:
             self._rr_floor(t, px, bid, ask)
         if self._pending or (px >= self._sell_min or px <= self._buy_max if bid is None
                              else (ask >= self._sell_min or bid <= self._buy_max)):
             self._check_orders(t, px, bid, ask, side)
+        if not self._dec_ns:
+            self._orders_tick(t, px)
+
+    def _decide(self, t, px, bid, ask):
+        """The algo's decisions from one snapshot (time `t`, last price and quotes `px` / `bid` / `ask`): the RR-floor
+        exit, the peg re-quotes of orders that were touched without filling, then pull / place orders."""
+        if self._rr_close is not None:
+            self._rr_floor(t, px, bid, ask)
+        for o in list(self.orders.values()):
+            if o.pop("requote_due", False) and o["id"] in self.orders and (
+                    bid is None or (bid <= o["price"] <= ask)) and o["price"] != o["worst"]:
+                self._requote(o, t, px)
         self._orders_tick(t, px)
-        # After the gates above, so the news check judges the tape BEFORE this record. Every record feeds the
-        # 1s price range; only a single-trade quote record (nq) feeds the spread.
-        self._shock.on_record(t, px, round((ask - bid) / self.p.tick) if bid is not None and nq else None)
 
     def _roll(self, t, m1s, px):
         """The tick belongs to a new minute: close what is done, open the new forming bars."""
@@ -265,6 +333,7 @@ class Engine:
 
     def _close_m5(self, h, t):
         tt = h[0] * M5_NS
+        self._h1_on_m5(h)
         self.lv5.on_bar(tt, h[1], h[2], h[3], h[4])
         self.box.on_m5_close(tt, h[1], h[2], h[3], h[4], self.lv5)
         for kind, payload in self.box.drain():
@@ -373,6 +442,8 @@ class Engine:
                 pb = "go_with"
             elif typ == ("LLPB" if up else "LHPB") and ((price > box["high"]) if up else (price < box["low"])):
                 pb = "fade"
+                if not self.p.fade2 and self._is_fade2(e):
+                    continue                # fade 2 is off: only the box's first strong breakout is faded
             else:
                 continue
             if (box["id"], e["direction"], pb) not in self.seats:
@@ -429,16 +500,20 @@ class Engine:
                         anchor = prev           # the member retested first stays the anchor after it leaves the book
                 new_anchors[ck] = anchor
                 planned = entry["price"]
-                note = None
+                note, swerve = None, None
                 lo_ns = max(pd.Timestamp(anchor["breakout_time"]).value, now_lo)
                 if self.p.swerve and self._swings_near(planned, is_long, lo_ns):
                     moved = self._swerve(typ, planned, lo_ns)
                     if moved is None:
                         continue
+                    swerve = {"planned_price": planned, "price": float(moved["price"]), "blocked": False, "moved": True,
+                              "swings": [(pd.Timestamp(s[0], tz="UTC"), float(s[1]))
+                                         for s in self._swings_near(planned, is_long, lo_ns)]}
                     entry, note = moved, f"swerved {planned:.2f}->{moved['price']:.2f}"
                 ent = {"key": level_key(entry), "type": typ, "side": "buy" if is_long else "sell",
                        "price": entry["price"], "level_price": entry["price"], "level": entry, "anchor": anchor,
-                       "note": note, "lo_ns": lo_ns, "cluster": len(cl), "cluster_key": ck}
+                       "note": note, "lo_ns": lo_ns, "cluster": len(cl), "cluster_key": ck,
+                       "members": list(cl), "swerve": swerve}
                 ents.append(ent)
         # A cluster whose anchor has been retested but whose order has not filled stays alive (the reports'
         # fill window runs on after the retest): a swerved entry belongs to the swerved cluster, not to the level
@@ -480,7 +555,110 @@ class Engine:
                                if not e["done"] and self._box_seen(e)]
         return self._eps_cache
 
+    def _is_fade2(self, e):
+        """The box's OTHER edge had already broken out strongly before this episode's breakout (the report's fade 2)."""
+        r = self.box.readers.get(e["box_id"])
+        return r is not None and any(x["direction"] != e["direction"] and x["breakout_time"] < e["breakout_time"]
+                                     for x in r.episodes)
+
+    # -- H1 range boxes and the range merge (point in time) ------------------------------------------------------
+    def seed_h1(self, h1, m5):
+        """History from before the stream starts: closed H1 bars and M5 bars (UTC-indexed OHLC frames)."""
+        self._h1_rows = [(ts.value, o, h, l, c) for ts, o, h, l, c in zip(h1.index, h1.open, h1.high, h1.low, h1.close)]
+        self._m5_rows = [(ts.value, o, h, l, c) for ts, o, h, l, c in zip(m5.index, m5.open, m5.high, m5.low, m5.close)]
+        self._h1_refresh()
+
+    def _h1_on_m5(self, h):
+        """An M5 bar closed: build the H1 bar it belongs to; when an H1 bar is complete, re-read the H1 range boxes."""
+        if self.p.box_merge_overlap <= 0:
+            return
+        tt = h[0] * M5_NS
+        slot, f, done = tt // H1_NS, self._h1f, False
+        if f is not None and f[0] != slot:
+            self._h1_rows.append((f[0] * H1_NS, f[1], f[2], f[3], f[4]))
+            self._h1f = f = None
+            done = True
+        self._m5_rows.append((tt, h[1], h[2], h[3], h[4]))
+        if f is None:
+            self._h1f = [slot, h[1], h[2], h[3], h[4]]
+        else:
+            f[2], f[3], f[4] = max(f[2], h[2]), min(f[3], h[3]), h[4]
+        if (tt + M5_NS) % H1_NS == 0:
+            f = self._h1f
+            self._h1_rows.append((f[0] * H1_NS, f[1], f[2], f[3], f[4]))
+            self._h1f, done = None, True
+        if done:
+            self._h1_refresh()
+
+    def _h1_refresh(self):
+        """The still-open H1 range boxes as of the last CLOSED H1 bar: [(low, high)]."""
+        if self.p.box_merge_overlap <= 0 or len(self._h1_rows) < 30:
+            self._h1_open = []
+            return
+        rows = self._h1_rows[-self.p.h1_window:]
+        self._h1_rows = list(rows)
+        t0 = rows[0][0]
+        m5r = [r for r in self._m5_rows if r[0] >= t0]
+        self._m5_rows = m5r
+        cols = ["open", "high", "low", "close"]
+        h1 = pd.DataFrame([r[1:] for r in rows], columns=cols, index=pd.to_datetime([r[0] for r in rows], unit="ns", utc=True))
+        m5 = pd.DataFrame([r[1:] for r in m5r], columns=cols, index=pd.to_datetime([r[0] for r in m5r], unit="ns", utc=True))
+        b = find_range_box_zz(h1, lower_data=m5)
+        op = b[b["status"] == "open"]
+        self._h1_open = [(float(lo), float(hi)) for lo, hi in zip(op["low"], op["high"])]
+
+    def _h1_holds(self, a, b):
+        """(low, high) of the tightest open H1 range box that holds both M5 boxes (edges within box_merge_tol), or None."""
+        tol, best = self.p.box_merge_tol, None
+        for lo, hi in self._h1_open:
+            if all(lo - tol <= x["low"] and x["high"] <= hi + tol for x in (a, b)):
+                if best is None or hi - lo < best[1] - best[0]:
+                    best = (lo, hi)
+        return best
+
+    def find(self, b):
+        while self.uf.get(b, b) != b:
+            self.uf[b] = self.uf.get(self.uf[b], self.uf[b])
+            b = self.uf[b]
+        return b
+
+    def _link(self, eps, t):
+        """Join the M5 boxes of `eps` (breakouts waiting right now) that overlap by >= box_merge_overlap and sit inside one
+        known open H1 range box. Only boxes with a breakout waiting are looked at, so nothing needs the other box to have
+        broken out in advance."""
+        sec = t // S_NS
+        ids = tuple(sorted({e["box_id"] for e in eps}))
+        if (sec, ids) == self._link_seen:
+            return
+        self._link_seen = (sec, ids)
+        boxes = {e["box_id"]: e["box"] for e in eps}
+        for i, a in enumerate(ids):
+            for b in ids[i + 1:]:
+                if self.find(a) == self.find(b) or self._merge_no.get((a, b)) == sec:
+                    continue
+                A, B = boxes[a], boxes[b]
+                frac = (min(A["high"], B["high"]) - max(A["low"], B["low"])) / max(1e-9, min(A["high"] - A["low"], B["high"] - B["low"]))
+                hb = self._h1_holds(A, B) if frac >= self.p.box_merge_overlap else None
+                if hb is None:
+                    self._merge_no[(a, b)] = sec
+                    continue
+                ra, rb = self.find(a), self.find(b)
+                self.uf[max(ra, rb)] = min(ra, rb)
+                self.merge_links.append((t, a, b, round(frac, 2), f"{hb[0]:.2f}-{hb[1]:.2f}"))
+                self.log("range_merge", t, a=a, b=b, overlap=round(frac, 2), h1=f"{hb[0]:.2f}-{hb[1]:.2f}")
+
+    def _canon(self, serves):
+        if self.p.box_merge_overlap <= 0:
+            return set(serves)
+        return {(self.find(b), d, pb) for b, d, pb in serves}
+
     def _episodes_if_touched(self, price):
+        eps = self._episodes_raw(price)
+        if self.p.box_merge_overlap > 0 and eps and self._h1_open:
+            self._link([e for e in eps if self.p.fade2 or not self._is_fade2(e)], self.last_t)
+        return eps
+
+    def _episodes_raw(self, price):
         """The breakouts waiting for their retest if price were on `price` right now: the committed ones plus
         the forming M5 bar read as if it closed there (a breakout that would grade strong at that price)."""
         eps = self._committed_episodes()
@@ -509,8 +687,6 @@ class Engine:
         why = self._blackout(t)
         if why:
             return why
-        if self.p.news_gate and self._shock.flagged(t):
-            return "news_spike"
         eps = self._episodes_if_touched(price)
         serves, reason = [], "no_episode"
         for anchor in e["anchors"]:
@@ -622,14 +798,14 @@ class Engine:
         the same seats: the contenders for a seat are ranked once, before any order exists, and only the best is placed."""
         if self._spike(e):
             return False
-        mine = set(res["serves"])
-        return any(d is not e and self._spike(d) and mine & set(r["serves"]) for d, r in cands)
+        mine = self._canon(res["serves"])
+        return any(d is not e and self._spike(d) and mine & self._canon(r["serves"]) for d, r in cands)
 
     def _seat_has_order(self, res):
         """An order that is already resting for one of these seats stands: it is never pulled for a contender that
         shows up later, and no second order is put on the same seat."""
-        mine = set(res["serves"])
-        return any(mine & set(o["serves"]) for o in self.orders.values())
+        mine = self._canon(res["serves"])
+        return any(mine & self._canon(o["serves"]) for o in self.orders.values())
 
     def _cancel(self, o, t, why):
         if o.get("pending"):
@@ -674,7 +850,10 @@ class Engine:
             if right and ((px <= cur) if buy else (px >= cur)):
                 self._touch(o, t, cur)
             elif self.p.pegged and not right and bid <= cur <= ask and cur != o["worst"]:
-                self._requote(o, t, px)
+                if self._dec_ns:
+                    o["requote_due"] = True         # the algo chases at its next snapshot (_decide)
+                else:
+                    self._requote(o, t, px)
 
     def _requote(self, o, t, px):
         """Chase: move a touched-but-unfilled order one step closer to market. The new price is judged like
@@ -776,6 +955,7 @@ class Engine:
             re = self._plan(o, fill_px, t)
             plan = plan if isinstance(re, str) else re
         stop, target, src = plan
+        o["plan"] = plan
         self._fill(o, t, fill_px, serves, stop, target, src)
         self._rebuild_entries(t)
 
@@ -783,7 +963,7 @@ class Engine:
         lv, typ = o["level"], o["type"]
         is_long = typ == "LHPB"
         tick = self.p.tick
-        stop, src = None, None
+        stop, src, stop_level = None, None, None
         if lv.get("is_spike"):
             bar = self.lv.bars.get(pd.Timestamp(lv["formation_time"]).value)
             if bar is None:
@@ -793,6 +973,7 @@ class Engine:
             if (stop >= fill) if is_long else (stop <= fill):
                 return "no_stop"
             src = "p0_spike"
+            stop_level = lv
         else:
             pool = [x for x in self.lv.live_for_stops(typ) if abs(x["price"] - fill) <= self.p.stop_radius]
             extreme = "breakout_low" if is_long else "breakout_high"
@@ -802,6 +983,7 @@ class Engine:
                 return "no_stop"
             stop = min(cands) if is_long else max(cands)
             src = "thrust"
+            stop_level = next((x for x in pool if x[extreme] + (-tick if is_long else tick) == stop), None)
         if abs(stop - fill) < self.p.min_stop:
             wide = self._wider_stop(typ, fill, t)
             if wide is not None:
@@ -814,7 +996,10 @@ class Engine:
         dist = (pp - fill) if is_long else (fill - pp)
         if not (self.p.min_target <= dist <= self.p.max_target):
             return "no_target"
-        return stop, pp, src
+        plan = Plan((stop, pp, src))
+        plan.meta = {"stop_level": stop_level, "pivot_time": pt, "pivot_price": pp,
+                     "pivot_kind": "trough" if is_long else "crest"}
+        return plan
 
     def _wider_stop(self, typ, fill, t):
         is_long = typ == "LHPB"
@@ -843,6 +1028,22 @@ class Engine:
         self._hi_t = min(his) if his else math.inf
         self._next_exit = min((tr["eod"] for tr in self.open), default=math.inf)
 
+    def _box_snapshot(self, bid, direction, ep):
+        """The range box behind one seat, as it stands now, for the report: edges, times, the zigzag pivots that built it."""
+        b, m5 = ep["box"], self.box.m5
+        r = self.box.readers.get(ep["box_id"])
+        prior = [x for x in (r.episodes if r else []) if x["direction"] != ep["direction"] and x["breakout_time"] < ep["breakout_time"]]
+        piv = []
+        for kind, i, price, j in self.box.pivots:
+            if b["start_i"] <= i <= b["last_i"] or i == b.get("break_i"):
+                piv.append({"kind": kind, "time": m5.t[i], "price": float(price), "brk": i == b.get("break_i")})
+        return {"id": bid, "direction": direction, "low": float(b["low"]), "high": float(b["high"]),
+                "start_t": b["start_t"], "break_t": b.get("break_t"), "breakout_time": ep.get("breakout_time"),
+                "status": b["status"], "provisional": bool(ep.get("provisional")), "fade2": bool(prior),
+                "prior_time": prior[0]["breakout_time"] if prior else None,
+                "prior_dir": ("up" if prior[0]["direction"] == "up" else "down") if prior else None,
+                "pivots": piv, "n": b["n"], "seed_high": float(b["seed_high"]), "seed_low": float(b["seed_low"])}
+
     def _fill(self, o, t, price, serves, stop, target, src):
         sod, ts = _pt_sod(t)
         day = ts.normalize() if sod < self.p.reopen else (ts + pd.Timedelta(days=1)).normalize()
@@ -850,7 +1051,15 @@ class Engine:
         tr = {"id": len(self.trades), "order": o["id"], "t": t, "side": o["side"], "type": o["type"],
               "price": price, "stop": stop, "target": target, "stop_src": src, "serves": serves,
               "eod": eod, "trails": 0, "level_price": o["level_price"], "level_spike": bool(o["level"].get("is_spike")), "p0_kind": o["level"].get("p0_kind"),
-              "boxes": [(b, d) for b, d, _ in serves], "exit": None}
+              "boxes": [(b, d) for b, d, _ in serves], "exit": None,
+              # what the M1 fade report shows of the trade (nothing here decides anything)
+              "armed_t": o.get("armed_t"), "level": o["level"], "anchor": o["anchor"], "cluster_n": o["cluster"],
+              "members": o.get("members") or [o["level"]], "swerve": o.get("swerve"),
+              "mfe": 0.0, "mae": 0.0, "dd": 0.0, "trail_log": [],
+              "box_info": [self._box_snapshot(b, d, o["boxes"].get((b, d))) for b, d, _ in serves
+                           if o["boxes"].get((b, d)) is not None]}
+        meta = getattr(o.get("plan"), "meta", None)
+        tr["plan_meta"] = meta
         stop_pts, tgt_pts = abs(stop - price), abs(target - price)
         tr["stop_pts"], tr["target_pts"], tr["r_planned"] = stop_pts, tgt_pts, tgt_pts / stop_pts
         # the report's row tags that describe the trade (informational there; the ones it excludes by default are gates here)
@@ -896,6 +1105,7 @@ class Engine:
             new = grp[0]["breakout_low"] - p.tick if long else grp[0]["breakout_high"] + p.tick
             if (new - tr["stop"]) * (1 if long else -1) > 0:
                 self.log("stop_trailed", self.last_t, trade=tr["id"], frm=tr["stop"], to=new, group=len(grp))
+                tr["trail_log"].append((tt + self.tb_ns, new))     # (the thrust candle's close, new stop)
                 tr["stop"] = new
                 tr["trails"] += 1
         self._retrig()

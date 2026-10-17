@@ -5,6 +5,9 @@
 
 Everything before --from only warms the books up (nothing is armed). Output: events.jsonl (every
 order armed / amended / cancelled, fill, exit, episode and level event), trades.csv, and a summary.
+
+M1 fade playbook only: go_with rows (the `playbooks` column) are not part of the fade playbook or its report; leave them
+out of any fade count or total (see live_range/engine.py).
 """
 import argparse
 import json
@@ -25,7 +28,7 @@ def ticks(lo, hi):
     side differ from the last kept one, or it opens a new minute (so no bar close is ever late)."""
     rolls = [r for r in R._own_roll() if r is not None and lo < r < hi]
     edges = [lo] + rolls + [hi]
-    T, P, B, A, S, Q = [], [], [], [], [], []
+    T, P, B, A, S = [], [], [], [], []
     for a, b in zip(edges[:-1], edges[1:]):
         offset, sym = R._offset_for_ts(a)
         w = R._scid_window(sym, a, b)
@@ -36,19 +39,15 @@ def ticks(lo, hi):
         B.append(np.round(w["Low"].to_numpy(np.float64) + offset, 4))
         A.append(np.round(w["High"].to_numpy(np.float64) + offset, 4))
         S.append(np.where(w["AskVolume"].to_numpy() > 0, 1, np.where(w["BidVolume"].to_numpy() > 0, -1, 0)).astype(np.int8))
-        # liquidity.py counts single-trade records with a valid quote
-        Q.append(((w["Trades"].to_numpy() == 1) & (w["High"].to_numpy() >= w["Low"].to_numpy())).astype(np.int32))
     if not T:
         e = np.empty(0)
-        return np.empty(0, np.int64), e, e, e, np.empty(0, np.int8), np.empty(0, np.int32)
-    t, p, bd, ak, sd, qn = (np.concatenate(x) for x in (T, P, B, A, S, Q))
+        return np.empty(0, np.int64), e, e, e, np.empty(0, np.int8)
+    t, p, bd, ak, sd = (np.concatenate(x) for x in (T, P, B, A, S))
     slot = t // 60_000_000_000
     keep = np.ones(len(t), dtype=bool)
     keep[1:] = ((p[1:] != p[:-1]) | (bd[1:] != bd[:-1]) | (ak[1:] != ak[:-1]) | (sd[1:] != sd[:-1])
                 | (slot[1:] != slot[:-1]))
-    grp = np.cumsum(keep) - 1                      # every collapsed record counts toward its group's quote tally
-    nq = np.bincount(grp, weights=qn).astype(np.int32)
-    return t[keep], p[keep], bd[keep], ak[keep], sd[keep], nq
+    return t[keep], p[keep], bd[keep], ak[keep], sd[keep]
 
 
 def verdicts(lo, hi, freq):
@@ -60,6 +59,39 @@ def verdicts(lo, hi, freq):
     ham = bars.index.isin(lxpb.find_hammer(bars, atr=0.0).index)
     star = bars.index.isin(lxpb.find_shooting_star(bars, atr=0.0).index)
     return {t: (bool(a), bool(b)) for t, a, b in zip(bars.index.asi8.tolist(), ham, star)}
+
+
+def build_engine(lo, hi, warmup_days, params, h1_days=25.0, engine_cls=Engine):
+    """An engine for the stream [lo - warmup_days, hi) armed from `lo`, with `h1_days` of closed H1 and M5 bars from BEFORE
+    the stream seeded for the H1 range boxes behind the range merge (the stream itself builds H1 from then on)."""
+    start = lo - pd.Timedelta(days=warmup_days)
+    v5 = verdicts(start, hi, "5min")
+    vtb = verdicts(start, hi, f"{params.bar_minutes}min")
+    eng = engine_cls(params, arm_from_ns=lo.value, verdicts5=v5, verdicts_tb=vtb)
+    if params.box_merge_overlap > 0 and h1_days > 0:
+        s0 = start.floor("1h")
+        cols = ["open", "high", "low", "close"]
+        eng.seed_h1(R._tick_bars_spanning(s0 - pd.Timedelta(days=h1_days), s0, "60min")[cols],
+                    R._tick_bars_spanning(s0 - pd.Timedelta(days=h1_days), s0, "5min")[cols])
+    return eng, start
+
+
+def feed(eng, start, hi, chunk_hours=24.0, progress=False):
+    """Stream the ticks of [start, hi) through the engine."""
+    t0, n_ticks, cur = time.time(), 0, start
+    step = pd.Timedelta(hours=chunk_hours)
+    while cur < hi:
+        nxt = min(cur + step, hi)
+        T, P, B, A, S = ticks(cur, nxt)
+        on_tick = eng.on_tick
+        for t, px, bd, ak, sd in zip(T.tolist(), P.tolist(), B.tolist(), A.tolist(), S.tolist()):
+            on_tick(t, px, bd, ak, sd)
+        n_ticks += len(T)
+        if progress:
+            print(f"  {cur:%m-%d %H:%M} +{len(T):>7,} ticks  trades {len(eng.trades):>3}  working orders {len(eng.orders):>2}  "
+                  f"{time.time() - t0:6.1f}s", flush=True)
+        cur = nxt
+    return n_ticks, time.time() - t0
 
 
 def main():
@@ -77,33 +109,28 @@ def main():
                     help="range boxes older than this are not seen (the report's detector gets 5 days of M5 history); 0 = no expiry")
     ap.add_argument("--bo-range-atr", type=float, default=0.0,
                     help="the reports' strong-breakout gate on every level's own P1 (1.5 in the reports; 0 = off)")
+    ap.add_argument("--decision-s", type=float, default=1.0,
+                    help="seconds between the algo's decisions (production gets data once per second); 0 = every tape record")
     ap.add_argument("--seat-rank", default="spike_first", choices=["spike_first", "nearest"])
+    ap.add_argument("--box-merge-overlap", type=float, default=0.5,
+                    help="M5 boxes overlapping by >= this share of the smaller box inside one known open H1 range box share "
+                         "their seats (point in time); 0 = off")
+    ap.add_argument("--box-merge-tol", type=float, default=2.0, help="points an M5 box edge may poke out of the H1 box")
+    ap.add_argument("--h1-days", type=float, default=25.0, help="days of H1 / M5 history before the stream seeded for the H1 boxes")
+    ap.add_argument("--fade2", action="store_true",
+                    help="also trade fade 2 (a box's second-side breakout); OFF by default, only fade 1 is traded")
     a = ap.parse_args()
     lo = pd.Timestamp(a.lo, tz="UTC")
     hi = pd.Timestamp(a.hi, tz="UTC") if a.hi else pd.Timestamp(R._scid_bounds("EPZ26")[1]).floor("1min")
-    start = lo - pd.Timedelta(days=a.warmup_days)
     t0 = time.time()
-    v5 = verdicts(start, hi, "5min")
-    vtb = verdicts(start, hi, f"{a.bar_minutes}min")
-    print(f"verdicts for {len(v5):,} M5 and {len(vtb):,} M{a.bar_minutes} bars in {time.time() - t0:.1f}s")
-    eng = Engine(Params(bar_minutes=a.bar_minutes, pegged=not a.no_peg, manage=not a.no_manage,
-                         seat_rank=a.seat_rank, min_plain_wick=a.min_plain_wick,
-                         box_lookback_days=a.box_lookback_days, bo_range_atr=a.bo_range_atr), arm_from_ns=lo.value, verdicts5=v5, verdicts_tb=vtb)
-    print(f"replay {start} -> {hi} (armed from {lo}), M{a.bar_minutes} trading bars")
-    t0, n_ticks = time.time(), 0
-    cur = start
-    step = pd.Timedelta(hours=a.chunk_hours)
-    while cur < hi:
-        nxt = min(cur + step, hi)
-        T, P, B, A, S, Nq = ticks(cur, nxt)
-        on_tick = eng.on_tick
-        for t, px, bd, ak, sd, nq in zip(T.tolist(), P.tolist(), B.tolist(), A.tolist(), S.tolist(), Nq.tolist()):
-            on_tick(t, px, bd, ak, sd, nq)
-        n_ticks += len(T)
-        print(f"  {cur:%m-%d %H:%M} +{len(T):>7,} ticks  trades {len(eng.trades):>3}  working orders {len(eng.orders):>2}  "
-              f"{time.time() - t0:6.1f}s", flush=True)
-        cur = nxt
-    print(f"{n_ticks:,} ticks in {time.time() - t0:.1f}s")
+    eng, start = build_engine(lo, hi, a.warmup_days, Params(
+        bar_minutes=a.bar_minutes, pegged=not a.no_peg, manage=not a.no_manage, seat_rank=a.seat_rank,
+        min_plain_wick=a.min_plain_wick, box_lookback_days=a.box_lookback_days, bo_range_atr=a.bo_range_atr,
+        decision_s=a.decision_s, box_merge_overlap=a.box_merge_overlap, box_merge_tol=a.box_merge_tol, fade2=a.fade2),
+        h1_days=a.h1_days)
+    print(f"engine ready in {time.time() - t0:.1f}s; replay {start} -> {hi} (armed from {lo}), M{a.bar_minutes} trading bars")
+    n_ticks, secs = feed(eng, start, hi, a.chunk_hours, progress=True)
+    print(f"{n_ticks:,} ticks in {secs:.1f}s")
     report(eng, a.out)
 
 

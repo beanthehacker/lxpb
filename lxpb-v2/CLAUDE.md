@@ -107,71 +107,67 @@ confirm the stack's width on screen (CSS width x scale) is the screen width minu
 
 # M1 fade playbook: the ENGINE decides the trades, not the report (user, 2026-10-16)
 
+**The M1 fade report is the FADE playbook only; go-with is not part of it (user, 2026-10-16).** (Two engine rules below.)
+
+**Engine rule 1, H1-backed range merge (user, 2026-10-16, `Params.box_merge_overlap` = 0.5, 0 = off, replay `--box-merge-overlap`).**
+Two M5 range boxes whose price ranges overlap by at least 50% of the SMALLER box AND that both sit inside one known, still
+unbroken H1 range box (patterns-pure `find_range_box_zz` on the CLOSED H1 bars, M5 as lower data, re-read each time an H1 bar
+closes; `box_merge_tol` 2 pt lets an M5 edge poke out of the H1 box) are ONE range: they share their seats, so only one trade is
+taken per merged range, direction and playbook. Judged point in time when both boxes have a breakout waiting (nothing needs the
+other box to have broken out in advance), links never come apart, seat ranking is unchanged (first order placed keeps it).
+The replay seeds `--h1-days` (25) of H1/M5 history from before the stream (`Engine.seed_h1`). Side study:
+`box_merge_study/h1_merge_engine.py` (merge off vs on); `fill_candidates.py` lists the LXPB candidates and range edges per fill.
+
+**Engine rule 2, FADE 2 IS OFF (user, 2026-10-16, `Params.fade2` = False, replay / report flag `--fade2` brings it back).** A fade
+of a box's second-side breakout (its OTHER edge had already broken out strongly before) is not traded, tagged or drawn; only
+fade 1 (the box's first strong breakout) is. A trade whose boxes were mixed keeps only its fade-1 boxes. In the M1 report the
+fade-2 boxes are dropped before the seats are handed out, so a fade-2 trade has no breakout-from-range tag and is not listed,
+and the charts draw fade-1 boxes only. Oct 16 2026: the engine's 06:38:45 and 09:02:32 PT trades are fade 2 and disappear. Never count go-with trades
+(engine `playbooks` = go_with, report 'retest-into-range') in its results, totals or comparisons, and drop them from engine
+replays before judging the fade playbook. The engine still takes go-with trades and they use the single open-position slot
+(noted in `live_range/engine.py`, `live_range/replay.py` and the head of `render_m1_confl_report.py`).
+
 **Standing rule: for the M1 range-fade playbook, a trade exists only if the live engine (`live_range/`) takes it.** The
 algorithm is range first: a range box with a strong breakout exists, THEN the LXPB ledger is read only as a cache lookup
 for "which level can be traded for the fade seat of that box". Questions like "did the fade trades occur today", "why was
 level X not traded", "is this a valid fade trade" are answered by replaying ticks through the engine
 (`python scid_only/run_scid_only.py live_range/replay.py --from <day 22:00 UTC prior> --warmup-days 5 --out <dir>`,
-events.jsonl shows every order armed / amended / cancelled with its reason), NEVER from the `ss_m1_confl` report's rows.
+events.jsonl shows every order armed / amended / cancelled with its reason). The `ss_m1_confl` report now shows exactly the
+engine's fade trades (it is engine only, see the next section), so its rows and the replay agree; the older retest-first pipeline
+(clusters over hours, a 3 h fill window, `unfilled_within_window` / `weak_run_in` rows, tags read afterwards) no longer exists and
+must not be used to explain a trade. Ledger rows (`lxpb_levels_cache.m1_levels`, wick filter, fate) are the lookup the engine reads.
 
-The `ss_m1_confl` report's own trade pipeline is OLD LOGIC for this playbook and is not evidence about it:
+# The M1 fade report (`ss_m1_confl/`) is ENGINE ONLY (user, 2026-10-16)
 
-- its fill (find the retest first, cluster every ±2 pt chain of levels over hours, rest one order at the cluster's
-  extreme for up to 3 h, then 'unfilled_within_window') and its range-box tag (read at the touch, afterwards) are
-  superseded. Do not explain a missing or extra fade trade with report clusters, its 3 h window, `weak_run_in` rows or
-  `keeping N of M rows tagged ...`. Example of the mistake (2026-10-16): 7790.25 LHPB was said to be "swallowed by the
-  7794.25 cluster whose order went unfilled"; that is the report's artefact, not a rule of the playbook.
-- the report is still the chart / review page for trades, and the source of its own sep_month_fade numbers, until the user
-  moves it onto the engine; say so when quoting it, and do not use it to decide what the playbook would have traded.
-- ledger rows (`lxpb_levels_cache.m1_levels`, wick filter, fate) are fine as the lookup the engine reads; the
-  report-level selection on top of them (candidates, clusters, anchors by earliest retest, tags) is not.
+**The older retest-first pipeline of this report was DELETED.** `render_m1_confl_report.py` no longer selects candidates,
+clusters confluence, finds fills, picks stops or targets, tags range boxes afterwards or hands out seats: all of that is the
+live engine (`live_range/`, see the sections above). The report replays the window's ticks through the engine
+(`live_range.replay.build_engine` / `feed`, decisions once a second, H1-backed range merge, fade 2 off) and
+`ss_m1_confl/engine_rows.py` turns each FILLED fade trade (go-with dropped) into the row dict the page and charts read; the M1
+ledger (`LC.m5_levels`, swapped to M1 behind the shared "m5" calls) is only a lookup for the chart code. Consequences:
 
-# The M1 range-box report (`ss_m1_confl/`) is standalone
+- One outcome per trade, as the engine managed it (target, stop, trailed stop, RR-floor, end-of-day flat). There are no
+  target-rule or management toggles, no unfilled / NO TRADE rows, no go-with playbook, no news-spike badge. A WIN is a trade that
+  made money (`r > 0`), whatever ended it. The page keeps one disabled "engine target" checkbox so its script has a rule to read.
+- Flags: `--since-day --until-day --warmup-days --label --bar-minutes --output --min-r` plus `--decision-s`,
+  `--box-merge-overlap`, `--box-merge-tol`, `--h1-days`, `--fade2`. Every flag of the deleted pipeline (`--ss-confl-min`,
+  `--p0-kinds`, `--target-mode`, `--swerve*`, `--peg*`, `--workers`, `--playbook`, `--range-lookback-days`, `--news-*` ...) is in
+  `REMOVED_FLAGS`: accepted and ignored so older regen commands still run. Run it through `scid_only/run_scid_only.py` where
+  there are no TradingView exports; no `--workers`, no fork pool, no 8 GB peak any more (the engine replay of a month is minutes).
+- `range_box_tags.py` is only the tag names now. Range boxes on the M1 trading pane carry their zigzag pivots (`Cr1` crest, `Tr2`
+  trough, ... numbered per box, `brk` on the one that broke it, `A:Cr1` when a trade has several boxes) from the engine's own box
+  ledger (`Engine._box_snapshot`); small squares above/below the M5 extreme's own M1 candle (`_mark_range_pivots`), M1 pane only.
+- Chart dict keys and DOM ids are `main` (the M1 trading pane) and `ctx` (the M5 context pane). The table's column positions are
+  hard-coded in `SORT_COLS` and the `nth-child` header rule: change them together with any column added or removed.
+- A fixed month of the fade playbook (`sep_month_fade`) is `--since-day 2026-09-01 --until-day 2026-09-30 --warmup-days 5
+  --label "Sep 2026, whole month"`. The published `sep_month_fade.html` was made by the DELETED pipeline and still carries its
+  trades, the NEWS SPIKE tag and fade 2 until it is regenerated (only when the user asks).
+- The engine's tags on a row: `plain_p0`, `no_confl` (cluster of one), `swerved`, `breakout-from-range`, `fade1` (`fade2` /
+  `fade-mixed` only with `--fade2`), `r_below_min`, `eod_flat`.
 
-It started as a fork of `ss_m5_confl2` and shares nothing with it any more: no H1 input (no H1 P0
-confluence, bias, trap or ATR-boundary columns or filters), no crest-refine, no D1/footprint/tick panes.
-M5 appears only in the range boxes and the M5 context chart. The M5 names inside the file
-(`m5_ledger`, `same_side_m5`, `LC.m5_levels`) are M1 levels: the script swaps M1 in behind the
-shared "m5" level calls, because the shared modules (`render_stop_target_report`,
-`render_ss_confl_finetune_report`, `trade_management`) still ask for them by that name. Chart dict keys
-and DOM ids are `main` (the M1 trading pane) and `ctx` (the M5 context pane). Removed CLI flags
-(`--range-box-only`, `--m5-charts-only`, `--atr-boundary-mult`, `--crest-refine*`) are accepted and
-ignored so older regen commands still run. Range boxes on the M1 trading pane also carry
-their zigzag pivots (`Cr1` crest, `Tr2` trough, ... numbered per box, `brk` on the one that broke it, `A:Cr1` when
-a trade has several boxes): small squares above/below the M5 extreme's own M1 candle, never on the candles
-(`range_box_tags.box_pivots` re-runs the detector's own zigzag; `_mark_range_pivots`). M1 pane only, not the M5 pane. The table's column positions are hard-coded in `SORT_COLS` and
-the `nth-child` header rule: change them together with any column added or removed.
-
-A fixed month of the fade playbook only (`sep_month_fade`) is the same script with
-`--since-day 2026-09-01 --until-day 2026-09-30 --warmup-days 5 --playbook fade --range-lookback-days 60
---label "Sep 2026, whole month"`: trades are those of the Sep trading days; the range boxes behind them
-may be up to `--range-lookback-days` old (the detector re-reads that much M5 before every touch, so it
-costs seconds per touch; `--range-procs` forks it over 4 processes). `--playbook fade` leaves the go-with
-playbook untagged, unlisted and without its filter chip. Every breakout-from-range trade is also tagged
-`fade1` (it fades the range's first strong breakout) or `fade2` (the other edge had already broken out strongly,
-price reversed, and this is the second-side breakout): `range_box_tags.expand_episodes` (`fade_no`, `prior_time`),
-FADE 1 / FADE 2 badge, Exclude/Only chips, "1st"/"2nd" on the chart's breakout label and a "1st broke ..." line on
-fade2 charts. A trade on several overlapping boxes that are not all the same is its own class, `fade-mixed`
-(badge FADE 1+2); user decision 2026-10-14. Run it through `scid_only/run_scid_only.py`
-serially (`--workers 1`), like the others.
-
-Target rules of the M1 report (checkboxes in its Target rules row; the farther target wins when several are on): `opposite-zz`,
-`swing-extreme` (the default, the only one ticked) and `range-edge` (user request 2026-10-15): the HIGH of the range box an LLPB
-fade trades back to, the LOW of the box an LHPB fade trades back to, taken from the box(es) whose fade seat the trade holds (the
-NEAREST edge to the fill when it fades several), inside the same 0.25-50 pt band. It is computed after the boxes are read
-(`_add_range_edge_targets`), so it re-targets trades that already have a zigzag target and never adds or drops a trade (a trade
-with no zigzag target is not in the report, whatever its box edge). `--target-mode range-edge|all` ticks it by default.
-
-News-spike tag (user request 2026-10-15; replaces the old NEWS / THIN `low_liquidity` gate, which averaged the share of
-wide quotes over 5 minutes and so never fired on a 1-5 second headline burst): `liquidity.py` marks a trade `news_spike`
-(badge NEWS SPIKE, Exclude/Only chips, informational, not excluded from the headline stats) when a SHOCK SECOND sits in the
-`--news-lookback-seconds` (120) before the touch, the touch's own second included only up to the touch. A shock second has a
-trade range >= `--news-shock-range-pts` (3.0) or a single-trade quote spread >= `--news-shock-spread-ticks` (2; one tick is the
-normal ES spread). There is no depth-of-book on disk, so spread and range are the only thinness measures. `liquidity.gate`
-(reports) and `liquidity.ShockTape` (the `live_range` engine) are one definition and were checked equal on real ticks. The old
-`--liquidity-gate`, `--liq-window-minutes` and `--liq-wide-spread-share` are accepted and ignored. Measured on Sep 2026 (35
-fade trades): 2 ticks flags 32 of 35, 3 ticks 10, 4 ticks 8, range alone 7, so at 2 ticks the tag no longer separates
-anything; the number is the user's choice (set 2026-10-15). Every report that tags it needs a regen to show it.
+No news-spike logic in the M1 fade playbook (user, 2026-10-16): the news-spike tag and the engine's news-spike gate (`news_gate`,
+`ShockTape`) are REMOVED. Do not add a shock-second / wide-spread check back. `liquidity.py` stays only because `ss_m5_confl2`
+still imports it (its own tag, untouched). The scheduled 05:29:55-05:30:40 PT news-pull blackout is a different rule and stays.
 
 Sign-in (user request 2026-10-15): `/login` takes Google OR email + password (NextAuth Credentials in `auth.ts`). Both give the
 session email `ALLOWED_EMAIL`, and the review state in `row_state` is keyed by report/row only, so it is one data set for either
@@ -188,6 +184,17 @@ report means adding its path to that matcher; do not do it without the user aski
 **Standing preference (user, 2026-10-13): the streaming engine places orders the way a real account with limited
 margin would, and judges every gate BEFORE the touch.** Remember it for every change to `live_range`:
 
+- **PRODUCTION DATA LIMIT (user, 2026-10-16): in production the algo only gets data once per SECOND, not per tick.**
+  Every decision of the engine (arm / pull / re-quote an order, gates, run-in, box and level reads, RR-floor exit) is
+  made from a 1-second snapshot and must never use information finer than that (an individual tick, the aggressor flag
+  of a single print, the intra-second order of highs and lows). Implemented (`Params.decision_s` = 1.0, replay flag
+  `--decision-s`, 0 = old per-record behaviour for comparison): the first record of a new second lets the algo decide
+  on what came before it (`Engine._decide`: RR-floor exit, peg re-quotes, then `_orders_tick`). What stays per record,
+  because the exchange does it, not the algo: fills of resting orders, stop / target hits, bar building. Bar-close
+  work (stop trail, entry rebuild) still runs on the first record of the new bar, which is never earlier than a 1 s
+  snapshot could do it. Known simplifications: a fill pulls the other orders at once (a live account would cancel them
+  at its next snapshot, with a double-fill risk), and the end-of-day flat fires on the first record at or after its time.
+  Never write a rule that needs tick-level reaction.
 - No ladders of resting orders: an order is placed only when price is within `arm_pts` of its level and
   pulled when price drifts beyond `cancel_pts`; at most `max_working_orders` rest at once and none while
   `max_open_positions` are open (a fill pulls the rest). The order set is updated on live data, tick by tick.
@@ -203,9 +210,9 @@ margin would, and judges every gate BEFORE the touch.** Remember it for every ch
   to 1 pt), each re-quote re-judged by the gates. Never fill an order just because a price printed at it.
 - A plain-P0 is only an entry level with at least 1 pt of rejection wick on its formation candle (the M1/M2
   reports' rule); weaker ones end at their breakout but still serve as stop candidates while untouched.
-- The engine follows the M1/M2 report's pipeline (`live_range/README.md`, "Matching the report"): the anchor
+- The engine was built to match the old M1/M2 report's pipeline (`live_range/README.md`, "Matching the report", history only): the anchor
   (earliest-retested cluster member) that the range tag and the run-in are judged from, the box's break candle for the
-  fade test, the news-spike and reopen gates. User decisions (2026-10-13): no cold-level mode, no 3-hour fill window, a
+  fade test, the reopen gate (no news-spike gate). User decisions (2026-10-13): no cold-level mode, no 3-hour fill window, a
   level's own breakout need not be strong (`bo_range_atr` stays 0), boxes never expire, one order per seat that is never
   pulled for a later contender.
 - Trade management (stop trail, RR floor) runs on the trading-bar ledger and bars, as in the reports; seat
@@ -500,6 +507,8 @@ The rule, all of it in `find_zigzag.py`'s docstring:
   `lower_data`, no lower bars in the bar, both extremes in one lower bar) or the other way round
   (low first, then the high), it never counts. A new extreme restarts the count. The minimum is in
   bars of the series the zigzag runs on. Still at most one pivot per bar, so a bounce and the next
+  swing inside one bar confirm on that bar and the next. The range boxes pass M1 as `lower_data`;
+  `m5_structure.zigzag_pivots` (targets, run-in) passes none, so there only `MIN_BARS` = 1 applies.
 - **A leg's starting bar counts its own far side** (user decision 2026-10-16): when the lower-timeframe order proves a bar made its
   extreme first and moved away afterwards, that move is evidence for the next leg even if the same bar just confirmed the previous
   pivot (before, it was lost: M5 Oct 16 2026 05:50 PT high 7802.75 then low 7798.50 missed the 7798.50 trough). A crest and the
@@ -510,8 +519,6 @@ The rule, all of it in `find_zigzag.py`'s docstring:
   inside the box as it stood: >= 75% of its range inside, or >= 50% inside with the close inside. The next candle is not read. Written
   and wired into both the batch detector and the live book with NO test or replay run; `check_boxes.py` (live vs batch) not run yet.
   Every report and the engine need a regen / replay to show it.
-  swing inside one bar confirm on that bar and the next. The range boxes pass M1 as `lower_data`;
-  `m5_structure.zigzag_pivots` (targets, run-in) passes none, so there only `MIN_BARS` = 1 applies.
 - **Reversal is cumulative** (the deepest adverse price since the extreme), the next
   leg starts at the most adverse bar of the one just confirmed, at most one pivot is
   confirmed per bar, and the last still-extending leg is never a pivot.

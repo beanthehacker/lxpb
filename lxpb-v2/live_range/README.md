@@ -58,7 +58,7 @@ has two pivots at each edge, as in the reports.
 
 ## Orders
 
-The engine follows the M1/M2 report's pipeline (`render_m1_confl_report.py`), one rule at a time; see "Matching the report" below.
+The engine was built rule by rule to match the old M1/M2 report's retest-first pipeline; that pipeline was DELETED on 2026-10-16 and the M1 fade report now lists the engine's own trades ("Matching the report" below is history).
 
 **Entry and cluster.** Same-type live levels within 2 pt of each other chain into a cluster, ordered at the extreme
 price (the reports' rule). Only levels the report would trade are candidates: a plain-P0 needs 1 pt of rejection wick
@@ -101,8 +101,8 @@ the touch.** On every tick:
 1. an entry within `arm_pts` (4 pt) of price is evaluated as if price were already on it: the breakouts
    waiting for their retest, the run-in into the level (strong: 4x the median bar range, measured from the anchor's P1
    to the planned entry, not the chased price), for a fade that the breakout is the run-in's own, a stop and a
-   target that can be planned, and no blackout (news pull, end-of-day, the 15:00-15:05 PT reopen) and no
-   news-type shock (`liquidity.py`: a 1s trade range of 3 pt or more, or a quote spread of 2 ticks or more, in the last 120 s up to the tick before). Pass -> an order is placed
+   target that can be planned, and no blackout (news pull, end-of-day, the 15:00-15:05 PT reopen). There is no news-spike
+   check in this playbook (removed 2026-10-16). Pass -> an order is placed
    with that stop and target; fail -> none (and it is placed later if it starts to pass);
 2. a resting order is re-evaluated the same way and pulled the moment it would fail, or when price is
    more than `cancel_pts` (6 pt) away, the level is spent, or a swing now sits on it;
@@ -134,8 +134,8 @@ R is always taken against the stop the trade started with.
 
 ## Matching the report
 
-What the engine takes from `render_m1_confl_report.py` (M1; the M2 report is the same with 2-minute bars), and where it
-cannot:
+HISTORY (the old report pipeline no longer exists). What the engine took from the old `render_m1_confl_report.py` (M1; the M2 report was the same with 2-minute bars), and where it
+could not:
 
 | report | engine |
 |---|---|
@@ -146,7 +146,7 @@ cannot:
 | tag price = anchor price; run-in from the anchor's P1 to the planned entry | same |
 | fade: box break candle (zigzag `break_time`) vs the run-in start | same (`break_t` is checked against `find_range_box_zz`) |
 | news pull 05:29:55-05:30:40 PT, EOD entry block 12:45-15:00 PT, flat 12:44 PT | same |
-| news-spike check (tag `news_spike`, informational), 15:00-15:05 PT reopen (tag `globex_eth_open`, excluded by default) | gates, switchable (`news_gate`, `globex_block`) |
+| 15:00-15:05 PT reopen (tag `globex_eth_open`, excluded by default) | gate, switchable (`globex_block`); no news-spike check on either side |
 | peg: 0.25 pt step, 1 pt cap, bid/ask and aggressor side | same |
 | stop (spike P0 else thrust, widened to 3 pt), target (swing extreme 0.25-50 pt), stop trail, RR floor 0.2 | same |
 | `r_below_min` (planned R < 1), `plain_p0`, `no_confl`, `swerved`, `eod_flat` tags | recorded on every trade (`tags`); `min_r` makes the R tag a gate (off) |
@@ -168,6 +168,27 @@ Where the engine differs because it is live, or because the report cannot be cop
 * Not applied (review tags in the report, nothing trades on them): volume spike, H1 bias, trap variants, H1 spike
   confluence, ATR boundary, `fading_bias`; the opposite-zigzag target is off by default in the report too.
 * Fill latency and queue position are not modelled beyond the report's peg model.
+
+## Range merge and fade 2 off (user, 2026-10-16)
+
+* **Merge** (`Params.box_merge_overlap` 0.5, `box_merge_tol` 2, `h1_window` 600; 0 = off): M5 boxes overlapping by >= 50% of
+  the smaller box inside one known, unbroken H1 range box share their seats (one trade per merged range, direction, playbook).
+  The H1 range boxes are `find_range_box_zz` over the closed H1 bars (M5 as lower data), re-read whenever an H1 bar closes;
+  `seed_h1` gives it history from before the stream. `range_merge` events and `Engine.merge_links` list every link.
+* **Fade 2 off** (`Params.fade2` False): a box's second-side breakout (the other edge broke out strongly first) is not
+  qualified for the fade playbook; only fade 1 is traded. `replay.py --fade2` turns it back on.
+* Oct 16 2026 with defaults: fade trades 20:51 (-1.00R) and 06:35:55 (+0.25R) only (plus the go-with at 04:01, not fade);
+  the 06:38:45 and 09:02:32 PT trades are fade 2. With `--fade2` the merge alone drops 06:38:45.
+
+## Production data limit: 1 second, not per tick (user, 2026-10-16)
+
+In production the algo is fed once per second, so the engine decides on a 1 s clock (`Params.decision_s`, replay flag
+`--decision-s`, 0 = every record, the old behaviour): on the first record of each new second `Engine._decide` works from
+the snapshot of what came before it (last price and quotes): RR-floor exit, peg re-quotes of orders that were touched
+without filling, then pull / place orders. Fills of resting orders, stop / target hits and bar building stay per
+record (the exchange, not the algo). Oct 16 2026 replay: same 5 trades either way, but order arm / cancel churn falls
+from 768 / 763 to 74 / 69 events, and orders fill at their level instead of after a one-step chase. Do not add logic that
+depends on tick-level reaction.
 
 ## Run
 

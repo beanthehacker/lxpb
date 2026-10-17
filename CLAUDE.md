@@ -65,21 +65,17 @@ not stand in for the data.
 
 ```bash
 cd /home/user/lxpb/lxpb-v2
-python3 scid_only/run_scid_only.py ss_m1_confl/render_m1_confl_report.py \
-    --since-day 2026-09-01 --until-day 2026-09-30 --warmup-days 5 --bar-minutes 1 \
-    --playbook fade --range-lookback-days 60 --label "Sep 2026, whole month" \
-    --workers 1 --output /path/in/the/scratchpad/sep.html
+python3 scid_only/run_scid_only.py ss_m1_confl/render_m1_confl_report.py     --since-day 2026-09-01 --until-day 2026-09-30 --warmup-days 5 --bar-minutes 1     --label "Sep 2026, whole month" --output /path/in/the/scratchpad/sep.html
 ```
 
-- Serial only (`--workers 1`): spawned workers would skip the runner's patches.
-  `--range-procs N` (forked, default 4) is fine.
+- The M1 fade report is ENGINE ONLY since 2026-10-16 (`lxpb-v2/CLAUDE.md`, "The M1 fade report is ENGINE ONLY"): it replays the
+  ticks through `live_range` and lists the engine's fade trades. The flags of the old pipeline (`--workers`, `--playbook`,
+  `--range-lookback-days`, `--range-procs` ...) are accepted and ignored; there is no worker pool any more.
 - Output to the scratchpad unless the user asked for a regen (the repo's regen rule still holds).
-- **Memory: 4 CPUs, 16 GB, no swap.** One month of `render_m1_confl_report` grows to ~8 GB, so
-  never run two report processes at once; the second gets killed (exit 137). A month of the fade
-  report takes ~35-45 minutes, most of it reading the range boxes before each touch.
-- With `--since-day` earlier than about 2026-08-15, the default 60-day box lookback reaches before
-  the first tick file and the run stops with `AssertionError: file not found` (scidReader looking
-  for EPM26). Shorten `--range-lookback-days` so the lookback starts on or after 2026-06-14.
+- **Memory: 4 CPUs, 16 GB, no swap.** Do not run two report / replay processes at once. A month of the engine replay takes minutes,
+  not the 35-45 minutes of the old range-box reads.
+- The engine also seeds `--h1-days` (25) of H1 / M5 history before the window; with `--since-day` earlier than about 2026-07-10 that
+  reaches before the first tick file (2026-06-14) and the run stops with `AssertionError: file not found`: lower `--h1-days`.
 
 ## Pitfalls already paid for
 
@@ -92,6 +88,3 @@ python3 scid_only/run_scid_only.py ss_m1_confl/render_m1_confl_report.py \
 - **Never `np.searchsorted` the memory-mapped `.scid` `Time` field**: it copies the whole strided
   column (~500 MB) on every call. Use `render_labels_report._scid_first_at_or_after` (binary
   search on the memmap) or `_scid_window`.
-- `render_m1_confl_report._boxes_for_touches` forks a `multiprocessing` pool that pickles
-  `_boxes_of_one_touch` by module name. Code that execs the report into a namespace must register
-  that namespace in `sys.modules`, or the pool fails and the read silently falls back to serial.
