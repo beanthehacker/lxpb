@@ -1220,26 +1220,36 @@ def _mode_payload(res, mode):
     }
 
 
+ENGINE_TARGET_TEXT = {
+    "range_edge": "the edge of the faded range, the range LOW for a long (LHPB below the range), the range HIGH for a short "
+                  "(LLPB above it); the H1 box edges for a merged range (src range_edge)",
+    "zigzag": "the most recent confirmed zigzag trough (long) / crest (short) since the level's P1 (src swing_extreme)",
+    "opposite_zz": "the farthest standing opposite-type P0 formed after the most recent confirmed zigzag crest (long) / "
+                   "trough (short) since P1 (src opposite_zz)",
+}
+
+
 def _target_chips(engine_rule):
-    """The Target row of the filter panel: one live checkbox per target rule. Every trade carries each rule's own
-    bracket (the engine follows the same fill and stop with every rule's target, plain and managed, engine `_views`),
-    so ticking a rule swaps the row's target, outcome, R and the stats in place. The rule the engine traded with is
-    ticked on load. Both ticked: each row takes the FARTHER target. A row whose ticked rule has no target there shows
-    NO TARGET and leaves the stats."""
-    chips = [("range_edge", "range-edge", "Range edge (range low for a long, range high for a short)",
-              "The edge of the faded range: the range LOW for a long (LHPB below the range), the range HIGH for a short "
-              "(LLPB above it); the H1 box edges for a merged range; the nearest edge when several ranges are served."),
-             ("zigzag", "swing-extreme", "Last confirmed zigzag swing since P1",
-              "The most recent confirmed zigzag trough (long) / crest (short) formed since the entry level's own P1, at "
-              "the pivot's own price.")]
-    out = ['    <span class="filter-label" title="Live toggle: every trade carries each rule\'s own bracket (same fill and '
-           'stop), so ticking a rule swaps target, outcome, R and the stats in place. Both ticked: the farther target per '
-           'row. 0.25-50 pts from the fill.">Target</span>']
-    for rule, mode, label, title in chips:
+    """The "Target rules" row of the filter panel, as the old M1/M2 reports had it (same three rules, labels and
+    live behaviour): every trade ships each rule's own bracket (the engine follows the same fill and stop with every
+    rule's target, plain and managed, engine `_views`), so ticking / unticking a rule re-resolves the rows and the stats
+    in place. Several ticked: each row uses the rule with the FARTHER target. A row whose ticked rules have no target
+    becomes NO TARGET (dimmed, out of the stats). Ticked on load: the rule the engine traded with (--fade-target)."""
+    chips = [("opposite_zz", "opposite-zz", f"Opposite M{BAR_MIN} level, zigzag anchor (P1&hellip;fill)"),
+             ("zigzag", "swing-extreme", "Swing extreme: last zigzag trough/crest (P1&hellip;P2)"),
+             ("range_edge", "range-edge", "Range edge: faded box high (LLPB) / low (LHPB)")]
+    out = [r"""    <span class="filter-label" title="Which TARGET RULE(S) each trade exits on -- live, in the
+browser, with no Python regen. Every trade ships with EVERY rule's brackets and outcomes
+precomputed (the engine follows the same fill and stop under each rule), so unticking a rule
+re-resolves each row against whichever others are still on: a trade can become a NO TARGET row
+(dimmed, dropped from the stats) if the rule it was using was the only one that found a target.
+With several ticked, each trade uses whichever rule offers the FARTHER target. Untick all and no
+trade has a target at all. The trades themselves are the engine's, taken with its own rule
+(ticked on load); another rule only changes how the same trades would have ended.">Target rules</span>"""]
+    for rule, mode, label in chips:
         on = " checked" if rule == engine_rule else ""
-        tag = " (engine)" if rule == engine_rule else ""
-        out.append(f'    <label class="chip" title="{title}"><input type="checkbox" class="f-target-mode" '
-                   f'data-mode="{mode}"{on}>\n      {label}{tag}</label>')
+        out.append(f'    <label class="chip"><input type="checkbox" class="f-target-mode" data-mode="{mode}"{on}>\n'
+                   f'      {label}</label>')
     return "\n".join(out)
 
 
@@ -1590,7 +1600,7 @@ playbook. ENTRY: every live level is judged on its own (its own price beyond the
 searched for a better (more extreme) price that also qualifies on its own (src tag own / cluster); a level with a confirmed swing on
 it is skipped. STOP: one tick beyond the entry level's own spike
 candle (src p0_spike) or beyond the live thrust candle (thrust), widened to the last older P1 candle when closer than the minimum
-(wide_p1). TARGET: {'the most recent confirmed zigzag swing since the level' + chr(39) + 's P1 (src swing_extreme)' if args.fade_target == 'zigzag' else 'the edge of the faded range: the range LOW for a long (LHPB below the range), the range HIGH for a short (LLPB above it); the H1 box edges for a merged range (src range_edge)'}. A bracket below R
+(wide_p1). TARGET (the engine's, ticked on load; the Target rules checkboxes switch between all three): {ENGINE_TARGET_TEXT[args.fade_target]}. A bracket below R
 {args.min_r:g} is still taken and tagged r_below_min. The stop trails when a P0 group breaks out past it and an RR-floor exit closes a
 trade whose remaining reward / risk falls to 0.2 (both shown as MGMT); no position is carried past 12:44 PT (EOD FLAT); the 05:30 PT
 news-pull window and the 15:00-15:05 PT reopen are blackouts. There is no news-spike check. Win = a trade that made money.
@@ -1736,18 +1746,19 @@ both baseline and managed outcomes precomputed -- this checkbox swaps win rate /
 / total PnL above to the managed numbers instantly, no regen required. Rows where management
 actually changed the outcome carry an 'MGMT +-N.NNR' badge next to Outcome regardless of whether
 the box is checked.">Trade management</span>
-    <label class="chip"><input type="checkbox" id="mgmt-thrust-trail" checked>
+    <label class="chip"><input type="checkbox" id="mgmt-thrust-trail">
       Apply thrust-trail + RR-floor management</label>
   </div>
 </div>
 """
 
     target_col_title = (
-        "The engine's target: the most recent confirmed zigzag trough (long) / crest (short) formed since the "
-        "entry level's own P1, at the pivot's own price, 0.25-50 pts from the fill (src swing_extreme)"
-        if args.fade_target == "zigzag" else
-        "The engine's target: the edge of the faded range, the range low for a long (LHPB below the range), the range "
-        "high for a short (LLPB above it); the H1 box edges for a merged range; 0.25-50 pts from the fill (src range_edge)")
+        "Whichever target rule is ticked in the Target rules row above, and with several ticked "
+        f"the one offering the FARTHER target. opposite_zz: the farthest standing opposite M{BAR_MIN} P0 (highest for a "
+        "long, lowest for a short) formed after the most recent confirmed zigzag crest (long) / trough (short) since P1. "
+        "swing_extreme: the most recent confirmed zigzag trough (long) / crest (short) since P1, at its own price. "
+        "range_edge: the faded range's LOW for an LHPB long / HIGH for an LLPB short (H1 box edges for a merged range; "
+        "the nearest one when the trade fades several). Every rule 0.25-50 pts from the fill.")
     head = (f"<th class=\"left\">Trade Id</th>"
             f"<th class=\"left\" title=\"Every dynamic-filter tag this row carries, in one "
             f"place: globex_eth_open, swerved/swerve_blocked, "
@@ -2804,7 +2815,7 @@ if __name__ == "__main__":
                         help="points an M5 box edge may poke out of the H1 box (default %(default)g)")
     parser.add_argument("--h1-days", type=float, default=25.0,
                         help="days of H1 / M5 history before the window seeded for the H1 range boxes (default %(default)g)")
-    parser.add_argument("--fade-target", default="range_edge", choices=["range_edge", "zigzag"],
+    parser.add_argument("--fade-target", default="range_edge", choices=["range_edge", "zigzag", "opposite_zz"],
                         help="fade target: the faded range's edge (default; range low for a long, range high for a short) "
                              "or the old most recent zigzag pivot since the level's P1")
     parser.add_argument("--fade2", action="store_true",

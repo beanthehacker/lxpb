@@ -80,8 +80,9 @@ class Params:
     max_target: float = 50.0
     # Fade target (user, 2026-10-17): "range_edge" = the edge of the range the trade fades (a long on an LHPB below the
     # range takes the range LOW, a short on an LLPB above it the range HIGH; the merged range's H1 edges when merged, the
-    # nearest edge past the fill when several boxes are served); "zigzag" = the old most recent zigzag pivot since P1.
-    # Go-with trades keep the zigzag target.
+    # nearest edge past the fill when several boxes are served); "zigzag" = the most recent zigzag pivot since P1 (the
+    # reports' swing-extreme); "opposite_zz" = the farthest standing opposite-type P0 formed since the leg into the retest
+    # began (the reports' opposite-zz). See `_target`. Go-with trades keep the zigzag target.
     target_mode: str = "range_edge"
     news_window: tuple = (5 * 3600 + 29 * 60 + 55, 5 * 3600 + 30 * 60 + 40)   # PT seconds of day
     eod_flat: int = 12 * 3600 + 44 * 60       # PT: flatten at 12:44
@@ -1024,34 +1025,63 @@ class Engine:
         return plan
 
     def _target(self, o, fill, t, mode=None):
-        """(target price, meta) for a fill at `fill`, or "no_target". `mode` (default Params.target_mode): "range_edge" =
-        the faded range's edge (only when `o["boxes"]` holds fade seats; go-with falls back to the zigzag), "zigzag" = the
-        most recent confirmed zigzag pivot since the level's P1. 0.25-50 pt from the fill."""
+        """(target price, meta) for a fill at `fill`, or "no_target"; every rule 0.25-50 pt from the fill on the favourable
+        side (min_target / max_target). `mode` (default Params.target_mode), the old M1/M2 reports' three target rules:
+
+        - "range_edge": the faded range's edge, the range LOW for a long (LHPB below it), the range HIGH for a short (LLPB
+          above it); the merged range's H1 edges; with several ranges the nearest edge inside the band (old report
+          `_range_edge_target`). Needs fade seats in `o["boxes"]`; without any (go-with) the zigzag rule is used.
+        - "zigzag" (report "swing-extreme"): the most recent confirmed zigzag trough (long) / crest (short) since the
+          level's P1, at its own price; only that one pivot is tried (old `_swing_extreme_target`).
+        - "opposite_zz" (report "opposite-zz"): the most recent confirmed zigzag crest (long) / trough (short) since P1,
+          where the leg into the retest began; then, of the opposite-type trading-bar P0s still standing (live, or an
+          untracked plain-P0 untouched since its breakout: `live_for_stops`) formed at or after that pivot, the FARTHEST
+          one inside the band (highest for a long, lowest for a short; ties: earliest formed) (old
+          `_opposite_m5_zz_target`)."""
         lv, is_long = o["level"], o["type"] == "LHPB"
-        edges = self._fade_edges(o.get("boxes")) if (mode or self.p.target_mode) == "range_edge" else []
+        mode = mode or self.p.target_mode
+        lo_b, hi_b = self.p.min_target, self.p.max_target
+        p1 = pd.Timestamp(lv["breakout_time"]).value
+        cutoff = self._tb_floor(t)
+        edges = self._fade_edges(o.get("boxes")) if mode == "range_edge" else []
         if edges:
-            # target: the edge of the faded range (long: the range low above the fill; short: the range high below it),
-            # the nearest one when several ranges are served
-            cand = [(lo, st, n) for lo, hi, st, n in edges if lo > fill] if is_long else \
-                   [(hi, st, n) for lo, hi, st, n in edges if hi < fill]
+            cand = []
+            for lo, hi, st, n in edges:
+                px = lo if is_long else hi
+                dist = (px - fill) if is_long else (fill - px)
+                if lo_b <= dist <= hi_b:
+                    cand.append((dist, px, lo, hi, st))
             if not cand:
                 return "no_target"
-            pp, pt, n = min(cand) if is_long else max(cand)
-            meta = {"target_src": "range_edge", "edge": "low" if is_long else "high", "pivot_time": pt, "pivot_price": pp,
-                    "box_low": next(lo for lo, hi, st, _ in edges if (lo if is_long else hi) == pp),
-                    "box_high": next(hi for lo, hi, st, _ in edges if (lo if is_long else hi) == pp),
-                    "n_boxes": len(edges)}
-        else:
-            # target: the most recent confirmed zigzag pivot since the entry level's P1
-            p1 = pd.Timestamp(lv["breakout_time"]).value
-            pt, pp = self.zz.most_recent("trough" if is_long else "crest", self._tb_floor(t), after=p1)
+            _, pp, blo, bhi, pt = min(cand, key=lambda c: c[0])
+            return pp, {"target_src": "range_edge", "edge": "low" if is_long else "high", "pivot_time": pt,
+                        "pivot_price": pp, "box_low": blo, "box_high": bhi, "n_boxes": len(edges)}
+        if mode == "opposite_zz":
+            pt, pv = self.zz.most_recent("crest" if is_long else "trough", cutoff, after=p1)
             if pt is None:
                 return "no_target"
-            meta = {"target_src": "zigzag", "pivot_time": pt, "pivot_price": pp, "pivot_kind": "trough" if is_long else "crest"}
-        dist = (pp - fill) if is_long else (fill - pp)
-        if not (self.p.min_target <= dist <= self.p.max_target):
+            opp = "LLPB" if is_long else "LHPB"
+            cand = []
+            for x in self.lv.live_for_stops(opp):
+                ft = pd.Timestamp(x["formation_time"]).value
+                if ft < pt:
+                    continue
+                dist = (x["price"] - fill) if is_long else (fill - x["price"])
+                if lo_b <= dist <= hi_b:
+                    cand.append((-dist, ft, x))
+            if not cand:
+                return "no_target"
+            _, _, best = min(cand, key=lambda c: (c[0], c[1]))
+            return float(best["price"]), {"target_src": "opposite_zz", "pivot_time": pt, "pivot_price": pv,
+                                          "level": dict(best)}
+        # zigzag (swing extreme)
+        pt, pp = self.zz.most_recent("trough" if is_long else "crest", cutoff, after=p1)
+        if pt is None:
             return "no_target"
-        return pp, meta
+        dist = (pp - fill) if is_long else (fill - pp)
+        if not (lo_b <= dist <= hi_b):
+            return "no_target"
+        return pp, {"target_src": "zigzag", "pivot_time": pt, "pivot_price": pp, "pivot_kind": "trough" if is_long else "crest"}
 
     def _fade_edges(self, boxes):
         """[(low, high, start ns, box id)] of the ranges a plan fades: the merged range's H1 edges, else the M5 box's own
@@ -1159,7 +1189,7 @@ class Engine:
                 self._cancel(other, t, "margin: position open")
 
     # ------------------------------------------------------------------ what-if brackets (for the report only)
-    TARGET_RULES = ("range_edge", "zigzag")
+    TARGET_RULES = ("range_edge", "zigzag", "opposite_zz")
 
     def _views(self, o, t, price, stop, target, meta, eod, serves):
         """The trade's what-if brackets, for the report's target-rule and management toggles: for every target rule, the

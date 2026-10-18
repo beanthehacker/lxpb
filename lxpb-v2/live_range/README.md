@@ -119,7 +119,9 @@ Stop: P0 candle of a spike level, else the thrust candle of the live same-type l
 3 pt (older P1) if tighter. Target (fade, user 2026-10-17, `target_mode="range_edge"`): the faded range's edge,
 the range low for a long (LHPB below it), the range high for a short (LLPB above it), H1 edges for a merged range,
 0.25-50 pt away. `--fade-target zigzag` (and every go-with trade): swing-extreme, the latest confirmed zigzag pivot
-since the level's breakout. Exits tick by tick; flat at 12:44 PT.
+since the level's breakout. `--fade-target opposite_zz`: the farthest standing opposite-type P0 formed since the
+leg into the retest began (the old reports' opposite-zz). Every fill also gets what-if brackets under all three
+rules, plain and managed (`_views`, report only), for the M1 report's live Target rules / management toggles. Exits tick by tick; flat at 12:44 PT.
 
 **Trade management** (`Params.manage`, `--no-manage` to switch off), the reports' two rules, run on the
 trading-bar ledger and bars (the reports run `trade_management` on the M1/M2 ledger):

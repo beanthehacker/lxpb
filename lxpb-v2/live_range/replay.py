@@ -119,7 +119,7 @@ def main():
     ap.add_argument("--h1-days", type=float, default=25.0, help="days of H1 / M5 history before the stream seeded for the H1 boxes")
     ap.add_argument("--fade2", action="store_true",
                     help="also trade fade 2 (a box's second-side breakout); OFF by default, only fade 1 is traded")
-    ap.add_argument("--fade-target", default="range_edge", choices=["range_edge", "zigzag"],
+    ap.add_argument("--fade-target", default="range_edge", choices=["range_edge", "zigzag", "opposite_zz"],
                     help="fade target: the faded range's edge (default) or the most recent zigzag pivot since P1")
     a = ap.parse_args()
     lo = pd.Timestamp(a.lo, tz="UTC")

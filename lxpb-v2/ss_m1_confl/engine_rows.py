@@ -14,7 +14,7 @@ import range_box_tags as RB
 
 # engine target rule -> the page's target-rule checkbox (data-mode). Every trade carries each rule's what-if bracket
 # (engine `_views`: same fill and stop, that rule's target, plain and managed), so the page swaps them live.
-RULE_MODES = {"range_edge": "range-edge", "zigzag": "swing-extreme"}
+RULE_MODES = {"range_edge": "range-edge", "zigzag": "swing-extreme", "opposite_zz": "opposite-zz"}
 DEFAULT_MODE = "range-edge"
 
 
@@ -112,6 +112,11 @@ def _mode(tr, base, man, is_long, stop_pts, min_r):
     if meta.get("target_src") == "range_edge":       # the faded range's edge
         target_info.update(src="range_edge", edge=meta["edge"], box_low=float(meta["box_low"]),
                            box_high=float(meta["box_high"]), boxes=int(meta["n_boxes"]))
+    elif meta.get("target_src") == "opposite_zz":    # the farthest standing opposite-type P0 since the leg's start
+        lvl = dict(meta["level"])
+        lvl["formation_time"] = pd.Timestamp(lvl["formation_time"])
+        target_info = {"src": "opposite_zz", "level": lvl, "pivot_time": target_info["pivot_time"],
+                       "pivot_price": float(meta["pivot_price"])}
     tgt_pts = abs(base["target"] - tr["price"])
     r_planned = tgt_pts / stop_pts
     tags = []
