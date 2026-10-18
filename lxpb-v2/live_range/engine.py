@@ -199,6 +199,8 @@ class Engine:
         self._bo_cache = {}                  # (breakout ns, is_long) -> strong-breakout verdict of the level's P1
         self._pending = 0                    # working orders with a re-quote not yet seen by the next record
         self._rr_close = None                # M5 close awaiting the RR-floor check on the next tick
+        self.shadows = []                    # what-if brackets of the filled trades (every target rule, managed or not)
+        self._rr_shadow = None               # trading-bar close awaiting the shadows' RR-floor check
         self._live_keys = set()
         self._bo_sec, self._bo_val = -1, None
         self._last_sec = -1
@@ -276,8 +278,12 @@ class Engine:
                     tr["dd"] = tr["mfe"] - d
         if self.open and (px <= self._lo_t or px >= self._hi_t or t >= self._next_exit):
             self._check_exits(t, px)
+        if self.shadows:
+            self._shadow_tick(t, px)
         if not self._dec_ns and self._rr_close is not None:
             self._rr_floor(t, px, bid, ask)
+        if not self._dec_ns and self._rr_shadow is not None:
+            self._shadow_rr(t, px, bid, ask)
         if self._pending or (px >= self._sell_min or px <= self._buy_max if bid is None
                              else (ask >= self._sell_min or bid <= self._buy_max)):
             self._check_orders(t, px, bid, ask, side)
@@ -289,6 +295,8 @@ class Engine:
         exit, the peg re-quotes of orders that were touched without filling, then pull / place orders."""
         if self._rr_close is not None:
             self._rr_floor(t, px, bid, ask)
+        if self._rr_shadow is not None:
+            self._shadow_rr(t, px, bid, ask)
         for o in list(self.orders.values()):
             if o.pop("requote_due", False) and o["id"] in self.orders and (
                     bid is None or (bid <= o["price"] <= ask)) and o["price"] != o["worst"]:
@@ -334,6 +342,8 @@ class Engine:
             self.log("level_" + kind, t, level=level_key(lv)[:2], price=lv["price"], type=lv["type"])
         if self.open and self.p.manage:
             self._manage_tb(tt, g[4])
+        if self.shadows:
+            self._shadow_manage(tt, g[4])
         self._rebuild_entries(t)
 
     def _close_m5(self, h, t):
@@ -1005,7 +1015,20 @@ class Engine:
             wide = self._wider_stop(typ, fill, t)
             if wide is not None:
                 stop, src = wide, "wide_p1"
-        edges = self._fade_edges(o.get("boxes")) if self.p.target_mode == "range_edge" else []
+        tg = self._target(o, fill, t)
+        if isinstance(tg, str):
+            return tg
+        pp, meta = tg
+        plan = Plan((stop, pp, src))
+        plan.meta = {"stop_level": stop_level, **meta}
+        return plan
+
+    def _target(self, o, fill, t, mode=None):
+        """(target price, meta) for a fill at `fill`, or "no_target". `mode` (default Params.target_mode): "range_edge" =
+        the faded range's edge (only when `o["boxes"]` holds fade seats; go-with falls back to the zigzag), "zigzag" = the
+        most recent confirmed zigzag pivot since the level's P1. 0.25-50 pt from the fill."""
+        lv, is_long = o["level"], o["type"] == "LHPB"
+        edges = self._fade_edges(o.get("boxes")) if (mode or self.p.target_mode) == "range_edge" else []
         if edges:
             # target: the edge of the faded range (long: the range low above the fill; short: the range high below it),
             # the nearest one when several ranges are served
@@ -1028,9 +1051,7 @@ class Engine:
         dist = (pp - fill) if is_long else (fill - pp)
         if not (self.p.min_target <= dist <= self.p.max_target):
             return "no_target"
-        plan = Plan((stop, pp, src))
-        plan.meta = {"stop_level": stop_level, **meta}
-        return plan
+        return pp, meta
 
     def _fade_edges(self, boxes):
         """[(low, high, start ns, box id)] of the ranges a plan fades: the merged range's H1 edges, else the M5 box's own
@@ -1119,6 +1140,8 @@ class Engine:
         if not self.p.globex_block and self.p.globex_open[0] <= sod < self.p.globex_open[1]:
             tags.append("globex_eth_open")
         tr["tags"] = tags
+        tr["target_rule"] = self.p.target_mode
+        tr["views"] = self._views(o, t, price, stop, target, meta, eod, serves)
         self.trades.append(tr)
         self.open.append(tr)
         for s in serves:
@@ -1134,6 +1157,88 @@ class Engine:
         if len(self.open) >= self.p.max_open_positions:
             for other in list(self.orders.values()):
                 self._cancel(other, t, "margin: position open")
+
+    # ------------------------------------------------------------------ what-if brackets (for the report only)
+    TARGET_RULES = ("range_edge", "zigzag")
+
+    def _views(self, o, t, price, stop, target, meta, eod, serves):
+        """The trade's what-if brackets, for the report's target-rule and management toggles: for every target rule, the
+        same fill and stop with that rule's target, followed tick by tick plain (stop / target / end-of-day flat) and
+        managed (plus the stop trail and the RR floor, as a real position). They never place, pull or fill an order, take
+        a seat or a slot: nothing the engine decides reads them. {(rule, managed): view}; a rule with no target at this
+        fill is left out."""
+        fade = {(b, d) for b, d, pb in serves if pb == "fade"}
+        of = {**o, "boxes": {k: v for k, v in (o.get("boxes") or {}).items() if k in fade}}
+        out = {}
+        for rule in self.TARGET_RULES:
+            if rule == self.p.target_mode:
+                tg = (target, meta or {})
+            else:
+                tg = self._target(of, price, t, rule)
+                if isinstance(tg, str):
+                    continue
+            for managed in (False, True):
+                v = {"rule": rule, "managed": managed, "side": o["side"], "type": o["type"], "price": price,
+                     "stop": stop, "target": tg[0], "meta": tg[1], "stop_pts": abs(stop - price), "eod": eod,
+                     "trails": 0, "trail_log": [], "exit": None, "mfe": 0.0, "mae": 0.0, "dd": 0.0}
+                out[(rule, managed)] = v
+                self.shadows.append(v)
+        return out
+
+    def _shadow_tick(self, t, px):
+        for v in list(self.shadows):
+            long = v["side"] == "buy"
+            d = (px - v["price"]) if long else (v["price"] - px)
+            if d > v["mfe"]:
+                v["mfe"] = d
+            elif -d > v["mae"]:
+                v["mae"] = -d
+            if v["mfe"] - d > v["dd"]:
+                v["dd"] = v["mfe"] - d
+            if (px <= v["stop"]) if long else (px >= v["stop"]):
+                self._shadow_exit(v, t, v["stop"], "stop")
+            elif (px >= v["target"]) if long else (px <= v["target"]):
+                self._shadow_exit(v, t, v["target"], "target")
+            elif t >= v["eod"]:
+                self._shadow_exit(v, t, px, "eod_flat")
+
+    def _shadow_exit(self, v, t, price, why):
+        v["exit"] = {"t": t, "price": price, "why": why}
+        v["pnl"] = (price - v["price"]) if v["side"] == "buy" else (v["price"] - price)
+        v["r"] = v["pnl"] / v["stop_pts"]
+        self.shadows.remove(v)
+
+    def _shadow_manage(self, tt, close):
+        """`_manage_tb` for the managed what-if brackets."""
+        p = self.p
+        grp_all = self.lv.broke_by_bar.get(tt, ())
+        ids = set()
+        for v in self.shadows:
+            if not v["managed"]:
+                continue
+            ids.add(id(v))
+            long = v["side"] == "buy"
+            grp = [x for x in grp_all if x["type"] == v["type"]]
+            if not grp or len(grp) < self._trail_need(grp, v["type"]):
+                continue
+            new = grp[0]["breakout_low"] - p.tick if long else grp[0]["breakout_high"] + p.tick
+            if (new - v["stop"]) * (1 if long else -1) > 0:
+                v["trail_log"].append((tt + self.tb_ns, new))
+                v["stop"] = new
+                v["trails"] += 1
+        self._rr_shadow = (close, ids) if ids else None
+
+    def _shadow_rr(self, t, px, bid, ask):
+        close, ids = self._rr_shadow
+        self._rr_shadow = None
+        for v in list(self.shadows):
+            if id(v) not in ids:
+                continue
+            sgn = 1 if v["side"] == "buy" else -1
+            reward, risk = sgn * (v["target"] - close), sgn * (close - v["stop"])
+            if risk > 0 and reward / risk <= self.p.rr_floor:
+                quote = (bid if sgn > 0 else ask)
+                self._shadow_exit(v, t, px if quote is None else quote, "rr_floor")
 
     def _manage_tb(self, tt, close):
         """A trading bar closed with trades open: rule 1 (stop trail) now, rule 2 (RR floor) on the next tick.

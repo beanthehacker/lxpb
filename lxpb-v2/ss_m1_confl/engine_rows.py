@@ -12,7 +12,10 @@ import pandas as pd
 
 import range_box_tags as RB
 
-TARGET_RULE = "swing-extreme"      # the engine's only target rule: the last confirmed zigzag swing since the level's P1
+# engine target rule -> the page's target-rule checkbox (data-mode). Every trade carries each rule's what-if bracket
+# (engine `_views`: same fill and stop, that rule's target, plain and managed), so the page swaps them live.
+RULE_MODES = {"range_edge": "range-edge", "zigzag": "swing-extreme"}
+DEFAULT_MODE = "range-edge"
 
 
 def _ts(ns):
@@ -84,6 +87,42 @@ def _outcome(tr):
     return ex["why"]            # eod_flat, rr_floor
 
 
+def _resolved(tr, v):
+    ex = v["exit"]
+    return {"outcome": _outcome(v), "exit_time": _ts(ex["t"]) if ex else None,
+            "exit_price": float(ex["price"]) if ex else None, "r": v.get("r") if ex else None,
+            "touch_time": _ts(tr["t"]), "favorable_pts": v["mfe"], "adverse_pts": v["mae"], "giveback_pts": v["dd"],
+            "entry_gapped": False}
+
+
+def _mode(tr, base, man, is_long, stop_pts, min_r):
+    """One target rule's row data: `base` the plain bracket (stop / target / end-of-day flat), `man` the managed one (stop
+    trail + RR floor), both followed by the engine from the same fill and stop."""
+    resolved, mres = _resolved(tr, base), _resolved(tr, man)
+    trail_events = [(_ts(t), float(px)) for t, px in man["trail_log"]]
+    rr_floor = bool(man["exit"] and man["exit"]["why"] == "rr_floor")
+    mgmt = {"r": mres["r"], "outcome": mres["outcome"], "exit_time": mres["exit_time"],
+            "pnl_pts": (mres["r"] * stop_pts) if mres["r"] is not None else None, "fired": bool(trail_events or rr_floor),
+            "trail_events": trail_events, "rr_floor_fired": rr_floor}
+    meta = base.get("meta") or base.get("plan_meta") or {}
+    pv_t = meta.get("pivot_time")
+    target_info = {"src": "swing_extreme", "pivot_kind": meta.get("pivot_kind", "trough" if is_long else "crest"),
+                   "pivot_price": float(meta.get("pivot_price", base["target"])),
+                   "pivot_time": _ts(pv_t) if pv_t is not None else _ts(tr["t"])}
+    if meta.get("target_src") == "range_edge":       # the faded range's edge
+        target_info.update(src="range_edge", edge=meta["edge"], box_low=float(meta["box_low"]),
+                           box_high=float(meta["box_high"]), boxes=int(meta["n_boxes"]))
+    tgt_pts = abs(base["target"] - tr["price"])
+    r_planned = tgt_pts / stop_pts
+    tags = []
+    if r_planned < min_r:
+        tags.append("r_below_min")
+    if base["exit"] and base["exit"]["why"] == "eod_flat":
+        tags.append("eod_flat")
+    return {"target_price": float(base["target"]), "target_pts": tgt_pts, "target_info": target_info,
+            "r_multiple": r_planned, "resolved": resolved, "mgmt": mgmt, "dyn_tags": tags}
+
+
 def _result(tr, led, min_r):
     is_long = tr["side"] == "buy"
     lvl, anc = tr["level"], tr["decided"]       # anc: the level that qualified on its own; lvl: the entry (a better cluster price or the same level)
@@ -94,35 +133,22 @@ def _result(tr, led, min_r):
     same = lv_key(lvl) == lv_key(anc)
     sw = tr.get("swerve")
     source = "own" if same else "cluster"
-    ex = tr["exit"]
+    stop_pts = tr["stop_pts"]
+    modes = {}
+    for rule, page_mode in RULE_MODES.items():
+        base, man = (tr.get("views") or {}).get((rule, False)), (tr.get("views") or {}).get((rule, True))
+        if base is None or man is None:
+            continue                    # no target under this rule at the fill: the page shows NO TARGET when only it is ticked
+        modes[page_mode] = _mode(tr, base, man, is_long, stop_pts, min_r)
+    if not modes:                       # an engine without what-if brackets: the trade as the engine managed it
+        modes[DEFAULT_MODE] = _mode(tr, tr, tr, is_long, stop_pts, min_r)
+    active = RULE_MODES.get(tr.get("target_rule"), DEFAULT_MODE)
+    active = active if active in modes else next(iter(modes))
+    mode = modes[active]
+    tgt_pts, r_planned, target_info = mode["target_pts"], mode["r_multiple"], mode["target_info"]
+    resolved, mgmt = mode["resolved"], mode["mgmt"]
+    fav, adv, dd = resolved["favorable_pts"], resolved["adverse_pts"], resolved["giveback_pts"]
     meta = tr.get("plan_meta") or {}
-    stop_pts, tgt_pts = tr["stop_pts"], tr["target_pts"]
-    r_planned = tr["r_planned"]
-    r = tr.get("r") if ex else None
-    fav, adv, dd = tr["mfe"], tr["mae"], tr["dd"]
-    resolved = {"outcome": _outcome(tr), "exit_time": _ts(ex["t"]) if ex else None,
-                "exit_price": float(ex["price"]) if ex else None, "r": r,
-                "touch_time": _ts(tr["t"]), "favorable_pts": fav, "adverse_pts": adv, "giveback_pts": dd,
-                "entry_gapped": False}
-    trail_events = [(_ts(t), float(px)) for t, px in tr["trail_log"]]
-    rr_floor = bool(ex and ex["why"] == "rr_floor")
-    mgmt = {"r": r, "outcome": resolved["outcome"], "exit_time": resolved["exit_time"],
-            "pnl_pts": (r * stop_pts) if r is not None else None, "fired": bool(trail_events or rr_floor),
-            "trail_events": trail_events, "rr_floor_fired": rr_floor}
-    pv_t = meta.get("pivot_time")
-    target_info = {"src": "swing_extreme", "pivot_kind": meta.get("pivot_kind", "trough" if is_long else "crest"),
-                   "pivot_price": float(meta.get("pivot_price", tr["target"])),
-                   "pivot_time": _ts(pv_t) if pv_t is not None else _ts(tr["t"])}
-    if meta.get("target_src") == "range_edge":       # the faded range's edge (engine Params.target_mode)
-        target_info.update(src="range_edge", edge=meta["edge"], box_low=float(meta["box_low"]),
-                           box_high=float(meta["box_high"]), boxes=int(meta["n_boxes"]))
-    mode_tags = []
-    if r_planned < min_r:
-        mode_tags.append("r_below_min")
-    if ex and ex["why"] == "eod_flat":
-        mode_tags.append("eod_flat")
-    mode = {"target_price": float(tr["target"]), "target_pts": tgt_pts, "target_info": target_info,
-            "r_multiple": r_planned, "resolved": resolved, "mgmt": mgmt, "dyn_tags": mode_tags}
     boxes = [_box_view(b) for b in tr["box_info"]]
     nos = {b["fade_no"] for b in boxes}
     fade_no = 2 if nos == {2} else (1 if nos == {1} else 0)
@@ -154,7 +180,7 @@ def _result(tr, led, min_r):
         "entry_is_spike": bool(lvl.get("is_spike")), "run_in_start": None,
         "stop_price": initial_stop, "stop_pts": stop_pts, "stop_source": tr["stop_src"],
         "stop_m5_level": led.dict(stop_level) if stop_level is not None else None,
-        "modes": {TARGET_RULE: mode}, "active_mode": TARGET_RULE,
+        "modes": modes, "active_mode": active,
         "range_box": {"from": boxes, "into": []}, "fade_no": fade_no,
         "armed_t": _ts(tr["armed_t"]) if tr.get("armed_t") is not None else None,
         "engine_trade": tr["id"],

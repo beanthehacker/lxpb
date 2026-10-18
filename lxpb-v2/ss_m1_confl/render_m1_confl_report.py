@@ -1220,6 +1220,29 @@ def _mode_payload(res, mode):
     }
 
 
+def _target_chips(engine_rule):
+    """The Target row of the filter panel: one live checkbox per target rule. Every trade carries each rule's own
+    bracket (the engine follows the same fill and stop with every rule's target, plain and managed, engine `_views`),
+    so ticking a rule swaps the row's target, outcome, R and the stats in place. The rule the engine traded with is
+    ticked on load. Both ticked: each row takes the FARTHER target. A row whose ticked rule has no target there shows
+    NO TARGET and leaves the stats."""
+    chips = [("range_edge", "range-edge", "Range edge (range low for a long, range high for a short)",
+              "The edge of the faded range: the range LOW for a long (LHPB below the range), the range HIGH for a short "
+              "(LLPB above it); the H1 box edges for a merged range; the nearest edge when several ranges are served."),
+             ("zigzag", "swing-extreme", "Last confirmed zigzag swing since P1",
+              "The most recent confirmed zigzag trough (long) / crest (short) formed since the entry level's own P1, at "
+              "the pivot's own price.")]
+    out = ['    <span class="filter-label" title="Live toggle: every trade carries each rule\'s own bracket (same fill and '
+           'stop), so ticking a rule swaps target, outcome, R and the stats in place. Both ticked: the farther target per '
+           'row. 0.25-50 pts from the fill.">Target</span>']
+    for rule, mode, label, title in chips:
+        on = " checked" if rule == engine_rule else ""
+        tag = " (engine)" if rule == engine_rule else ""
+        out.append(f'    <label class="chip" title="{title}"><input type="checkbox" class="f-target-mode" '
+                   f'data-mode="{mode}"{on}>\n      {label}{tag}</label>')
+    return "\n".join(out)
+
+
 def _attr_json(obj):
     """`obj` as JSON safe to sit inside a double-quoted HTML attribute."""
     return (json.dumps(obj).replace("&", "&amp;").replace("<", "&lt;")
@@ -1701,9 +1724,7 @@ other row -- overrides every Exclude box. Click again to turn off.">
 __P0_KIND_CHIPS__
   </div>
   <div class="filter-row">
-    <span class="filter-label" title="The engine has one target rule: the most recent confirmed zigzag swing since the entry level's own P1 (the pivot's own price), 0.25-50 pts from the fill.">Target</span>
-    <label class="chip"><input type="checkbox" class="f-target-mode" data-mode="swing-extreme" checked disabled>
-      Engine target: last confirmed zigzag swing since P1 (always on)</label>
+__TARGET_CHIPS__
   </div>
   <div class="filter-row">
     <span class="filter-label" title="Live, in-browser toggle for the plug-n-play trade-management
@@ -1715,7 +1736,7 @@ both baseline and managed outcomes precomputed -- this checkbox swaps win rate /
 / total PnL above to the managed numbers instantly, no regen required. Rows where management
 actually changed the outcome carry an 'MGMT +-N.NNR' badge next to Outcome regardless of whether
 the box is checked.">Trade management</span>
-    <label class="chip"><input type="checkbox" id="mgmt-thrust-trail">
+    <label class="chip"><input type="checkbox" id="mgmt-thrust-trail" checked>
       Apply thrust-trail + RR-floor management</label>
   </div>
 </div>
@@ -1807,7 +1828,7 @@ boxes are the only higher timeframes in this report. Only the fade playbook is s
 {SR.tab_bar_html([("trades", "Trades"), ("pctile", "Excursion percentiles")])}
 <div class="tab-panel" id="tab-trades">
 {summary_html}
-{filter_panel.replace("__P0_KIND_CHIPS__", p0_kind_chips)}
+{filter_panel.replace("__P0_KIND_CHIPS__", p0_kind_chips).replace("__TARGET_CHIPS__", _target_chips(args.fade_target))}
 {stats_bar_html}
 <div class="table-wrap"><table id="lvl-table">
 <thead><tr>{head}</tr></thead>

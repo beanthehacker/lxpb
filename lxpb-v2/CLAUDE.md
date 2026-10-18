@@ -165,9 +165,15 @@ live engine (`live_range/`, see the sections above). The report replays the wind
 `ss_m1_confl/engine_rows.py` turns each FILLED fade trade (go-with dropped) into the row dict the page and charts read; the M1
 ledger (`LC.m5_levels`, swapped to M1 behind the shared "m5" calls) is only a lookup for the chart code. Consequences:
 
-- One outcome per trade, as the engine managed it (target, stop, trailed stop, RR-floor, end-of-day flat). There are no
-  target-rule or management toggles, no unfilled / NO TRADE rows, no go-with playbook, no news-spike badge. A WIN is a trade that
-  made money (`r > 0`), whatever ended it. The page keeps one disabled "engine target" checkbox so its script has a rule to read.
+- Live target-rule and management toggles (user, 2026-10-17, like the M2 report): at every fill the engine also follows WHAT-IF
+  brackets (`Engine._views`, report only, never read by a decision): the same fill and stop with each target rule's target
+  (`range_edge`, `zigzag`), plain (stop / target / EOD flat) and managed (stop trail + RR floor). `engine_rows` ships them as the
+  row's modes (`range-edge`, `swing-extreme`), so the Target checkboxes and the "Apply thrust-trail + RR-floor management" box
+  (ticked on load, the engine manages) swap targets, outcomes and stats in place; both rules ticked = the farther target per
+  row. The engine's own rule is ticked on load, and its managed bracket IS the real trade (checked identical, Sep 28-Oct 1).
+  The trade SET is the engine's (entries, seats and the one position slot follow the engine's own target); another rule only
+  changes how the same trades would have ended. No unfilled / NO TRADE rows, no go-with, no news-spike badge. A WIN is
+  `r > 0`, whatever ended it. The console's "N trades taken, win rate ..." line is the plain (unmanaged) bracket.
 - Flags: `--since-day --until-day --warmup-days --label --bar-minutes --output --min-r` plus `--decision-s`,
   `--box-merge-overlap`, `--box-merge-tol`, `--h1-days`, `--fade2`. Every flag of the deleted pipeline (`--ss-confl-min`,
   `--p0-kinds`, `--target-mode`, `--swerve*`, `--peg*`, `--workers`, `--playbook`, `--range-lookback-days`, `--news-*` ...) is in
