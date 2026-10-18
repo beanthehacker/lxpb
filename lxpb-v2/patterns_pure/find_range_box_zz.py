@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import pandas as pd
 
@@ -9,6 +11,8 @@ WIDEN_PCT = 20.0    # an edge may pass its starting edge by this % of the starti
 MERGE_TOL = 2.0     # two boxes whose BOTH edges are this close (points) are one range
 MIN_EDGE_TOUCHES = 2  # a broken box is kept only with this many pivots at EACH edge
 EDGE_TOL = 2.0        # a pivot is "at the edge" when within this many points of it
+MIN_RANGE_MINUTES = 30.0  # a broken box is kept only if it lasted this long before its break candle: 6 M5 candles
+                          # (user rule 2026-10-18); in bars of `data`, rounded up (H1: 1 bar, so no effect there)
 EXTEND_PTS = 1.0      # a pivot LESS than this far past the allowable edge still widens the box ...
 EXTEND_INSIDE_FULL = 0.75  # ... when its own candle has at least this share of its range inside the box, or
 EXTEND_INSIDE_HALF = 0.5   # at least this share AND closes inside the box (user rule 2026-10-16; repeatable, no cap)
@@ -44,6 +48,7 @@ def find_range_box_zz(data: pd.DataFrame,
                       strong_body: float = STRONG_BODY,
                       min_edge_touches: int = MIN_EDGE_TOUCHES,
                       edge_tol: float = EDGE_TOL,
+                      min_range_minutes: float = MIN_RANGE_MINUTES,
                       levels: pd.DataFrame = None) -> pd.DataFrame:
   """
   Range box built from ZigZag pivots (crests and troughs) instead of candles.
@@ -115,6 +120,17 @@ def find_range_box_zz(data: pd.DataFrame,
   are not frozen and are never filtered. `n_top_edge` / `n_bottom_edge` give the
   counts for every row; `min_edge_touches=0` keeps everything.
 
+  Length filter (user rule 2026-10-18). A broken box is also kept only if at least
+  `min_range_minutes` (30, i.e. 6 M5 candles) of `data` bars are part of it: the
+  bars from its first pivot's bar up to, not including, its break candle
+  (`break_time`), rounded up to whole bars of `data` (on H1 that is 1 bar, so it
+  never bites). `n_bars` gives the count for every row (to the last bar of `data`
+  while the box is open; open and merged boxes are not filtered);
+  `min_range_minutes=0` turns it off. The same count is applied to every episode
+  (strong breakout, see Retest): one that breaks out before the box has that many
+  bars before its breakout bar is dropped from `episodes` (the box was too young
+  then; `state` / `state_log` still record it). live_range/boxes.py mirrors both.
+
   Point in time: a pivot is known only at its confirming bar, so `end_time` is
   that bar, later than the pivot's own `break_pivot_time`; price may well have
   left the box before it. Every candidate is returned (broken, merged, open)
@@ -137,6 +153,8 @@ def find_range_box_zz(data: pd.DataFrame,
     n_pivots       pivots inside the box, the two starting ones included
     n_top_edge, n_bottom_edge   crests within edge_tol of the top edge / troughs
                    within edge_tol of the bottom edge (starting pivots included)
+    n_bars         bars of `data` from the start bar to the bar before the break
+                   candle (broken), or to the last bar of `data` (open / merged)
     merged_into    range_id of the box it merged into (merged only)
     break_dir      "up" / "down" (broken only)
     break_pivot_time, break_price   the pivot that broke it (broken only)
@@ -218,14 +236,16 @@ def find_range_box_zz(data: pd.DataFrame,
   """
   cols = ["range_id", "status", "start_time", "start_kind", "trough_time", "confirm_time",
           "last_time", "end_time", "high", "low", "height", "seed_high",
-          "seed_low", "seed_height", "n_pivots", "n_top_edge", "n_bottom_edge",
+          "seed_low", "seed_height", "n_pivots", "n_top_edge", "n_bottom_edge", "n_bars",
           "merged_into", "break_dir",
           "break_pivot_time", "break_price", "break_time", "breakout",
           "breakout_range_atr", "breakout_body", "failed_time", "retest_time", "state", "state_log",
           "episodes"]
   grader = None
+  tf_min = _spacing_minutes(data.index)
+  need_bars = math.ceil(min_range_minutes / tf_min - 1e-9) if tf_min and min_range_minutes > 0 else 0
   if lower_data is not None:
-    tf_min, lsp = _spacing_minutes(data.index), _spacing_minutes(lower_data.index)
+    lsp = _spacing_minutes(lower_data.index)
     if tf_min is None or lsp is None or not lsp < tf_min - 1e-9:
       raise ValueError(f"lower_data ({lsp} min bars) must be finer than data ({tf_min} min bars)")
     grader = _BreakoutGrader(lower_data, tf_min, atr_period, strong_range_atr, strong_body)
@@ -256,13 +276,17 @@ def find_range_box_zz(data: pd.DataFrame,
         if (O[m] > b["high"] or C[m] > b["high"]) if up else (O[m] < b["low"] or C[m] < b["low"]):
           k = m
           break
-      if grader is not None:
-        bo = grader.grade(idx[k], up, b["high"], b["low"])
+    n_bars = (k if broken else n) - b["start_i"]
+    if broken and n_bars < need_bars:
+      continue
+    if broken and grader is not None:
+      bo = grader.grade(idx[k], up, b["high"], b["low"])
     if b["status"] == "merged":
       state, log, failed_t, retest_t, episodes = "merged", [], pd.NaT, pd.NaT, []
     else:
       state, log, failed_t, retest_t, episodes = _read_states(
         b, idx, O, H, L, C, n, widen_pct, grader, levels, bo_grade=bo[0])
+      episodes = [e for e in episodes if idx.get_loc(e["breakout_time"]) - b["start_i"] >= need_bars]
     rows.append({
       "range_id": b["id"],
       "status": b["status"],
@@ -276,7 +300,7 @@ def find_range_box_zz(data: pd.DataFrame,
       "seed_high": b["seed_high"], "seed_low": b["seed_low"],
       "seed_height": b["seed_high"] - b["seed_low"],
       "n_pivots": b["n"],
-      "n_top_edge": n_top, "n_bottom_edge": n_bot,
+      "n_top_edge": n_top, "n_bottom_edge": n_bot, "n_bars": n_bars,
       "merged_into": b["merged_into"] if b["status"] == "merged" else np.nan,
       "break_dir": b["break_dir"] if broken else None,
       "break_pivot_time": idx[b["break_i"]] if broken else pd.NaT,

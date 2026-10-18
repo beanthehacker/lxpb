@@ -679,7 +679,7 @@ class Engine:
         hyp = self.box.forming(m5f[0] * M5_NS, m5f[1], max(m5f[2], price), min(m5f[3], price), price, self.lv5,
                                m1_partial=(m1f[0] * M1_NS, m1f[1], max(m1f[2], price), min(m1f[3], price), price),
                                store=False)
-        extra = [e for e in hyp if (e["box_id"], e["direction"]) not in have and self.box.is_range(e["box"])
+        extra = [e for e in hyp if (e["box_id"], e["direction"]) not in have and self.box.counts(e)
                  and self._box_seen(e)]
         return eps + extra if extra else eps
 

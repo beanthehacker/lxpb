@@ -14,7 +14,7 @@ Forming:   forming(...) reads the M5 bar still being built "as if it closed righ
 import bisect
 import math
 
-from find_range_box_zz import extends_box
+from find_range_box_zz import MIN_RANGE_MINUTES, extends_box
 from find_zigzag import ATR_MULT, ATR_PERIOD, MIN_BARS, ZigZag
 
 from .series import Series
@@ -225,8 +225,9 @@ class Reader:
 class BoxBook:
     def __init__(self, atr_mult=ATR_MULT, atr_period=ATR_PERIOD, widen_pct=WIDEN_PCT,
                  merge_tol=MERGE_TOL, min_edge_touches=MIN_EDGE_TOUCHES, edge_tol=EDGE_TOL,
-                 min_bars=MIN_BARS):
+                 min_bars=MIN_BARS, min_range_bars=math.ceil(MIN_RANGE_MINUTES / 5 - 1e-9)):
         self.widen_pct, self.merge_tol = widen_pct, merge_tol
+        self.min_range_bars = min_range_bars
         self.min_edge_touches, self.edge_tol = min_edge_touches, edge_tol
         self.atr_period = atr_period
         self.m5, self.m1 = Series(atr_period), Series(atr_period)
@@ -387,6 +388,16 @@ class BoxBook:
         t, u = self.touches(b)
         return t >= self.min_edge_touches and u >= self.min_edge_touches
 
+    def long_enough(self, e):
+        """The box had at least `min_range_bars` (6) M5 candles when this episode broke out (find_range_box_zz's length
+        filter, user rule 2026-10-18): the bars from the box's first pivot's bar up to, not including, the episode's
+        breakout bar (a forming bar is the bar after the last closed one)."""
+        return self.m5.left(e["breakout_time"]) - e["box"]["start_i"] >= self.min_range_bars
+
+    def counts(self, e):
+        """An episode (carrying its box) that may be traded: the box is a range and it was long enough."""
+        return self.is_range(e["box"]) and self.long_enough(e)
+
     def active_episodes(self, include_forming=True):
         """Episodes still waiting for their retest, on boxes that count as ranges, as dicts that
         carry the box: {'box': b, **episode}. Provisional ones come from the forming bar."""
@@ -395,10 +406,12 @@ class BoxBook:
             if r.box["status"] == "merged" or not self.is_range(r.box):
                 continue
             for e in r.active_episodes():
-                out.append({**e, "box": r.box})
+                e = {**e, "box": r.box}
+                if self.long_enough(e):
+                    out.append(e)
         if include_forming:
             for e in self._prov:
-                if self.is_range(e["box"]):
+                if self.counts(e):
                     out.append(e)
         return out
 

@@ -551,6 +551,13 @@ The rule, all of it in `find_zigzag.py`'s docstring:
   inside the box as it stood: >= 75% of its range inside, or >= 50% inside with the close inside. The next candle is not read. Written
   and wired into both the batch detector and the live book with NO test or replay run; `check_boxes.py` (live vs batch) not run yet.
   Every report and the engine need a regen / replay to show it.
+- **Range box minimum length** (user decision 2026-10-18, `find_range_box_zz` `min_range_minutes` = `MIN_RANGE_MINUTES` 30, mirrored in
+  `live_range/boxes.py` `BoxBook.long_enough`): at least 6 M5 candles must be part of a range. A broken box is kept only if the bars
+  from its first pivot's bar up to, not including, its break candle number >= 6 (`n_bars` column; open / merged boxes not filtered),
+  and a strong breakout (episode) counts only if the box had >= 6 bars before its breakout bar (a younger one is dropped from
+  `episodes`; the live engine does not trade it). Expressed in minutes and rounded up to bars of the series, so H1 boxes (1 bar) are
+  unaffected. `check_boxes.py` Sep 28 - Oct 6 2026: 0 box mismatches, episodes batch 161 = live 161. Engine replays and every report
+  that reads the boxes need a regen to show it.
 - **Reversal is cumulative** (the deepest adverse price since the extreme), the next
   leg starts at the most adverse bar of the one just confirmed, at most one pivot is
   confirmed per bar, and the last still-extending leg is never a pivot.

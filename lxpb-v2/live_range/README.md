@@ -54,7 +54,8 @@ detector's, same times.
 The M5 bar still forming is read as if it closed at the last price, once a second and only when
 the price is beyond some box edge, on a copy of each reader: provisional episodes, which arm
 orders and are withdrawn if the bar ends up not breaking out. A box counts as a range once it
-has two pivots at each edge, as in the reports.
+has two pivots at each edge, as in the reports, and an episode counts only if the box had at least 6 M5 candles before
+its breakout bar (`long_enough`, the detector's length rule, user 2026-10-18).
 
 ## Orders
 

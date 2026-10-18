@@ -40,7 +40,7 @@ for ts, row in m5.iterrows():
     lv5.on_bar(t, row.open, row.high, row.low, row.close)
     book.on_m5_close(t, row.open, row.high, row.low, row.close, lv5)
     for kind, payload in book.drain():
-        if kind == "episode_open":
+        if kind == "episode_open" and book.long_enough({**payload, "box": book.boxes[payload["box_id"]]}):
             episodes_live.append((payload["box_id"], payload["direction"], pd.Timestamp(payload["breakout_time"], unit="ns", tz="UTC")))
 
 def tsn(x):
