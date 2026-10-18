@@ -131,6 +131,12 @@ its own. Do not reintroduce an anchor / earliest-retested member / "classify by 
 the next level) is gone for the same reason; a level with a swing on it is simply skipped. Oct 16 2026 (fade 2 off): the only fade
 trade is the 06:35:56 PT long at 7790.25 (+3.50 pt), the level that is the extreme of the 7790.25 / 7791.50 cluster.
 
+**Engine rule 4, TARGET = RANGE EDGE (user, 2026-10-17, `Params.target_mode` = "range_edge", replay / report flag
+`--fade-target zigzag` brings back the old most-recent-zigzag-pivot target).** A fade's target is the edge of the range it fades: a
+long (LHPB below the range) targets the range LOW, a short (LLPB above it) the range HIGH, using the merged range's H1 edges when
+merged (`range_edges`), the nearest edge past the fill when the trade serves several ranges; still 0.25-50 pt from the fill or the
+level gets no order (`no_target`). Go-with keeps the zigzag target. Oct 16 2026: the 06:35:56 PT long's target is 7792.50 (H1 low).
+
 **Engine rule 2, FADE 2 IS OFF (user, 2026-10-16, `Params.fade2` = False, replay / report flag `--fade2` brings it back).** A fade
 of a box's second-side breakout (its OTHER edge had already broken out strongly before) is not traded, tagged or drawn; only
 fade 1 (the box's first strong breakout) is. A trade whose boxes were mixed keeps only its fade-1 boxes. In the M1 report the
@@ -173,8 +179,9 @@ ledger (`LC.m5_levels`, swapped to M1 behind the shared "m5" calls) is only a lo
 - Chart dict keys and DOM ids are `main` (the M1 trading pane) and `ctx` (the M5 context pane). The table's column positions are
   hard-coded in `SORT_COLS` and the `nth-child` header rule: change them together with any column added or removed.
 - A fixed month of the fade playbook (`sep_month_fade`) is `--since-day 2026-09-01 --until-day 2026-09-30 --warmup-days 5
-  --label "Sep 2026, whole month"`. The published `sep_month_fade.html` was made by the DELETED pipeline and still carries its
-  trades, the NEWS SPIKE tag and fade 2 until it is regenerated (only when the user asks).
+  --label "Sep 2026, whole month"`. Regenerated with the engine on 2026-10-17 (no anchor, H1 edges, fade 1, range-edge
+  target): 19 fade trades, 57.9% win rate, avg R +0.11, total +2.1R. The output goes to the scratchpad and is gzipped into
+  `public/reports/ss_m1_confl/sep_month_fade.html.gz` (the report writes plain .html).
 - The engine's tags on a row: `plain_p0`, `no_confl` (cluster of one), `swerved`, `breakout-from-range`, `fade1` (`fade2` /
   `fade-mixed` only with `--fade2`), `r_below_min`, `eod_flat`.
 

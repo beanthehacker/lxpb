@@ -1074,7 +1074,8 @@ def _run_engine(args):
     scid_end = pd.Timestamp(R._scid_bounds(R.CONTRACTS[-1][0])[1]).floor("1min")
     hi = min(hi, scid_end)
     params = Params(bar_minutes=BAR_MIN, decision_s=args.decision_s, box_merge_overlap=args.box_merge_overlap,
-                    box_merge_tol=args.box_merge_tol, fade2=bool(args.fade2))
+                    box_merge_tol=args.box_merge_tol, fade2=bool(args.fade2),
+                    target_mode=args.fade_target)
     warm_days = (lo - bars_lo) / pd.Timedelta(days=1)
     eng, start = RP.build_engine(lo, hi, warm_days, params, h1_days=args.h1_days)
     print(f"[engine] replay {start} -> {hi} (armed from {lo}), M{BAR_MIN} trading bars, decisions every "
@@ -1562,10 +1563,11 @@ FADE: an LLPB above the top edge of a box that broke UP / an LHPB below the bott
 is the run-in leg's own. Only FADE 1 (the box's first strong breakout) is traded{'' if not args.fade2 else ' and fade 2 is switched on here'}.
 RANGE MERGE: M5 boxes overlapping by at least {args.box_merge_overlap:.0%} of the smaller box that sit inside one known, unbroken H1
 range box (find_range_box_zz on closed H1 bars) are one range and share their seats: one trade per merged range, direction and
-playbook. ENTRY: a pegged limit order on the cluster's extreme live level (Own column = the cluster's earliest-retested level; src
-tag own / m5 / swerved), moved past a confirmed swing sitting on it (SWERVED). STOP: one tick beyond the entry level's own spike
+playbook. ENTRY: every live level is judged on its own (its own price beyond the range edge, its own run-in); its cluster is only
+searched for a better (more extreme) price that also qualifies on its own (src tag own / cluster); a level with a confirmed swing on
+it is skipped. STOP: one tick beyond the entry level's own spike
 candle (src p0_spike) or beyond the live thrust candle (thrust), widened to the last older P1 candle when closer than the minimum
-(wide_p1). TARGET: the most recent confirmed zigzag swing since the level's P1 (src swing_extreme). A bracket below R
+(wide_p1). TARGET: {'the most recent confirmed zigzag swing since the level' + chr(39) + 's P1 (src swing_extreme)' if args.fade_target == 'zigzag' else 'the edge of the faded range: the range LOW for a long (LHPB below the range), the range HIGH for a short (LLPB above it); the H1 box edges for a merged range (src range_edge)'}. A bracket below R
 {args.min_r:g} is still taken and tagged r_below_min. The stop trails when a P0 group breaks out past it and an RR-floor exit closes a
 trade whose remaining reward / risk falls to 0.2 (both shown as MGMT); no position is carried past 12:44 PT (EOD FLAT); the 05:30 PT
 news-pull window and the 15:00-15:05 PT reopen are blackouts. There is no news-spike check. Win = a trade that made money.
@@ -1720,8 +1722,11 @@ the box is checked.">Trade management</span>
 """
 
     target_col_title = (
-        "The engine's only target rule: the most recent confirmed zigzag trough (long) / crest (short) formed since the "
-        "entry level's own P1, at the pivot's own price, 0.25-50 pts from the fill (src swing_extreme)")
+        "The engine's target: the most recent confirmed zigzag trough (long) / crest (short) formed since the "
+        "entry level's own P1, at the pivot's own price, 0.25-50 pts from the fill (src swing_extreme)"
+        if args.fade_target == "zigzag" else
+        "The engine's target: the edge of the faded range, the range low for a long (LHPB below the range), the range "
+        "high for a short (LLPB above it); the H1 box edges for a merged range; 0.25-50 pts from the fill (src range_edge)")
     head = (f"<th class=\"left\">Trade Id</th>"
             f"<th class=\"left\" title=\"Every dynamic-filter tag this row carries, in one "
             f"place: globex_eth_open, swerved/swerve_blocked, "
@@ -2778,6 +2783,9 @@ if __name__ == "__main__":
                         help="points an M5 box edge may poke out of the H1 box (default %(default)g)")
     parser.add_argument("--h1-days", type=float, default=25.0,
                         help="days of H1 / M5 history before the window seeded for the H1 range boxes (default %(default)g)")
+    parser.add_argument("--fade-target", default="range_edge", choices=["range_edge", "zigzag"],
+                        help="fade target: the faded range's edge (default; range low for a long, range high for a short) "
+                             "or the old most recent zigzag pivot since the level's P1")
     parser.add_argument("--fade2", action="store_true",
                         help="also keep fade 2 (a box's second-side breakout: the other edge had already broken out "
                              "strongly). OFF by default: only fade 1 is traded, tagged and drawn.")

@@ -116,8 +116,10 @@ price. A level the tape has already traded through on the forming bar is never a
 plain limit.
 
 Stop: P0 candle of a spike level, else the thrust candle of the live same-type levels within 10 pt, widened to
-3 pt (older P1) if tighter. Target: swing-extreme (latest confirmed zigzag pivot since the level's breakout,
-0.25-50 pt away). Exits tick by tick; flat at 12:44 PT.
+3 pt (older P1) if tighter. Target (fade, user 2026-10-17, `target_mode="range_edge"`): the faded range's edge,
+the range low for a long (LHPB below it), the range high for a short (LLPB above it), H1 edges for a merged range,
+0.25-50 pt away. `--fade-target zigzag` (and every go-with trade): swing-extreme, the latest confirmed zigzag pivot
+since the level's breakout. Exits tick by tick; flat at 12:44 PT.
 
 **Trade management** (`Params.manage`, `--no-manage` to switch off), the reports' two rules, run on the
 trading-bar ledger and bars (the reports run `trade_management` on the M1/M2 ledger):

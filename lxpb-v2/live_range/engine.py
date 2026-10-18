@@ -78,6 +78,11 @@ class Params:
     wider_stop_lookback_h: float = 24.0
     min_target: float = 0.25
     max_target: float = 50.0
+    # Fade target (user, 2026-10-17): "range_edge" = the edge of the range the trade fades (a long on an LHPB below the
+    # range takes the range LOW, a short on an LLPB above it the range HIGH; the merged range's H1 edges when merged, the
+    # nearest edge past the fill when several boxes are served); "zigzag" = the old most recent zigzag pivot since P1.
+    # Go-with trades keep the zigzag target.
+    target_mode: str = "range_edge"
     news_window: tuple = (5 * 3600 + 29 * 60 + 55, 5 * 3600 + 30 * 60 + 40)   # PT seconds of day
     eod_flat: int = 12 * 3600 + 44 * 60       # PT: flatten at 12:44
     no_entry_from: int = 12 * 3600 + 45 * 60  # PT: no new entry 12:45 .. reopen
@@ -694,7 +699,8 @@ class Engine:
                         serves.append((ep, pb))
         if not serves:
             return reason
-        plan = self._plan({"level": e["level"], "type": typ}, price, t)
+        plan = self._plan({"level": e["level"], "type": typ,
+                           "boxes": {(ep["box_id"], ep["direction"]): ep for ep, pb in serves if pb == "fade"}}, price, t)
         if isinstance(plan, str):
             return plan
         if self.p.min_r > 0 and abs(plan[1] - price) < self.p.min_r * abs(plan[0] - price):
@@ -962,7 +968,8 @@ class Engine:
             return
         plan = o["plan"]
         if fill_px != o["price"]:
-            re = self._plan(o, fill_px, t)
+            fade = {(b, d) for b, d, pb in o["serves"] if pb == "fade"}
+            re = self._plan({**o, "boxes": {k: v for k, v in o["boxes"].items() if k in fade}}, fill_px, t)
             plan = plan if isinstance(re, str) else re
         stop, target, src = plan
         o["plan"] = plan
@@ -998,18 +1005,42 @@ class Engine:
             wide = self._wider_stop(typ, fill, t)
             if wide is not None:
                 stop, src = wide, "wide_p1"
-        # target: the most recent confirmed zigzag pivot since the entry level's P1
-        p1 = pd.Timestamp(lv["breakout_time"]).value
-        pt, pp = self.zz.most_recent("trough" if is_long else "crest", self._tb_floor(t), after=p1)
-        if pt is None:
-            return "no_target"
+        edges = self._fade_edges(o.get("boxes")) if self.p.target_mode == "range_edge" else []
+        if edges:
+            # target: the edge of the faded range (long: the range low above the fill; short: the range high below it),
+            # the nearest one when several ranges are served
+            cand = [(lo, st, n) for lo, hi, st, n in edges if lo > fill] if is_long else \
+                   [(hi, st, n) for lo, hi, st, n in edges if hi < fill]
+            if not cand:
+                return "no_target"
+            pp, pt, n = min(cand) if is_long else max(cand)
+            meta = {"target_src": "range_edge", "edge": "low" if is_long else "high", "pivot_time": pt, "pivot_price": pp,
+                    "box_low": next(lo for lo, hi, st, _ in edges if (lo if is_long else hi) == pp),
+                    "box_high": next(hi for lo, hi, st, _ in edges if (lo if is_long else hi) == pp),
+                    "n_boxes": len(edges)}
+        else:
+            # target: the most recent confirmed zigzag pivot since the entry level's P1
+            p1 = pd.Timestamp(lv["breakout_time"]).value
+            pt, pp = self.zz.most_recent("trough" if is_long else "crest", self._tb_floor(t), after=p1)
+            if pt is None:
+                return "no_target"
+            meta = {"target_src": "zigzag", "pivot_time": pt, "pivot_price": pp, "pivot_kind": "trough" if is_long else "crest"}
         dist = (pp - fill) if is_long else (fill - pp)
         if not (self.p.min_target <= dist <= self.p.max_target):
             return "no_target"
         plan = Plan((stop, pp, src))
-        plan.meta = {"stop_level": stop_level, "pivot_time": pt, "pivot_price": pp,
-                     "pivot_kind": "trough" if is_long else "crest"}
+        plan.meta = {"stop_level": stop_level, **meta}
         return plan
+
+    def _fade_edges(self, boxes):
+        """[(low, high, start ns, box id)] of the ranges a plan fades: the merged range's H1 edges, else the M5 box's own
+        (`range_edges`); its start is the H1 box's, else the M5 box's. `boxes` = {(box id, direction): episode} of the
+        order's fade seats only (go-with seats are not passed)."""
+        out = []
+        for ep in (boxes or {}).values():
+            lo, hi, h1_start, _ = self.range_edges(ep["box"])
+            out.append((lo, hi, h1_start if h1_start is not None else ep["box"]["start_t"], ep["box_id"]))
+        return out
 
     def _wider_stop(self, typ, fill, t):
         is_long = typ == "LHPB"

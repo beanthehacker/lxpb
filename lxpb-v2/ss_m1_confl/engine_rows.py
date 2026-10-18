@@ -113,6 +113,9 @@ def _result(tr, led, min_r):
     target_info = {"src": "swing_extreme", "pivot_kind": meta.get("pivot_kind", "trough" if is_long else "crest"),
                    "pivot_price": float(meta.get("pivot_price", tr["target"])),
                    "pivot_time": _ts(pv_t) if pv_t is not None else _ts(tr["t"])}
+    if meta.get("target_src") == "range_edge":       # the faded range's edge (engine Params.target_mode)
+        target_info.update(src="range_edge", edge=meta["edge"], box_low=float(meta["box_low"]),
+                           box_high=float(meta["box_high"]), boxes=int(meta["n_boxes"]))
     mode_tags = []
     if r_planned < min_r:
         mode_tags.append("r_below_min")
