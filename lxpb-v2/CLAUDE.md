@@ -193,7 +193,8 @@ ledger (`LC.m5_levels`, swapped to M1 behind the shared "m5" calls) is only a lo
   `public/reports/ss_m1_confl/sep_month_fade.html.gz` (the report writes plain .html).
 - `sep_oct_fade` (2026-10-18, user): the same report over Sep 1 - Oct 16 2026 (last .scid tick), `--since-day 2026-09-01
   --until-day 2026-10-16 --warmup-days 5 --label "Sep 1 - Oct 16 2026"`, gzipped into `public/reports/ss_m1_confl/sep_oct_fade.html.gz`.
-  25 fade trades. On load (range edge, management off): 72.0% win, avg R +0.19, +4.8R. NOT public (not in `proxy.ts`).
+  Regenerated 2026-10-18 with the 6-M5-candle range rule: 23 fade trades. On load (range edge, management off): 69.6% win,
+  avg R +0.15, +3.4R (was 25 trades, 72.0%, +4.8R before the rule). NOT public (not in `proxy.ts`).
 - The engine's tags on a row: `plain_p0`, `no_confl` (cluster of one), `swerved`, `breakout-from-range`, `fade1` (`fade2` /
   `fade-mixed` only with `--fade2`), `r_below_min`, `eod_flat`.
 
