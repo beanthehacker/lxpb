@@ -26,7 +26,7 @@ The tracker's events map onto boxes like this:
 Every box counts as a range (the tracker only hands over confirmed ones); BoxBook's
 6-candle length rule still applies to each episode.
 """
-from find_trading_range import TradingRangeTracker, _touches
+from find_trading_range import TradingRangeTracker
 
 from .boxes import BoxBook, Reader
 
@@ -91,9 +91,7 @@ class TradingRangeBook(BoxBook):
     def _open(self, tb, j, root, gen):
         m5, s = self.m5, tb["start"]
         hi, lo = tb["high"], tb["low"]
-        p = self.tr.p
-        _, _, marks = _touches(self.tr.H[s:j + 1], self.tr.L[s:j + 1], hi, lo, p["touch_frac"],
-                               p["max_half_touches"], where=True, running=p["running_touches"])
+        _, _, marks = self.tr._box_touches(s, j, hi, lo, j, where=True)
         crests, troughs = [], []
         for i, edge, _half in marks:
             if edge == "top":

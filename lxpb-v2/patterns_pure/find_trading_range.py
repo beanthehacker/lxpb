@@ -1,7 +1,15 @@
 """find_trading_range -- sideways ranges (consolidation boxes), bar by bar.
 
 Written from scratch 2026-10-19; it shares no code or rules with
-`find_range.py` / `find_range_box_zz.py` and uses no zigzag and no ATR.
+`find_range.py` / `find_range_box_zz.py`. A range is ANCHORED TO ZIGZAG PIVOTS
+(user, 2026-10-19; `edges="pivot"`, the default): its edges are the highest
+crest and the lowest trough of patterns-pure's `find_zigzag` (0.75 x ATR(21)
+reversal, the repo's only zigzag, run bar by bar inside the tracker and
+identical to the batch zigzag), it starts on a pivot, its touches are pivots,
+and only a newly confirmed pivot moves an edge. No bar's wick ever sets an
+edge. `edges="wick"` (with `max_widen` 0.25) is the earlier definition, kept
+for comparison: bar highs / lows for all of the above. Breakouts can be graded
+with `find_range`'s strong-breakout grader (`lower_data`).
 
 Point in time. `TradingRangeTracker.update()` takes one closed bar at a time
 and decides everything from that bar and the bars before it; nothing it has
@@ -14,11 +22,13 @@ state the live tracker had after bar k.
 A window of consecutive bars i..t QUALIFIES when
 
 1. it has at least `min_bars` bars (and at most `max_bars`),
-2. it is short: height (highest high - lowest low, wicks included) at most
+2. it is short: height (highest crest - lowest trough of the pivots on its
+   bars that are confirmed by bar t; wick mode: highest high - lowest low) at most
    `max_height_tr` x the mean true range of its own bars, so one setting
    works overnight and in the cash session,
 3. it goes nowhere: the least-squares line through its closes moves at most
-   `max_drift` x the height from its first bar to its last.
+   `max_drift` x the height from its first bar to its last,
+4. (pivot mode) it starts on a pivot bar, and holds both a crest and a trough.
 
 Each bar, with no confirmed box live:
 
@@ -31,10 +41,14 @@ Each bar, with no confirmed box live:
   edges: at least `min_total_touches` touches of the two edge zones together
   and at least `min_touches` of each. With the defaults that is 5, e.g.
   top-bottom-top-bottom-top. How a touch counts:
-  - each bar is judged against the box AS IT STOOD AT THAT BAR (running high /
-    low from the window's first bar; edge zones = the outer `touch_frac` of
-    that height, midline = its middle), the way it is read live, so a later
-    new extreme never demotes an earlier touch (user, 2026-10-19);
+  - pivot mode: a crest in the top edge zone is a top touch, a trough in the
+    bottom zone a bottom touch (a crest at / above the midline or a trough at /
+    below it is the swing a half touch needs); wick mode: a bar's high / low
+    in the zone;
+  - each pivot (bar) is judged against the box AS IT STOOD THEN (running edges
+    from the window's first bar; edge zones = the outer `touch_frac` of that
+    height, midline = its middle), the way it is read live, so a later new
+    extreme never demotes an earlier touch (user, 2026-10-19);
   - a bar counts only once that box is at least `running_touches` x the
     window's height (the first bars of any window would otherwise all be
     "edges"); `running_touches` 0 judges every bar against the final edges;
@@ -50,7 +64,20 @@ Each bar, with no confirmed box live:
   still passes rule 2 over all its bars. The earlier box takes the bars,
   edges and live state; its id stays, `merged` counts the boxes it absorbed.
 
-Each bar, with a confirmed box live:
+Each bar, with a confirmed box live, PIVOT MODE:
+
+- a close inside keeps it going; bars never move an edge. A pivot confirmed
+  past an edge moves that edge out to it while the box stays within
+  `max_widen` (0.5) of its height at confirmation (or last merge) and within
+  rule 2; a pivot farther out is left out.
+- a close outside is only an attempt -- the edge may yet move out to a new
+  pivot -- and BREAKS the box when it grades STRONG on `lower_data` or when it
+  lies past the allowable price: the edge pushed out `max_widen` x the height
+  at confirmation, where no widening can reach. A close back inside fails the
+  attempt. (`break_tr` / `confirm_bars` are wick mode only: on pivot edges they
+  broke the box on every leg to a new extreme before its pivot confirmed.)
+
+Each bar, with a confirmed box live, WICK MODE:
 
 - a close inside the box keeps it going and widens the edges to the bar's
   high/low, unless the box would then be more than `max_widen` taller than
@@ -70,6 +97,20 @@ Each bar, with a confirmed box live:
   `break_confirm_time` the bar that broke it, and the box ends on the bar
   before the first close out. An attempt that closes back inside failed: its
   bars join the box (widening as above).
+
+PIVOT EDGES of a wick-mode box: `pivot_high` / `pivot_low` / `pivot_start_time`
+in the output and `pivot_edges(box, upto)` give its highest crest / lowest
+trough / first pivot (pivots confirmed by then); in pivot mode they equal the
+box's own edges.
+
+Pivot anchoring, USDJPY H1 (user, 2026-10-19): as of 2026-04-28 02:00 UTC the
+live range is 159.093 (trough Apr 27 09:00) - 159.847 (crest Apr 23 17:00),
+from the crest at Apr 21 17:00, confirmed Apr 22 21:00; the wick definition
+had 159.038-159.847 from Apr 21 14:00, the previous range's breakout bar.
+`max_widen` 0.5 is the smallest that takes in both later pivots (0.4 misses the
+Apr 27 trough, 0.75 swallows all of April into one box). ES M5 Oct 15-16 in
+pivot mode: the overnight box 7792.50-7809.50, 21:30-06:45, and nothing else
+in the window; Oct 1-19: 21 ranges; no look-ahead (30 cut points).
 
 Tuned 2026-10-19 on ES (EPZ26 .scid) M5 by the user's reading of the charts:
 - Oct 15 07:00 - Oct 16 08:30 PT: the overnight box 20:50-06:30,
@@ -95,7 +136,8 @@ matches the full run.
         ("up" / "down" / None), break_time, break_confirm_time,
         confirm_start_time (start of the window that confirmed it),
         confirm_touches ([(time, "top"/"bottom", is_half)] that confirmed it),
-        members ([{start_time, end_time, high, low}] of a merged range, else [])
+        members ([{start_time, end_time, high, low}] of a merged range, else []),
+        pivot_high, pivot_low, pivot_high_time, pivot_low_time, pivot_start_time
     find_trading_range(data, return_all=True) -> dict(ranges=..., candidates=
         one row per candidate episode, events=every confirm/merge/break)
 
@@ -116,18 +158,20 @@ DEFAULTS = dict(
     max_half_touches=2,
     running_touches=0.7,
     touch_frac=0.2,
-    max_widen=0.25,
+    max_widen=0.5,
     break_tr=1.0,
     confirm_bars=2,
     merge_gap_bars=36,
     merge_overlap=0.5,
+    edges="pivot",
 )
 
 RANGE_COLUMNS = ["id", "start_time", "confirm_time", "end_time", "high", "low", "height",
                  "mean_tr", "height_tr", "n_bars", "touches_high", "touches_low", "drift",
                  "confirm_high", "confirm_low", "merged", "status", "break_dir", "break_grade",
                  "break_time", "break_confirm_time", "confirm_start_time", "confirm_touches",
-                 "members"]
+                 "members", "pivot_high", "pivot_low", "pivot_high_time", "pivot_low_time",
+                 "pivot_start_time"]
 CANDIDATE_COLUMNS = ["id", "first_seen", "last_seen", "start_time", "high", "low",
                      "touches_high", "touches_low", "outcome", "range_id"]
 EVENT_COLUMNS = ["time", "event", "range_id", "high", "low"]
@@ -180,6 +224,39 @@ def _touches(H, L, hi, lo, frac, max_half=0, where=False, running=0.0):
     if len(tok) > 1:  # repeats change nothing, so runs collapse to one token
         keep = np.r_[True, tok[1:] != tok[:-1]]
         tok, at = tok[keep], at[keep]
+    return _count(tok, at, max_half, where)
+
+
+def _pivot_touches(piv, hi, lo, frac, max_half=0, where=False, running=0.0):
+    """Touches counted on zigzag pivots instead of bars (edges="pivot"). `piv` is
+    [(kind, bar offset, price)] in bar order, `hi` / `lo` the box's pivot edges. A
+    crest in the top zone is a top touch, a trough in the bottom zone a bottom
+    touch; a crest at or above the midline / a trough at or below it is the swing
+    a half touch needs. With `running`, each pivot is judged against the pivot box
+    as it stood then (and only once it is `running` x the final height)."""
+    rh, rl = -np.inf, np.inf
+    tok, at = [], []
+    for kind, off, price in piv:
+        if kind == "crest":
+            rh = max(rh, price)
+        else:
+            rl = min(rl, price)
+        eh, el = (rh, rl) if running else (hi, lo)
+        if not np.isfinite(eh - el) or (running and eh - el < running * (hi - lo)):
+            continue
+        zone, mid = frac * (eh - el), (eh + el) / 2
+        if kind == "crest":
+            t = _TOP if price >= eh - zone else _ABOVE if price >= mid else 0
+        else:
+            t = _BOT if price <= el + zone else _BELOW if price <= mid else 0
+        if t:
+            tok.append(t)
+            at.append(off)
+    return _count(tok, at, max_half, where)
+
+
+def _count(tok, at, max_half, where):
+    """The alternating-touch state machine over edge tokens (see _touches)."""
     th = tl = half = last = 0
     crossed = False
     marks = []
@@ -224,6 +301,14 @@ class TradingRangeTracker:
         self.p = {**DEFAULTS, **params}
         self.grader = grader
         self.T, self.H, self.L, self.C, self.TR = [], [], [], [], []
+        from find_zigzag import ZigZag
+        self.zz = ZigZag()          # patterns-pure's zigzag, defaults: the pivot edges
+        self.pivots = []            # find_zigzag Pivot(kind, i, price, j), in confirm order
+        self.ATR = []
+        if self.p["edges"] not in ("wick", "pivot"):
+            raise ValueError(f"edges {self.p['edges']!r}: use 'pivot' or 'wick'")
+        self.pivot = self.p["edges"] == "pivot"
+        self.CP, self.TP = [], []   # crest / trough price at its own bar once confirmed (nan elsewhere)
         self.ranges = []
         self.active = None
         self.candidate = None
@@ -243,11 +328,81 @@ class TradingRangeTracker:
         self.TR.append(max(high - low, abs(high - pc), abs(low - pc)))
         j = len(self.C) - 1
         n_ev = len(self.events)
+        self._step_zigzag(j)
         if self.active is not None:
             self._step_active(j)
         if self.active is None:
             self._step_search(j)
         return self.events[n_ev:]
+
+    def _step_zigzag(self, j):
+        """Feed find_zigzag's ZigZag this bar (its ATR(21) as of this bar: the same
+        recursion as find_range._atr_series) and keep the pivots it confirms."""
+        tr = self.TR[j]
+        atr = np.nan if j == 0 else tr if j == 1 else self.ATR[-1] + (tr - self.ATR[-1]) / self.zz.atr_period
+        self.ATR.append(atr)
+        self.CP.append(np.nan)
+        self.TP.append(np.nan)
+        for piv in self.zz.step(self.H[j], self.L[j], atr):
+            self.pivots.append(piv)
+            (self.CP if piv.kind == "crest" else self.TP)[piv.i] = piv.price
+            b = self.active
+            if self.pivot and b is not None and piv.i >= b["start"]:
+                self._pivot_widen(b, piv, j)
+
+    def _pivot_widen(self, box, piv, j):
+        """Pivot mode: a pivot confirmed past an edge of the live box moves that edge
+        out to it, while the box stays within `max_widen` of its height at
+        confirmation (or last merge) and within rule 2."""
+        p = self.p
+        nh = max(box["high"], piv.price) if piv.kind == "crest" else box["high"]
+        nl = min(box["low"], piv.price) if piv.kind == "trough" else box["low"]
+        if (nh - nl <= (1 + p["max_widen"]) * box["base_height"]
+                and nh - nl <= p["max_height_tr"] * self._mean_tr(box["start"], j)):
+            box["high"], box["low"] = nh, nl
+
+    def _pivots_in(self, s, e, upto):
+        """[(kind, bar offset from s, price)] of the pivots on bars s..e confirmed by `upto`."""
+        return [(k, i - s, pr) for k, i, pr, jc in self.pivots if s <= i <= e and jc <= upto]
+
+    def _box_touches(self, s, e, hi, lo, upto, where=False):
+        p = self.p
+        if self.pivot:
+            return _pivot_touches(self._pivots_in(s, e, upto), hi, lo, p["touch_frac"],
+                                  p["max_half_touches"], where, p["running_touches"])
+        return _touches(self.H[s:e + 1], self.L[s:e + 1], hi, lo, p["touch_frac"],
+                        p["max_half_touches"], where, p["running_touches"])
+
+    def _gap_ext(self, a, b, hi, lo):
+        """Highest / lowest price of bars a..b-1 (pivot mode: of their pivots), else hi / lo."""
+        if self.pivot:
+            cp, tp = np.asarray(self.CP[a:b]), np.asarray(self.TP[a:b])
+            return (float(np.nanmax(cp)) if np.isfinite(cp).any() else hi,
+                    float(np.nanmin(tp)) if np.isfinite(tp).any() else lo)
+        return max(self.H[a:b], default=hi), min(self.L[a:b], default=lo)
+
+    def pivot_edges(self, box, upto=None):
+        """The box's PIVOT EDGES as of bar `upto` (default: the last bar; for a
+        broken box, the bar that broke it): the highest zigzag crest and the lowest
+        zigzag trough whose own bar is inside the box and that were confirmed by
+        then. dict(high, low, high_i, low_i, start_i = the box's first pivot bar),
+        or None until the box holds both a crest and a trough."""
+        if upto is None:
+            upto = box["break_confirm_bar"] if box["break_confirm_bar"] is not None else len(self.C) - 1
+        hi = lo = None
+        first = None
+        for kind, i, price, jc in self.pivots:
+            if jc > upto or not box["start"] <= i <= box["end"]:
+                continue
+            first = i if first is None else min(first, i)
+            if kind == "crest" and (hi is None or price > hi[0]):
+                hi = (price, i)
+            elif kind == "trough" and (lo is None or price < lo[0]):
+                lo = (price, i)
+        if hi is None or lo is None:
+            return None
+        return dict(high=hi[0], low=lo[0], high_i=hi[1], low_i=lo[1], start_i=first)
+
 
     def _event(self, j, kind, box):
         self.events.append(dict(time=self.T[j], event=kind, range_id=box["id"],
@@ -261,6 +416,9 @@ class TradingRangeTracker:
         p = self.p
         cap = (1 + p["max_widen"]) * box["base_height"]
         for i in range(i0, i1 + 1):
+            if self.pivot:      # pivot mode: bars never move an edge, only pivots do
+                box["end"] = i
+                continue
             nh, nl = max(box["high"], self.H[i]), min(box["low"], self.L[i])
             if (nh - nl <= cap
                     and nh - nl <= p["max_height_tr"] * self._mean_tr(box["start"], i)):
@@ -282,6 +440,15 @@ class TradingRangeTracker:
             self._pend = None
         if self._pend is None:
             self._pend = (d, j)
+        if self.pivot:
+            # pivot mode: a close out is only an attempt (the edge may yet move out to a new pivot)
+            # unless it grades strong or lies past the allowable price, where no widening can reach
+            beyond = c - box["high"] if d > 0 else box["low"] - c
+            if self.grader is not None and self.grader(self.T[j], d > 0, box["high"], box["low"]) == "strong":
+                return self._break(box, d, j, "strong")
+            if beyond > p["max_widen"] * box["base_height"]:
+                return self._break(box, d, j, "weak" if self.grader is not None else None)
+            return
         if self.grader is not None:
             limit = p["max_widen"] * box["base_height"]  # the allowable price, past the edge
             beyond = c - box["high"] if d > 0 else box["low"] - c
@@ -320,8 +487,15 @@ class TradingRangeTracker:
         C = np.asarray(self.C[i0:j + 1])[::-1] - self.C[j]
         TR = np.asarray(self.TR[i0:j + 1])[::-1]
         m = np.arange(1, len(H) + 1, dtype=float)  # window length, ending at j
-        hi = np.maximum.accumulate(H)
-        lo = np.minimum.accumulate(L)
+        if self.pivot:  # edges = the window's highest crest / lowest trough; it starts on a pivot
+            cp = np.asarray(self.CP[i0:j + 1])[::-1]
+            tp = np.asarray(self.TP[i0:j + 1])[::-1]
+            hi = np.maximum.accumulate(np.where(np.isnan(cp), -np.inf, cp))
+            lo = np.minimum.accumulate(np.where(np.isnan(tp), np.inf, tp))
+            on_pivot = ~np.isnan(cp) | ~np.isnan(tp)
+        else:
+            hi = np.maximum.accumulate(H)
+            lo = np.minimum.accumulate(L)
         h = hi - lo
         mtr = np.cumsum(TR) / m
         u = m - 1  # bars back from j
@@ -330,19 +504,18 @@ class TradingRangeTracker:
         den = m * s_uu - s_u ** 2
         with np.errstate(divide="ignore", invalid="ignore"):
             slope = np.where(den > 0, (m * s_uc - s_u * s_c) / den, 0.0)
-            drift = np.where(h > 0, np.abs(slope) * (m - 1) / h, 0.0)
-        ok = (m >= p["min_bars"]) & (h <= p["max_height_tr"] * mtr) & (drift <= p["max_drift"])
+            drift = np.where((h > 0) & np.isfinite(h), np.abs(slope) * (m - 1) / h, 0.0)
+            ok = (m >= p["min_bars"]) & (h <= p["max_height_tr"] * mtr) & (drift <= p["max_drift"])
+        if self.pivot:
+            ok &= np.isfinite(h) & (h > 0) & on_pivot
         if not ok.any():
             return None
         block = np.concatenate([[0], np.cumsum((hi[1:] != hi[:-1]) | (lo[1:] != lo[:-1]))])
         okk = np.flatnonzero(ok)
         last = okk[np.r_[block[okk][1:] != block[okk][:-1], True]]  # longest per block
-        Hf, Lf = H[::-1], L[::-1]  # forward order, bar j last
         best = None
         for k in last:
-            th, tl = _touches(Hf[len(H) - 1 - k:], Lf[len(L) - 1 - k:], hi[k], lo[k],
-                              p["touch_frac"], p["max_half_touches"],
-                              running=p["running_touches"])
+            th, tl = self._box_touches(j - int(k), j, hi[k], lo[k], j)
             key = (th + tl, min(th, tl), k)
             if best is None or key > best[0]:
                 best = (key, k, th, tl)
@@ -375,8 +548,7 @@ class TradingRangeTracker:
                    break_grade=None)
         prev = self.ranges[-1] if self.ranges else None
         if prev is not None and self._joins(prev, box):
-            gap_h = max(self.H[prev["end"] + 1:i], default=hi)
-            gap_l = min(self.L[prev["end"] + 1:i], default=lo)
+            gap_h, gap_l = self._gap_ext(prev["end"] + 1, i, hi, lo)
             nh, nl = max(prev["high"], hi, gap_h), min(prev["low"], lo, gap_l)
             if not prev["members"]:
                 prev["members"].append(dict(start=prev["start"], end=prev["end"],
@@ -404,8 +576,8 @@ class TradingRangeTracker:
         if overlap < p["merge_overlap"] * smaller:
             return False
         s, e = a["start"], b["end"]
-        hi = max(a["high"], b["high"], max(self.H[a["end"] + 1:b["start"]], default=b["high"]))
-        lo = min(a["low"], b["low"], min(self.L[a["end"] + 1:b["start"]], default=b["low"]))
+        gh, gl = self._gap_ext(a["end"] + 1, b["start"], b["high"], b["low"])
+        hi, lo = max(a["high"], b["high"], gh), min(a["low"], b["low"], gl)
         return hi - lo <= p["max_height_tr"] * self._mean_tr(s, e)
 
     # ---- output ----------------------------------------------------------
@@ -413,11 +585,11 @@ class TradingRangeTracker:
         rows = []
         for b in self.ranges:
             s, e = b["start"], b["end"]
-            th, tl = _touches(self.H[s:e + 1], self.L[s:e + 1], b["high"], b["low"],
-                              self.p["touch_frac"], self.p["max_half_touches"],
-                              running=self.p["running_touches"])
+            upto = b["break_confirm_bar"] if b["break_confirm_bar"] is not None else len(self.C) - 1
+            th, tl = self._box_touches(s, e, b["high"], b["low"], upto)
             mtr = self._mean_tr(s, e)
             T = self.T
+            pe = self.pivot_edges(b)
             rows.append(dict(
                 id=b["id"], start_time=T[s], confirm_time=T[b["confirm"]], end_time=T[e],
                 high=b["high"], low=b["low"], height=b["high"] - b["low"], mean_tr=mtr,
@@ -434,16 +606,17 @@ class TradingRangeTracker:
                 confirm_touches=self._confirm_marks(b),
                 members=[dict(start_time=T[m["start"]], end_time=T[m["end"]],
                               high=m["high"], low=m["low"]) for m in b["members"]],
+                pivot_high=pe["high"] if pe else None, pivot_low=pe["low"] if pe else None,
+                pivot_high_time=T[pe["high_i"]] if pe else None,
+                pivot_low_time=T[pe["low_i"]] if pe else None,
+                pivot_start_time=T[pe["start_i"]] if pe else None,
             ))
         return pd.DataFrame(rows, columns=RANGE_COLUMNS)
 
     def _confirm_marks(self, b):
         """The touches that confirmed box b: [(time, "top"/"bottom", is_half)]."""
         s, c = b["confirm_start"], b["confirm"]
-        _, _, marks = _touches(self.H[s:c + 1], self.L[s:c + 1], b["confirm_high"],
-                               b["confirm_low"], self.p["touch_frac"],
-                               self.p["max_half_touches"], where=True,
-                               running=self.p["running_touches"])
+        _, _, marks = self._box_touches(s, c, b["confirm_high"], b["confirm_low"], c, where=True)
         return [(self.T[s + i], edge, half) for i, edge, half in marks]
 
     def candidates_frame(self):
