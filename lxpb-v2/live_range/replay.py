@@ -121,6 +121,8 @@ def main():
                     help="also trade fade 2 (a box's second-side breakout); OFF by default, only fade 1 is traded")
     ap.add_argument("--fade-target", default="range_edge", choices=["range_edge", "zigzag", "opposite_zz"],
                     help="fade target: the faded range's edge (default) or the most recent zigzag pivot since P1")
+    ap.add_argument("--box-detector", default="zz", choices=["zz", "trading_range"],
+                    help="M5 range boxes from find_range_box_zz (default) or find_trading_range (live_range/trbook.py)")
     a = ap.parse_args()
     lo = pd.Timestamp(a.lo, tz="UTC")
     hi = pd.Timestamp(a.hi, tz="UTC") if a.hi else pd.Timestamp(R._scid_bounds("EPZ26")[1]).floor("1min")
@@ -128,7 +130,8 @@ def main():
     eng, start = build_engine(lo, hi, a.warmup_days, Params(
         bar_minutes=a.bar_minutes, pegged=not a.no_peg, manage=not a.no_manage, seat_rank=a.seat_rank,
         min_plain_wick=a.min_plain_wick, box_lookback_days=a.box_lookback_days, bo_range_atr=a.bo_range_atr,
-        decision_s=a.decision_s, box_merge_overlap=a.box_merge_overlap, box_merge_tol=a.box_merge_tol, fade2=a.fade2, target_mode=a.fade_target),
+        decision_s=a.decision_s, box_merge_overlap=a.box_merge_overlap, box_merge_tol=a.box_merge_tol, fade2=a.fade2, target_mode=a.fade_target,
+        box_detector=a.box_detector),
         h1_days=a.h1_days)
     print(f"engine ready in {time.time() - t0:.1f}s; replay {start} -> {hi} (armed from {lo}), M{a.bar_minutes} trading bars")
     n_ticks, secs = feed(eng, start, hi, a.chunk_hours, progress=True)

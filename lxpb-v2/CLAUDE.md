@@ -146,6 +146,12 @@ and the charts draw fade-1 boxes only. Oct 16 2026: the engine's 06:38:45 and 09
 replays before judging the fade playbook. The engine still takes go-with trades and they use the single open-position slot
 (noted in `live_range/engine.py`, `live_range/replay.py` and the head of `render_m1_confl_report.py`).
 
+**Box source flag (user, 2026-10-19, `Params.box_detector`, replay / report `--box-detector`; default `"zz"`).** `"trading_range"`
+takes the M5 range boxes from `patterns_pure/find_trading_range` (`live_range/trbook.py`) instead of the zigzag boxes; episodes,
+seats, both playbooks and the H1 merge are the same code. A box that the detector merges with a later one is RENEWED: a new
+box id (new seats, fresh episode Reader on the merged edges), and the H1 merge never links two generations of one range. Not
+the default: switching it is a strategy change the user decides (see `live_range/README.md`, "The other box source").
+
 **Standing rule: for the M1 range-fade playbook, a trade exists only if the live engine (`live_range/`) takes it.** The
 algorithm is range first: a range box with a strong breakout exists, THEN the LXPB ledger is read only as a cache lookup
 for "which level can be traded for the fade seat of that box". Questions like "did the fade trades occur today", "why was

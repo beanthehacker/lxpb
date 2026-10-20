@@ -19,6 +19,7 @@ ticks ──► Engine.on_tick
             ├─ M1 / trading-bar / M5 bars (forming + closed)
             ├─ LevelBook  (lxpb.advance_one_bar, M5 and trading bars)  levels waiting for a retest
             ├─ BoxBook    (incremental find_range_box_zz)               boxes + episodes
+            │    or TradingRangeBook (find_trading_range boxes, same episodes; --box-detector trading_range)
             ├─ ZigZag (find_zigzag) / swings on the trading bars         targets, run-in, swerve
             ├─ order book  (arm / pull / amend)                         one order per level cluster
             └─ positions   (fill, stop, target, end-of-day flat)
@@ -34,6 +35,8 @@ ticks ──► Engine.on_tick
 | `engine.py` | `Engine`: orders, gates, stop/target planning, fills, exits |
 | `replay.py` | streams `.scid` ticks through the engine; events.jsonl, trades.csv, summary |
 | `check_boxes.py` | the incremental box ledger against `find_range_box_zz` over the same bars |
+| `trbook.py` | `TradingRangeBook`: `BoxBook` with its boxes from `find_trading_range` instead (`box_detector="trading_range"`) |
+| `check_trbook.py` | that book's live tracker against the batch `find_trading_range` over the engine's own M5 / M1 bars |
 
 ## The zigzag
 
@@ -56,6 +59,29 @@ the price is beyond some box edge, on a copy of each reader: provisional episode
 orders and are withdrawn if the bar ends up not breaking out. A box counts as a range once it
 has two pivots at each edge, as in the reports, and an episode counts only if the box had at least 6 M5 candles before
 its breakout bar (`long_enough`, the detector's length rule, user 2026-10-18).
+
+### The other box source: `find_trading_range` (user, 2026-10-19)
+
+`Params.box_detector = "trading_range"` (replay / report flag `--box-detector trading_range`; default `"zz"`) swaps
+only where the M5 boxes come from. `TradingRangeBook` (`trbook.py`) subclasses `BoxBook`: it feeds the closed M5 bars to
+`patterns_pure/find_trading_range.TradingRangeTracker` (breakouts graded with `BoxBook`'s own M1 `Grader`) and turns its
+events into the same box dicts, each with the same `Reader`. Episodes, `forming`, `retested_by`, seats, both playbooks,
+targets and the H1-backed merge are the unchanged code.
+
+- **confirmed** -> a new box: seed edges = the tracker's edges at confirmation, read from the next bar. Chart pivots are
+  the touches that confirmed it (top = crest, bottom = trough), not zigzag pivots.
+- **widened** -> appended to `box["widen"]`, as a zigzag pivot widening is.
+- **broken** -> `status` "broken", `end_j` = the breaking bar, `break_i` / `break_t` = the first close out,
+  `break_grade` strong / weak; the Reader keeps going while a breakout waits for its retest, as for zigzag boxes.
+- **merged** (the tracker folds a later box B into the earlier box A) -> **RENEWAL** (user, 2026-10-19): A becomes a new
+  generation, a NEW box id with a fresh `Reader` on the merged edges read from that bar on, so the next strong breakout
+  opens a new episode and new seats on either edge (it is fade 1 of the new generation). The old generation keeps its
+  Reader until its own episodes are done. Generations share `root`; the engine's H1 range merge never links two
+  generations of one range (they would share seats again).
+- Every box is a range (`is_range`); the 6-candle `long_enough` rule still applies (always met: the tracker needs 15 bars).
+
+`check_trbook.py` (Oct 13-16 2026, 2 warm-up days): all 34 tracker events (confirm / merge / break, times and edges)
+equal the batch detector's over the engine's own bars; 17 boxes, 2 renewals.
 
 ## Orders
 

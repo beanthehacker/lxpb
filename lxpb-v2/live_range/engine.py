@@ -137,6 +137,11 @@ class Params:
     # FADE 2 is OFF (user, 2026-10-16): a box's second-side breakout (the other edge had already broken out strongly before
     # it) is not traded; only fade 1 (the box's first strong breakout) is. True brings fade 2 back.
     fade2: bool = False
+    # Where the M5 range boxes come from (user, 2026-10-19). "zz" = BoxBook (find_range_box_zz's zigzag boxes, the default);
+    # "trading_range" = TradingRangeBook (patterns-pure find_trading_range, live_range/trbook.py). Episodes, seats and both
+    # playbooks are the same code either way; a trading_range box merged with a later one is RENEWED as a new box id (new
+    # seats) and the H1 range merge never links two generations of one range.
+    box_detector: str = "zz"
 
 
 def _pt_sod(t_ns):
@@ -176,7 +181,13 @@ class Engine:
         self.m5f = None
         self.tb = Series(ATR_PERIOD)         # closed trading bars
         # books
-        self.box = BoxBook()
+        if self.p.box_detector == "zz":
+            self.box = BoxBook()
+        elif self.p.box_detector == "trading_range":
+            from .trbook import TradingRangeBook
+            self.box = TradingRangeBook()
+        else:
+            raise ValueError(f"box_detector {self.p.box_detector!r}: use 'zz' or 'trading_range'")
         self.lv5 = LevelBook("m5", verdicts5)
         self.lv = LevelBook("trade", verdicts_tb, min_plain_wick=self.p.min_plain_wick)
         self.zz = ZigZag(self.p.zz_atr_mult, ATR_PERIOD, self.p.zz_min_bars)
@@ -638,6 +649,8 @@ class Engine:
                 if self.find(a) == self.find(b) or self._merge_no.get((a, b)) == sec:
                     continue
                 A, B = boxes[a], boxes[b]
+                if A.get("root") is not None and A.get("root") == B.get("root"):
+                    continue                # two generations of one renewed range keep their own seats
                 frac = (min(A["high"], B["high"]) - max(A["low"], B["low"])) / max(1e-9, min(A["high"] - A["low"], B["high"] - B["low"]))
                 hb = self._h1_holds(A, B) if frac >= self.p.box_merge_overlap else None
                 if hb is None:

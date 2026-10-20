@@ -1075,7 +1075,7 @@ def _run_engine(args):
     hi = min(hi, scid_end)
     params = Params(bar_minutes=BAR_MIN, decision_s=args.decision_s, box_merge_overlap=args.box_merge_overlap,
                     box_merge_tol=args.box_merge_tol, fade2=bool(args.fade2),
-                    target_mode=args.fade_target)
+                    target_mode=args.fade_target, box_detector=args.box_detector)
     warm_days = (lo - bars_lo) / pd.Timedelta(days=1)
     eng, start = RP.build_engine(lo, hi, warm_days, params, h1_days=args.h1_days)
     print(f"[engine] replay {start} -> {hi} (armed from {lo}), M{BAR_MIN} trading bars, decisions every "
@@ -2821,6 +2821,9 @@ if __name__ == "__main__":
     parser.add_argument("--fade2", action="store_true",
                         help="also keep fade 2 (a box's second-side breakout: the other edge had already broken out "
                              "strongly). OFF by default: only fade 1 is traded, tagged and drawn.")
+    parser.add_argument("--box-detector", default="zz", choices=["zz", "trading_range"],
+                        help="M5 range boxes from find_range_box_zz (default) or find_trading_range "
+                             "(live_range/trbook.py; chart squares are its confirming touches, not zigzag pivots)")
     parser.add_argument("--label", default="",
                         help="short text appended to the page title (e.g. 'Sep 2026, whole month'); it "
                              "also gives the report its own saved review notes.")
