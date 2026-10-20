@@ -11,6 +11,14 @@ edge. `edges="wick"` (with `max_widen` 0.25) is the earlier definition, kept
 for comparison: bar highs / lows for all of the above. Breakouts can be graded
 with `find_range`'s strong-breakout grader (`lower_data`).
 
+REGRESSION CASES (user, 2026-10-19): after ANY change here, or to find_zigzag,
+find_ATR, find_range (_BreakoutGrader, _atr_series) or live_range/trbook.py, run
+`python patterns_pure/tests/test_find_trading_range_cases.py`. It pins the USDJPY
+H1 Apr 21-29 2026 range (158.958-159.847, failed breakout Apr 29 04:00 PT) and
+the AUDUSD H1 Jan 13 08:00 - Jan 19 06:00 PT 2026 range (0.66671-0.67108), both
+exact, on frozen bars, plus no look-ahead. Never change its expected
+values to make a change pass without the user's OK.
+
 Point in time. `TradingRangeTracker.update()` takes one closed bar at a time
 and decides everything from that bar and the bars before it; nothing it has
 reported is ever revised by a later bar except the live box's own end and
@@ -51,7 +59,10 @@ Each bar, with no confirmed box live:
     extreme never demotes an earlier touch (user, 2026-10-19);
   - a bar counts only once that box is at least `running_touches` x the
     window's height (the first bars of any window would otherwise all be
-    "edges"); `running_touches` 0 judges every bar against the final edges;
+    "edges"); `running_touches` 0 judges every bar against the final edges.
+    Pivot mode: the pivots before that wait and are judged against the first
+    box that is that tall, so a window's opening swings still count (user,
+    2026-10-20; wick mode still skips its early bars);
   - a touch of one edge counts after the other edge was touched (a full
     swing; one edge poked five times in a row is one touch) or, at most
     `max_half_touches` times, after price reached the midline since that
@@ -64,18 +75,20 @@ Each bar, with no confirmed box live:
   still passes rule 2 over all its bars. The earlier box takes the bars,
   edges and live state; its id stays, `merged` counts the boxes it absorbed.
 
-Each bar, with a confirmed box live, PIVOT MODE:
+Each bar, with a confirmed box live, PIVOT MODE, decided on the bar's close
+and never revisited (user, 2026-10-20):
 
-- a close inside keeps it going; bars never move an edge. A pivot confirmed
-  past an edge moves that edge out to it while the box stays within
+- a close outside that grades STRONG on `lower_data` BREAKS the box.
+- else a wick past an edge widens the box to it while the box stays within
   `max_widen` (0.5) of its height at confirmation (or last merge) and within
-  rule 2; a pivot farther out is left out.
-- a close outside is only an attempt -- the edge may yet move out to a new
-  pivot -- and BREAKS the box when it grades STRONG on `lower_data` or when it
-  lies past the allowable price: the edge pushed out `max_widen` x the height
-  at confirmation, where no widening can reach. A close back inside fails the
-  attempt. (`break_tr` / `confirm_bars` are wick mode only: on pivot edges they
-  broke the box on every leg to a new extreme before its pivot confirmed.)
+  rule 2. A wick the box can't take in FREEZES the box on that bar: broken that
+  way (`break_type` "breakout") if the bar closed outside, a failed breakout
+  (`break_type` "failed", `break_dir` the side the wick poked) if it closed
+  back inside. Either way the box ends on the bar before. (Was: a close out was
+  only an attempt and the box lived on, edges fixed, until a close past
+  `max_widen` x its height: AUDUSD H1 box #9 ignored the Jan 12 05:00 PT
+  breakout to 0.67179 and lived to Jan 19.) (`break_tr` / `confirm_bars` are
+  wick mode only.)
 
 Each bar, with a confirmed box live, WICK MODE:
 
@@ -103,10 +116,11 @@ in the output and `pivot_edges(box, upto)` give its highest crest / lowest
 trough / first pivot (pivots confirmed by then); in pivot mode they equal the
 box's own edges.
 
-Pivot anchoring, USDJPY H1 (user, 2026-10-19): as of 2026-04-28 02:00 UTC the
-live range is 159.093 (trough Apr 27 09:00) - 159.847 (crest Apr 23 17:00),
-from the crest at Apr 21 17:00, confirmed Apr 22 21:00; the wick definition
-had 159.038-159.847 from Apr 21 14:00, the previous range's breakout bar.
+Pivot anchoring, USDJPY H1 (user, 2026-10-19): as of 2026-04-27 19:00 PT the
+live range is 159.093 (trough Apr 27 02:00 PT) - 159.847 (crest Apr 23 10:00 PT),
+from the crest at Apr 21 10:00 PT, confirmed Apr 22 00:00 PT (14:00 PT before early pivots
+waited for the box, 2026-10-20); the wick definition
+had 159.038-159.847 from Apr 21 07:00 PT, the previous range's breakout bar.
 `max_widen` 0.5 is the smallest that takes in both later pivots (0.4 misses the
 Apr 27 trough, 0.75 swallows all of April into one box). ES M5 Oct 15-16 in
 pivot mode: the overnight box 7792.50-7809.50, 21:30-06:45, and nothing else
@@ -132,8 +146,9 @@ matches the full run.
     find_trading_range(data, **params) -> DataFrame of confirmed ranges:
         id, start_time, confirm_time, end_time, high, low, height, mean_tr,
         height_tr, n_bars, touches_high, touches_low, drift, confirm_high,
-        confirm_low, merged, status ("active" / "broken"), break_dir
-        ("up" / "down" / None), break_time, break_confirm_time,
+        confirm_low, merged, status ("active" / "broken" = ended), break_dir
+        ("up" / "down" / None), break_grade, break_type ("breakout" / "failed"
+        = a failed breakout froze it / None), break_time, break_confirm_time,
         confirm_start_time (start of the window that confirmed it),
         confirm_touches ([(time, "top"/"bottom", is_half)] that confirmed it),
         members ([{start_time, end_time, high, low}] of a merged range, else []),
@@ -169,6 +184,7 @@ DEFAULTS = dict(
 RANGE_COLUMNS = ["id", "start_time", "confirm_time", "end_time", "high", "low", "height",
                  "mean_tr", "height_tr", "n_bars", "touches_high", "touches_low", "drift",
                  "confirm_high", "confirm_low", "merged", "status", "break_dir", "break_grade",
+                 "break_type",
                  "break_time", "break_confirm_time", "confirm_start_time", "confirm_touches",
                  "members", "pivot_high", "pivot_low", "pivot_high_time", "pivot_low_time",
                  "pivot_start_time"]
@@ -233,9 +249,13 @@ def _pivot_touches(piv, hi, lo, frac, max_half=0, where=False, running=0.0):
     crest in the top zone is a top touch, a trough in the bottom zone a bottom
     touch; a crest at or above the midline / a trough at or below it is the swing
     a half touch needs. With `running`, each pivot is judged against the pivot box
-    as it stood then (and only once it is `running` x the final height)."""
+    as it stood then, once that box is `running` x the final height; the pivots
+    before that WAIT and are judged, in order, against the first box that is
+    (user, 2026-10-20: they used to be dropped, so a window's opening swings,
+    e.g. AUDUSD H1 crests Jan 12 08:00 / Jan 13 05:00 PT, could never count)."""
     rh, rl = -np.inf, np.inf
     tok, at = [], []
+    wait = []   # pivots seen before the running box was tall enough to be touched
     for kind, off, price in piv:
         if kind == "crest":
             rh = max(rh, price)
@@ -243,15 +263,18 @@ def _pivot_touches(piv, hi, lo, frac, max_half=0, where=False, running=0.0):
             rl = min(rl, price)
         eh, el = (rh, rl) if running else (hi, lo)
         if not np.isfinite(eh - el) or (running and eh - el < running * (hi - lo)):
+            wait.append((kind, off, price))
             continue
         zone, mid = frac * (eh - el), (eh + el) / 2
-        if kind == "crest":
-            t = _TOP if price >= eh - zone else _ABOVE if price >= mid else 0
-        else:
-            t = _BOT if price <= el + zone else _BELOW if price <= mid else 0
-        if t:
-            tok.append(t)
-            at.append(off)
+        for k, o, pr in wait + [(kind, off, price)]:
+            if k == "crest":
+                t = _TOP if pr >= eh - zone else _ABOVE if pr >= mid else 0
+            else:
+                t = _BOT if pr <= el + zone else _BELOW if pr <= mid else 0
+            if t:
+                tok.append(t)
+                at.append(o)
+        wait = []
     return _count(tok, at, max_half, where)
 
 
@@ -394,6 +417,8 @@ class TradingRangeTracker:
         for kind, i, price, jc in self.pivots:
             if jc > upto or not box["start"] <= i <= box["end"]:
                 continue
+            if self.pivot and not box["low"] <= price <= box["high"]:
+                continue    # pivot mode: a pivot the box left out (past max_widen) is no edge
             first = i if first is None else min(first, i)
             if kind == "crest" and (hi is None or price > hi[0]):
                 hi = (price, i)
@@ -425,7 +450,35 @@ class TradingRangeTracker:
                 box["high"], box["low"] = nh, nl
             box["end"] = i
 
+    def _step_pivot(self, j):
+        """Pivot mode, on this bar's close (user, 2026-10-20): a close out that grades
+        strong breaks the box; else a wick past an edge widens the box to it while
+        the box stays within `max_widen` of its height at confirmation (or last
+        merge) and within rule 2; a wick the box can't take in FREEZES it on this
+        bar: broken that way if the bar closed out, a failed breakout if it closed
+        back inside. Decided now, never revisited on later bars."""
+        p, box = self.p, self.active
+        h, l, c = self.H[j], self.L[j], self.C[j]
+        d = 1 if c > box["high"] else -1 if c < box["low"] else 0
+        if d and self.grader is not None and self.grader(self.T[j], d > 0, box["high"], box["low"]) == "strong":
+            self._pend = (d, j)
+            return self._break(box, d, j, "strong")
+        nh, nl = max(box["high"], h), min(box["low"], l)
+        if (nh, nl) == (box["high"], box["low"]) or (
+                nh - nl <= (1 + p["max_widen"]) * box["base_height"]
+                and nh - nl <= p["max_height_tr"] * self._mean_tr(box["start"], j)):
+            box.update(high=nh, low=nl, end=j)
+            return
+        if d == 0:  # failed breakout: the side the wick reached farther past
+            d = 1 if h - box["high"] >= box["low"] - l else -1
+            self._pend = (d, j)
+            return self._break(box, d, j, None, failed=True)
+        self._pend = (d, j)
+        return self._break(box, d, j, "weak" if self.grader is not None else None)
+
     def _step_active(self, j):
+        if self.pivot:
+            return self._step_pivot(j)
         p, box, c = self.p, self.active, self.C[j]
         d = 1 if c > box["high"] else -1 if c < box["low"] else 0
         if d == 0:
@@ -440,15 +493,6 @@ class TradingRangeTracker:
             self._pend = None
         if self._pend is None:
             self._pend = (d, j)
-        if self.pivot:
-            # pivot mode: a close out is only an attempt (the edge may yet move out to a new pivot)
-            # unless it grades strong or lies past the allowable price, where no widening can reach
-            beyond = c - box["high"] if d > 0 else box["low"] - c
-            if self.grader is not None and self.grader(self.T[j], d > 0, box["high"], box["low"]) == "strong":
-                return self._break(box, d, j, "strong")
-            if beyond > p["max_widen"] * box["base_height"]:
-                return self._break(box, d, j, "weak" if self.grader is not None else None)
-            return
         if self.grader is not None:
             limit = p["max_widen"] * box["base_height"]  # the allowable price, past the edge
             beyond = c - box["high"] if d > 0 else box["low"] - c
@@ -463,10 +507,11 @@ class TradingRangeTracker:
         if beyond >= p["break_tr"] * mtr or j - self._pend[1] + 1 >= p["confirm_bars"]:
             self._break(box, d, j, None)
 
-    def _break(self, box, d, j, grade):
+    def _break(self, box, d, j, grade, failed=False):
         k = self._pend[1]
         box.update(status="broken", break_dir="up" if d > 0 else "down", break_bar=k,
-                   break_confirm_bar=j, break_grade=grade)
+                   break_confirm_bar=j, break_grade=grade,
+                   break_type="failed" if failed else "breakout")
         self._event(j, "broken", box)
         self.floor = k
         self.active = None
@@ -545,7 +590,7 @@ class TradingRangeTracker:
                    base_height=hi - lo, confirm_start=i, members=[],
                    confirm_high=hi, confirm_low=lo, merged=0, status="active",
                    break_dir=None, break_bar=None, break_confirm_bar=None,
-                   break_grade=None)
+                   break_grade=None, break_type=None)
         prev = self.ranges[-1] if self.ranges else None
         if prev is not None and self._joins(prev, box):
             gap_h, gap_l = self._gap_ext(prev["end"] + 1, i, hi, lo)
@@ -557,7 +602,7 @@ class TradingRangeTracker:
             prev.update(end=j, high=nh, low=nl, base_height=nh - nl,
                         merged=prev["merged"] + 1,
                         status="active", break_dir=None, break_bar=None,
-                        break_confirm_bar=None, break_grade=None)
+                        break_confirm_bar=None, break_grade=None, break_type=None)
             cand.update(outcome="merged", range_id=prev["id"])
             self.active = prev
             self._event(j, "merged", prev)
@@ -598,7 +643,7 @@ class TradingRangeTracker:
                 drift=_drift(np.asarray(self.C[s:e + 1]), b["high"], b["low"]),
                 confirm_high=b["confirm_high"], confirm_low=b["confirm_low"],
                 merged=b["merged"], status=b["status"], break_dir=b["break_dir"],
-                break_grade=b["break_grade"],
+                break_grade=b["break_grade"], break_type=b["break_type"],
                 break_time=T[b["break_bar"]] if b["break_bar"] is not None else None,
                 break_confirm_time=(T[b["break_confirm_bar"]]
                                     if b["break_confirm_bar"] is not None else None),

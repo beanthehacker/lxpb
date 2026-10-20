@@ -25,6 +25,8 @@ The tracker's events map onto boxes like this:
 
 Every box counts as a range (the tracker only hands over confirmed ones); BoxBook's
 6-candle length rule still applies to each episode.
+
+After any change here or to find_trading_range, run patterns_pure/tests/test_find_trading_range_cases.py and check_trbook.py.
 """
 from find_trading_range import TradingRangeTracker
 

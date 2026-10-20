@@ -18,6 +18,13 @@ is in a worktree, stay in it.
   needs from the main checkout (see the lxpb-v2 env setup memory) rather
   than regenerating or re-exporting.
 
+# Times: always PT, never UTC (user, 2026-10-20)
+
+**Every time stated to the user is in Pacific Time** (America/Los_Angeles, PST or PDT as in force on that date), labelled
+"PT": replies, tables, charts, HTML reports, docstrings, notes, commit messages. Never state a time in UTC, even for data
+stored in UTC (the FX H1 files in E:/daily-analysis/data): convert it first. Code, data and CLI arguments defined in UTC may
+stay UTC internally.
+
 # Opening .html files on this Windows machine: Chrome only, no links (user, 2026-10-16)
 
 **Whenever a `.html` file (a report, a smoke-test output, a chart page) is generated or updated for the
@@ -151,6 +158,13 @@ takes the M5 range boxes from `patterns_pure/find_trading_range` (`live_range/tr
 seats, both playbooks and the H1 merge are the same code. A box that the detector merges with a later one is RENEWED: a new
 box id (new seats, fresh episode Reader on the merged edges), and the H1 merge never links two generations of one range. Not
 the default: switching it is a strategy change the user decides (see `live_range/README.md`, "The other box source").
+
+**Standing rule (user, 2026-10-19): range-box regression cases.** After ANY change to `patterns_pure/find_trading_range.py`,
+`find_zigzag.py`, `find_ATR.py`, `find_range.py` (the strong-breakout grader, `_atr_series`) or `live_range/trbook.py`, run
+`python patterns_pure/tests/test_find_trading_range_cases.py` and report the result. It pins two ranges the user signed off,
+on bars frozen in `patterns_pure/tests/fixtures/`: USDJPY H1 Apr 21 10:00 PT - Apr 29 03:00 PT 2026, 158.958-159.847, failed breakout up Apr 29 04:00 PT, exact (and
+159.093-159.847 live as of Apr 27 19:00 PT), and AUDUSD H1 Jan 13 08:00 - Jan 19 06:00 PT 2026, 0.66671-0.67108, exact; plus no look-ahead on both. A failing
+case means the change broke a signed-off range: do not edit the expected values or commit the change without the user's OK.
 
 **Standing rule: for the M1 range-fade playbook, a trade exists only if the live engine (`live_range/`) takes it.** The
 algorithm is range first: a range box with a strong breakout exists, THEN the LXPB ledger is read only as a cache lookup

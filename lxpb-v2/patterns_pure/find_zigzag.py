@@ -1,3 +1,5 @@
+# find_trading_range anchors its range edges to these pivots: after any change here, run
+# patterns_pure/tests/test_find_trading_range_cases.py (user, 2026-10-19).
 from bisect import bisect_left
 from typing import NamedTuple
 

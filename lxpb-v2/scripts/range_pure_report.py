@@ -65,11 +65,13 @@ def range_card(bars, r, p):
                    label=f"confirmed {_hm(r.confirm_time)[6:]}")]
     if r.status == "broken":
         grade = f" {r.break_grade}" if r.break_grade else ""
-        sub.append(f"broken {r.break_dir}{grade} {_hm(r.break_confirm_time)}"
+        what = "failed breakout" if getattr(r, "break_type", None) == "failed" else "broken"
+        sub.append(f"{what} {r.break_dir}{grade} {_hm(r.break_confirm_time)}"
                    + (f" (first close out {_hm(r.break_time)})"
                       if r.break_time != r.break_confirm_time else ""))
         vlines.append(dict(time=_ts(r.break_confirm_time), color=YELLOW,
-                           label=f"broke {r.break_dir}{grade} {_hm(r.break_confirm_time)[6:]}"))
+                           label=f"{'failed' if what != 'broken' else 'broke'} {r.break_dir}{grade} "
+                                 f"{_hm(r.break_confirm_time)[6:]}"))
     else:
         sub.append("ACTIVE (not broken at the last bar)")
     draws = [dict(name="range", color=YELLOW, hi=r.high, lo=r.low, t0=_ts(r.start_time),
