@@ -293,7 +293,7 @@ import liquidity as LQ                            # noqa: E402
 import volume_spike as VS                         # noqa: E402
 import h1_bias as HB                              # noqa: E402
 import trap_variants as TV                        # noqa: E402
-from find_sfp import find_sfp                     # noqa: E402  (vendored patterns_pure, on sys.path via R)
+from find_sfp_fractal import find_sfp                     # noqa: E402  (vendored patterns_pure, on sys.path via R)
 
 SS_CONFL_MIN_DEFAULT = 1
 # Which P0s this report trades (--p0-kinds). "spike-or-swing" is the original

@@ -1,5 +1,14 @@
 @AGENTS.md
 
+# patterns_pure is a git submodule (user, 2026-10-20)
+
+`lxpb-v2/patterns_pure` is the `beanthehacker/patterns_pure` repo, mounted as a submodule (it is shared with
+daily-analysis and swing_playbooks; nothing is vendored any more). A fresh clone or a new worktree needs
+`git submodule update --init` before anything runs (the repo's post-checkout hook does it on `git worktree add`).
+Change a detector in the patterns_pure repo, push it there, then bump the submodule here in its own commit.
+lxpb's fractal SFP is `find_sfp_fractal.py` (`from find_sfp_fractal import find_sfp`); `find_SFP.py` is
+daily-analysis's different SFP.
+
 # Sessions: always work in a separate worktree
 
 **Every new session starts by entering its own git worktree**, before any
@@ -469,9 +478,9 @@ looks close.
 - `../lxpb.py`'s `is_spike` loads them by path; feed `advance_one_bar` only
   through `lxpb.iter_bars(state, bars)`, which attaches the per-bar verdict
   and seeds the previous bar from `state` on a resume.
-- Never import from `D:\daily-analysis\patterns-pure` directly. To pick up an
-  upstream change, refresh the vendored copy (`patterns_pure/README.md`); the
-  level caches' rules fingerprint hashes those files and rebuilds on its own.
+- Never import from `D:\daily-analysis\patterns-pure` directly. To pick up a
+  change, bump the `patterns_pure` submodule; the level caches' rules
+  fingerprint hashes those files and rebuilds on its own.
 ## Which pattern is the spike for each level type: two pairings, both deliberate
 
 The definition above is shared; the pairing is not. Two pairings exist, and
@@ -512,7 +521,7 @@ A candle between two rows needs the body of the row below it (1.4x needs 50%,
 It is patterns-pure's `find_spike_thrust` (vendored in `patterns_pure/`, rows
 in its `SPIKE_THRUST_TIERS`) and nothing else, under the same rules as the
 spike itself: never restate the rows or the close test inline, and change
-them only in patterns-pure and then refresh the vendored copy.
+them only in the patterns_pure repo and then bump the submodule.
 Example: H1 20 Dec 2024 05:00 PT (spike = the 04:00 PT hammer; 1.76x, 48% body).
 
 - It describes two consecutive candles and knows nothing about LHPB/LLPB. Code
@@ -623,7 +632,7 @@ Rules:
 A bias is plain H1 candle context, NOT a level: a hammer is bullish, a
 shooting star bearish (patterns-pure, read on the candle alone -- neither
 LHPB/LLPB pairing above applies, since no level is involved), and an "sfp" is
-patterns-pure's `find_sfp` -- a candle that sweeps an H1 swing low and closes
+patterns-pure's `find_sfp` (module `find_sfp_fractal`) -- a candle that sweeps an H1 swing low and closes
 back above it (bullish) or sweeps a swing high and closes back below it
 (bearish). `find_sfp` owns which swing that is: the most recent fractal pivot
 that is both confirmed AND still UNTESTED, so a swing already traded through

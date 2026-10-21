@@ -144,7 +144,7 @@ import m5_structure as MS            # noqa: E402
 import lxpb_levels_cache as LC       # noqa: E402
 
 from find_spike_thrust import find_spike_thrust, SPIKE_THRUST_TIERS   # noqa: E402
-from find_sfp import find_sfp   # noqa: E402
+from find_sfp_fractal import find_sfp   # noqa: E402
 
 TICK_SIZE = R.TICK_SIZE_DEFAULT
 

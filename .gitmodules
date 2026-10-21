@@ -1,0 +1,3 @@
+[submodule "lxpb-v2/patterns_pure"]
+	path = lxpb-v2/patterns_pure
+	url = ../patterns_pure.git
