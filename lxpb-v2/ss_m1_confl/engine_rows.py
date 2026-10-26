@@ -128,6 +128,20 @@ def _mode(tr, base, man, is_long, stop_pts, min_r):
             "r_multiple": r_planned, "resolved": resolved, "mgmt": mgmt, "dyn_tags": tags}
 
 
+def _entry_kind(lvl, bars):
+    """What the ENTRY level is (the level the order sat on, not the one that qualified it): spike (its P0 kind is spike-P0 or
+    spike+swing-P0, the detector pairing of `../lxpb.py`), swing (swing-P0 or spike+swing-P0: a swing AND consolidating at the
+    breakout) and its formation candle's rejection wick in points (upper wick for an LHPB, lower for an LLPB, the same reading
+    as the engine's plain-P0 wick rule). The page's 'Entry level' filters read these."""
+    kind = lvl.get("p0_kind") or ""
+    bar = bars.get(pd.Timestamp(lvl["formation_time"]).value)     # (open, high, low, close)
+    wick = None
+    if bar is not None:
+        wick = bar[1] - max(bar[0], bar[3]) if lvl["type"] == "LHPB" else min(bar[0], bar[3]) - bar[2]
+    return {"p0_kind": kind, "spike": kind in ("spike-P0", "spike+swing-P0"),
+            "swing": kind in ("swing-P0", "spike+swing-P0"), "wick": float(wick) if wick is not None else None}
+
+
 def _result(tr, led, min_r):
     is_long = tr["side"] == "buy"
     lvl, anc = tr["level"], tr["decided"]       # anc: the level that qualified on its own; lvl: the entry (a better cluster price or the same level)
@@ -183,6 +197,7 @@ def _result(tr, led, min_r):
         "touch_time_alt": _ts(tr["t"]), "fill_price": fill,
         "chased_pts": max(0.0, chase), "price_improvement_pts": max(0.0, -chase),
         "entry_is_spike": bool(lvl.get("is_spike")), "run_in_start": None,
+        "entry_kind": _entry_kind(lvl, led.bars),
         "stop_price": initial_stop, "stop_pts": stop_pts, "stop_source": tr["stop_src"],
         "stop_m5_level": led.dict(stop_level) if stop_level is not None else None,
         "modes": modes, "active_mode": active,

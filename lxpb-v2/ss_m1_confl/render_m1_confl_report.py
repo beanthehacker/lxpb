@@ -1506,6 +1506,19 @@ def _render_row(idx, res, chart_stacks):
         dyn_tags_attr = " ".join(dyn_tags)
         base_tags_attr = " ".join(base_tags)
         row_badges = _row_tag_badges(res, dyn_tags, level_type, entry_touch_str)
+        ek = res.get("entry_kind") or {}
+        ek_wick = ek.get("wick")
+        lvl_attrs = (f'data-lvl-spike="{int(bool(ek.get("spike")))}" data-lvl-swing="{int(bool(ek.get("swing")))}" '
+                     f'data-lvl-wick="{"" if ek_wick is None else f"{ek_wick:.2f}"}"')
+        ek_title = (f"Entry level: {ek.get('p0_kind') or 'P0 kind unknown'}; formation candle's rejection wick "
+                    f"({'upper' if level_type == 'LHPB' else 'lower'}) "
+                    f"{'n/a' if ek_wick is None else f'{ek_wick:.2f} pt'}")
+        if ek.get("spike"):
+            row_badges += f'<span class="dyn-tag-badge lvl-kind-badge" title="{ek_title}">SPK</span>'
+        if ek.get("swing"):
+            row_badges += f'<span class="dyn-tag-badge lvl-kind-badge" title="{ek_title}">SWG</span>'
+        if ek_wick is not None:
+            row_badges += f'<span class="dyn-tag-badge lvl-kind-badge" title="{ek_title}">W{ek_wick:.2f}</span>'
         tags_cell = (f'<span class="row-badges">{row_badges}</span>'
                     f'<span class="mode-tag-badges">{act["modeTagBadges"]}</span>')
         modes_attr = _attr_json(payloads)
@@ -1519,7 +1532,7 @@ def _render_row(idx, res, chart_stacks):
     data-r="{act['r']}" data-rr="{act['rrVal']}" data-pnl-pts="{act['pnlPts']}" data-outcome="{act['outcome']}"
     data-mgmt-r="{act['mgmtR']}" data-mgmt-pnl-pts="{act['mgmtPnl']}"
     data-mgmt-outcome="{act['mgmtOutcome']}" data-mgmt-fired="{act['mgmtFired']}"
-    data-mode="{active_mode}" data-modes="{modes_attr}" {mes_attrs}
+    data-mode="{active_mode}" data-modes="{modes_attr}" {mes_attrs} {lvl_attrs}
     onclick="toggleChart({idx})">
   <td class="left">{idx}</td>
   <td class="tags-cell">{tags_cell}</td>
@@ -1732,6 +1745,18 @@ other row -- overrides every Exclude box. Click again to turn off.">
         <input type="radio" class="f-dyn-isolate" data-tag="fade-mixed"> only</label>
     </div>
 __P0_KIND_CHIPS__
+  </div>
+  <div class="filter-row">
+    <span class="filter-label" title="Live filters on the ENTRY level (the level the order sat on). Spike: its P0 kind is
+spike-P0 or spike+swing-P0. Swing: swing-P0 or spike+swing-P0 (a swing AND consolidating at the breakout). Large wick: the
+P0 candle's rejection wick (upper for an LHPB, lower for an LLPB) is at least the points given (1 pt = the engine's
+plain-P0 entry rule). Each one: any / yes / no. Combine ALL = every set condition must hold (AND); ANY = at least one
+(OR). Stats recompute from the rows left. Badges SPK / SWG / W(wick pts) in the Tags column.">Entry level</span>
+    <label class="chip">Spike <select class="f-lvl" data-attr="spike"><option value="any">any</option><option value="1">yes</option><option value="0">no</option></select></label>
+    <label class="chip">Swing <select class="f-lvl" data-attr="swing"><option value="any">any</option><option value="1">yes</option><option value="0">no</option></select></label>
+    <label class="chip">Large wick &ge; <input type="number" class="f-lvl-wick-pts" value="1" step="0.25" min="0" style="width:4em">
+      pt <select class="f-lvl" data-attr="wick"><option value="any">any</option><option value="1">yes</option><option value="0">no</option></select></label>
+    <label class="chip">Combine <select id="f-lvl-combine"><option value="and">ALL (and)</option><option value="or">ANY (or)</option></select></label>
   </div>
   <div class="filter-row">
 __TARGET_CHIPS__
@@ -2555,6 +2580,27 @@ applyReviewFilters = function() {
   _applyReviewFiltersBase();
   if (!_inDynStats) recomputeDynStats();
 };
+// Entry-level filters: spike / swing / large wick, each any / yes / no,
+// combined with ALL (and) or ANY (or). Reads data-lvl-* on the row.
+function entryLevelOk(tr) {
+  const wickPts = parseFloat((document.querySelector('.f-lvl-wick-pts') || {}).value);
+  const conds = [];
+  document.querySelectorAll('.f-lvl').forEach(sel => {
+    if (sel.value === 'any') return;
+    const a = sel.dataset.attr;
+    let has;
+    if (a === 'wick') {
+      const w = parseFloat(tr.dataset.lvlWick);
+      has = !isNaN(w) && w >= (isNaN(wickPts) ? 0 : wickPts);
+    } else {
+      has = tr.dataset['lvl' + a[0].toUpperCase() + a.slice(1)] === '1';
+    }
+    conds.push(sel.value === '1' ? has : !has);
+  });
+  if (!conds.length) return true;
+  const comb = (document.getElementById('f-lvl-combine') || {}).value;
+  return comb === 'or' ? conds.some(Boolean) : conds.every(Boolean);
+}
 function recomputeDynStats() {
   applyTargetModes();
   const excludeTags = activeDynExcludeTags();
@@ -2579,7 +2625,7 @@ function recomputeDynStats() {
     // stats below instead of only hiding rows via applyReviewFilters.
     const rrHidden = !numFilterOk(tr, 'rr');
     const reviewHidden = !reviewFilterOk(tr, reviewState);
-    const hidden = reviewHidden || rrHidden || (isolateTags.length > 0
+    const hidden = reviewHidden || rrHidden || !entryLevelOk(tr) || (isolateTags.length > 0
       ? !tags.some(t => isolateTags.includes(t))
       : (excludeTags.length > 0 && tags.some(t => excludeTags.includes(t))));
     tr.classList.toggle('dyn-hidden', hidden);
@@ -2643,6 +2689,8 @@ function recomputeDynStats() {
   try { applyReviewFilters(); } finally { _inDynStats = false; }
 }
 document.querySelectorAll('.f-dyn-exclude, .f-target-mode, .f-outcome').forEach(cb => cb.addEventListener('change', recomputeDynStats));
+document.querySelectorAll('.f-lvl, #f-lvl-combine').forEach(el => el.addEventListener('change', recomputeDynStats));
+document.querySelectorAll('.f-lvl-wick-pts').forEach(el => el.addEventListener('input', recomputeDynStats));
 // The shared code bound its own review-chip listeners to the ORIGINAL
 // applyReviewFilters before the wrapper above existed, so those chips need
 // their own stats trigger.
