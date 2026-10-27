@@ -27,7 +27,7 @@ const GROUP_ORDER: { key: string; title: string; description: string; test: (rel
   {
     key: "m1_confl",
     title: "M1 Confluence",
-    description: "M1 range-box trades, September 2026. sep_range_box: from 28 Sep, both range-box playbooks (fade the breakout, go with the retest). sep_month_fade: the whole of September, fade playbook only, range boxes up to 60 days old.",
+    description: "M1 range-box fade trades from the live engine. sep_month_fade: September 2026. sep_oct_fade: Sep 1 - Oct 16 2026, zigzag range boxes. sep_oct_fade_tr: the same window with find_trading_range boxes. sep_range_box: from 28 Sep, both range-box playbooks (older pipeline).",
     test: (rel) => rel.startsWith("ss_m1_confl/"),
   },
   {
