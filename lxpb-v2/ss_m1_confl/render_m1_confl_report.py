@@ -1080,7 +1080,9 @@ def _run_engine(args):
     eng, start = RP.build_engine(lo, hi, warm_days, params, h1_days=args.h1_days)
     print(f"[engine] replay {start} -> {hi} (armed from {lo}), M{BAR_MIN} trading bars, decisions every "
           f"{args.decision_s:g}s, range merge >= {args.box_merge_overlap:.0%}, fade 2 {'ON' if args.fade2 else 'off'}", flush=True)
-    n_ticks, secs = RP.feed(eng, start, hi, progress=False)
+    # One progress line per trading day (PT date, %, ETA, memory, trades so far), and the trades closed so far
+    # rewritten after every day beside the output, so a long run can be followed and its results read mid-run.
+    n_ticks, secs = RP.feed(eng, start, hi, progress=True, checkpoint=(args.output + ".trades.jsonl") if args.output else None)
     print(f"[engine] {n_ticks:,} ticks in {secs:.0f}s: {len(eng.trades)} trades "
           f"({sum(1 for t in eng.trades if all(pb == 'fade' for _, _, pb in t['serves']))} fade)", flush=True)
     return eng

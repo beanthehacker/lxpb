@@ -76,20 +76,67 @@ def build_engine(lo, hi, warmup_days, params, h1_days=25.0, engine_cls=Engine):
     return eng, start
 
 
-def feed(eng, start, hi, chunk_hours=24.0, progress=False):
-    """Stream the ticks of [start, hi) through the engine."""
+def _rss_gb():
+    """This process's resident memory in GB (None where it cannot be read)."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+
+            class PMC(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+                    (n, ctypes.c_size_t) for n in ("PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                                                   "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
+                                                   "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")]
+            c = PMC()
+            c.cb = ctypes.sizeof(PMC)
+            k32 = ctypes.WinDLL("kernel32")
+            k32.GetCurrentProcess.restype = wintypes.HANDLE
+            gpmi = ctypes.WinDLL("psapi").GetProcessMemoryInfo
+            gpmi.argtypes = [wintypes.HANDLE, ctypes.POINTER(PMC), wintypes.DWORD]
+            gpmi(k32.GetCurrentProcess(), ctypes.byref(c), c.cb)
+            return c.WorkingSetSize / 2 ** 30
+        import resource
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2 ** 20      # peak, KB on Linux
+    except Exception:
+        return None
+
+
+def feed(eng, start, hi, chunk_hours=24.0, progress=False, checkpoint=None):
+    """Stream the ticks of [start, hi) through the engine.
+
+    `progress`: one line per chunk (a day by default) with the chunk's start in PT, its ticks and time, the run's
+    elapsed time, an ETA from the average speed so far, memory, and trades so far (fade / all). `checkpoint`: a
+    path; after every chunk the trades closed so far are written there as JSON lines (rewritten whole, so it always
+    holds the run's results up to the last finished chunk)."""
     t0, n_ticks, cur = time.time(), 0, start
     step = pd.Timedelta(hours=chunk_hours)
+    span = (hi - start).total_seconds()
     while cur < hi:
         nxt = min(cur + step, hi)
+        c0 = time.time()
         T, P, B, A, S = ticks(cur, nxt)
         on_tick = eng.on_tick
         for t, px, bd, ak, sd in zip(T.tolist(), P.tolist(), B.tolist(), A.tolist(), S.tolist()):
             on_tick(t, px, bd, ak, sd)
         n_ticks += len(T)
         if progress:
-            print(f"  {cur:%m-%d %H:%M} +{len(T):>7,} ticks  trades {len(eng.trades):>3}  working orders {len(eng.orders):>2}  "
-                  f"{time.time() - t0:6.1f}s", flush=True)
+            el = time.time() - t0
+            done = (nxt - start).total_seconds() / span
+            eta = el / done - el if done > 0 else 0.0
+            mem = _rss_gb()
+            fade = sum(1 for tr in eng.trades if all(pb == "fade" for _, _, pb in tr["serves"]))
+            print(f"  [progress] {cur.tz_convert(PT):%a %Y-%m-%d %H:%M} PT  {done:6.1%}  +{len(T):>9,} ticks in "
+                  f"{time.time() - c0:6.1f}s  elapsed {el / 60:6.1f} min  ETA {eta / 60:6.1f} min  "
+                  f"mem {'?' if mem is None else f'{mem:.1f} GB'}  trades {fade} fade / {len(eng.trades)} all  "
+                  f"working orders {len(eng.orders)}", flush=True)
+        if checkpoint:
+            tmp = checkpoint + ".tmp"
+            with open(tmp, "w") as f:
+                for tr in eng.trades:
+                    f.write(json.dumps({k: tr.get(k) for k in ("id", "side", "type", "t", "price", "stop", "target",
+                                                               "stop_pts", "r", "serves")}, default=str) + "\n")
+            os.replace(tmp, checkpoint)
         cur = nxt
     return n_ticks, time.time() - t0
 
@@ -134,7 +181,8 @@ def main():
         box_detector=a.box_detector),
         h1_days=a.h1_days)
     print(f"engine ready in {time.time() - t0:.1f}s; replay {start} -> {hi} (armed from {lo}), M{a.bar_minutes} trading bars")
-    n_ticks, secs = feed(eng, start, hi, a.chunk_hours, progress=True)
+    os.makedirs(a.out, exist_ok=True)
+    n_ticks, secs = feed(eng, start, hi, a.chunk_hours, progress=True, checkpoint=os.path.join(a.out, "trades_so_far.jsonl"))
     print(f"{n_ticks:,} ticks in {secs:.1f}s")
     report(eng, a.out)
 
