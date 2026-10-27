@@ -44,6 +44,8 @@ class LevelBook:
         self.bars = {}            # bar time ns -> (o, h, l, c): formation candles for stops
         self.broke = []           # every level that broke out, oldest first (stops read P1 candles)
         self.broke_by_bar = {}    # breakout bar time ns -> the levels that broke on it (the stop trail reads these)
+        self.broke_t = []         # breakout time ns of each `broke` entry (bisected by time-window readers)
+        self.broke_sorted = True  # broke_t non-decreasing (always so when fed bar by bar); False = scan it all
         self._seen = 0            # state["retests"] rows already looked at
         self._dropped = []        # levels untracked on the bar being processed (still recorded in `broke`)
         self.plain_pool = []      # untracked plain-P0s not yet touched since their breakout (stop candidates only)
@@ -85,7 +87,11 @@ class LevelBook:
                        "breakout_time": lv["breakout_time"], "breakout_high": lv["breakout_high"],
                        "breakout_low": lv["breakout_low"], "is_spike": bool(lv.get("is_spike")),
                        "is_swing": bool(lv.get("is_swing"))}
+                bt = pd.Timestamp(lv["breakout_time"]).value
+                if self.broke_t and bt < self.broke_t[-1]:
+                    self.broke_sorted = False
                 self.broke.append(rec)
+                self.broke_t.append(bt)
                 self.broke_by_bar.setdefault(pd.Timestamp(lv["breakout_time"]).value, []).append(rec)
         self._dropped = []
         alive = {key(lv) for lv in self.state["touch_lv1"]}

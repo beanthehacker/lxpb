@@ -191,7 +191,8 @@ class Engine:
         self.lv5 = LevelBook("m5", verdicts5)
         self.lv = LevelBook("trade", verdicts_tb, min_plain_wick=self.p.min_plain_wick)
         self.zz = ZigZag(self.p.zz_atr_mult, ATR_PERIOD, self.p.zz_min_bars)
-        self.swing_hi, self.swing_lo = [], []    # confirmed fractal swings (time_ns, price)
+        self.swing_hi, self.swing_lo = [], []    # confirmed fractal swings (time_ns, price), in time order
+        self.swing_hi_t, self.swing_lo_t = [], []   # their times, for bisect
         self.dead = set()                    # trade levels touched on the tick before they could be retested
         # orders / trades
         self.orders = {}
@@ -382,8 +383,10 @@ class Engine:
         hi, lo = s.h[i], s.l[i]
         if all(hi > s.h[i - d] and hi > s.h[i + d] for d in range(1, k + 1)):
             self.swing_hi.append((s.t[i], hi))
+            self.swing_hi_t.append(s.t[i])
         if all(lo < s.l[i - d] and lo < s.l[i + d] for d in range(1, k + 1)):
             self.swing_lo.append((s.t[i], lo))
+            self.swing_lo_t.append(s.t[i])
 
     # ------------------------------------------------------------------ order planning
     @staticmethod
@@ -489,8 +492,11 @@ class Engine:
         return e["breakout_time"]
 
     def _swings_near(self, price, is_low, lo_ns):
-        arr = self.swing_lo if is_low else self.swing_hi
-        return [s for s in arr if s[0] >= lo_ns and abs(s[1] - price) <= self.p.swerve_tol]
+        """The swings at or after lo_ns within swerve_tol of price. The lists are in time order (appended bar by
+        bar), so only the swings from lo_ns on are looked at."""
+        arr, ts = (self.swing_lo, self.swing_lo_t) if is_low else (self.swing_hi, self.swing_hi_t)
+        tol = self.p.swerve_tol
+        return [s for s in arr[bisect.bisect_left(ts, lo_ns):] if abs(s[1] - price) <= tol]
 
     def _swerve(self, typ, planned, lo_ns):
         """The level to rest on instead of `planned` when a swing sits on it: the nearest live level
@@ -1110,8 +1116,13 @@ class Engine:
         is_long = typ == "LHPB"
         tick = self.p.tick
         lo = self._tb_floor(t) - int(self.p.wider_stop_lookback_h * 3600 * S_NS)
-        cand = [x for x in self.lv.broke
-                if x["type"] == typ and lo <= pd.Timestamp(x["breakout_time"]).value < self._tb_floor(t)
+        hi = self._tb_floor(t)
+        broke = self.lv.broke
+        if self.lv.broke_sorted:        # only the levels that broke out inside the window (same set, same order)
+            bt = self.lv.broke_t
+            broke = broke[bisect.bisect_left(bt, lo):bisect.bisect_left(bt, hi)]
+        cand = [x for x in broke
+                if x["type"] == typ and lo <= pd.Timestamp(x["breakout_time"]).value < hi
                 and abs(x["price"] - fill) <= self.p.stop_radius]
         extreme = "breakout_low" if is_long else "breakout_high"
         if is_long:
