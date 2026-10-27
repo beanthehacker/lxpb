@@ -228,6 +228,9 @@ ledger (`LC.m5_levels`, swapped to M1 behind the shared "m5" calls) is only a lo
   spike (spike-P0 / spike+swing-P0), swing (swing-P0 / spike+swing-P0) and its P0 candle's rejection wick in pt (upper for
   LHPB, lower for LLPB, as the plain-P0 wick rule); badges SPK / SWG / W<pts>; filters any/yes/no each, wick threshold
   (default 1 pt = `min_plain_wick`), combined ALL (and) or ANY (or), stats recompute live.
+- `sep_oct_fade_tr` (2026-10-26, user): the same window and flags plus `--box-detector trading_range` (range boxes from
+  `find_trading_range`, not the zigzag boxes; label "Sep 1 - Oct 16 2026, find_trading_range"), gzipped into
+  `public/reports/ss_m1_confl/sep_oct_fade_tr.html.gz`. 17 fade trades; on load 82.4% win, avg R +0.41, +6.9R. NOT public.
 - The engine's tags on a row: `plain_p0`, `no_confl` (cluster of one), `swerved`, `breakout-from-range`, `fade1` (`fade2` /
   `fade-mixed` only with `--fade2`), `r_below_min`, `eod_flat`.
 
