@@ -657,7 +657,9 @@ A cross bar (user, 2026-10-27) is a bar that causes an SFP and is also a spike o
 the report (reuses the M1 fade report's CSS, chart JS and review store): H1 pane over M5 pane per cross bar, 100 candles either
 side; the bar's own level is its high (bullish) / low (bearish), a RETEST is the first H1 bar to trade back to it after an H1
 bar closed beyond it, and a retest more than 100 H1 candles later is shown by skipping the bars between (50 either side of the
-cross bar and of the retest). `h1_cross_bars_2026` (Jan - Oct 2026, 59 bullish / 55 bearish) is gzipped into
+cross bar and of the retest). Charts 3 and 4 (M5-LXPB, M2-LXPB): the STRICTLY nearest LXPB level of that timeframe beyond the swept price
+(LHPB above for bullish, LLPB below for bearish) whose P0 starts within [bar - 1 h, bar + 2 h), unretested or not; the pane shows P0 (+ the
+cross bar's hour) 100 candles either side, P1 and its first retest 50 either side, gaps over 10 candles skipped with a marker. `h1_cross_bars_2026` (Jan - Oct 2026, 59 bullish / 55 bearish) is gzipped into
 `public/reports/cross_bar/`; NOT public (not in `proxy.ts`). Regen: `python cross_bar/render_cross_bar_report.py --all --since
 2026-01-01 --label "2026 Jan - Oct" --output <scratch>.html`, then gzip. A report opened from disk keeps its notes in localStorage.
 

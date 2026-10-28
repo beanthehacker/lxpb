@@ -33,7 +33,7 @@ const GROUP_ORDER: { key: string; title: string; description: string; test: (rel
   {
     key: "cross_bar",
     title: "Cross Bars",
-    description: "ES H1 cross bars (an SFP bar that is also a hammer / shooting star or an engulfing bar), Jan - Oct 2026, with H1 and M5 charts, the swept swing, the bar's own level and its retest. Reviewed / Valid / Notes per bar.",
+    description: "ES H1 cross bars (an SFP bar that is also a hammer / shooting star or an engulfing bar), Jan - Oct 2026, with H1 and M5 charts (the swept swing, the bar's own level and its retest) plus M5-LXPB and M2-LXPB charts (first retest of the nearest LXPB level beyond the swept price, P0 within 1 h before to 1 h after the bar). Reviewed / Valid / Notes per bar.",
     test: (rel) => rel.startsWith("cross_bar/"),
   },
   {
