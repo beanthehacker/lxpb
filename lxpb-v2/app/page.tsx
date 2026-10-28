@@ -31,6 +31,12 @@ const GROUP_ORDER: { key: string; title: string; description: string; test: (rel
     test: (rel) => rel.startsWith("ss_m1_confl/"),
   },
   {
+    key: "cross_bar",
+    title: "Cross Bars",
+    description: "ES H1 cross bars (an SFP bar that is also a hammer / shooting star or an engulfing bar), Jan - Oct 2026, with H1 and M5 charts, the swept swing, the bar's own level and its retest. Reviewed / Valid / Notes per bar.",
+    test: (rel) => rel.startsWith("cross_bar/"),
+  },
+  {
     key: "m2_confl",
     title: "M2 Confluence",
     description: "Same as the M1 report but on 2-minute bars -- September 2026 (from 28 Sep), zigzag run-in rule, swing-extreme target, ATR-boundary review filter.",

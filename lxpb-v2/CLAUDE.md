@@ -649,6 +649,18 @@ Every bias is short-lived and `h1_bias.py` owns the expiries.
 Its only consumer is `ss_m5_confl2`'s Bias column and its `fading_bias` dynamic
 filter -- a review aid, never a strategy input.
 
+# Cross bars (`cross_bar/`)
+
+A cross bar (user, 2026-10-27) is a bar that causes an SFP and is also a spike or an engulfing bar: patterns-pure's
+`find_cross_bar` (bullish = `find_sfp` low sweep + `find_hammer` / `find_engulfing_bullish`; bearish = high sweep +
+`find_shooting_star` / `find_engulfing_bearish`), built only from those detectors. `cross_bar/render_cross_bar_report.py` is
+the report (reuses the M1 fade report's CSS, chart JS and review store): H1 pane over M5 pane per cross bar, 100 candles either
+side; the bar's own level is its high (bullish) / low (bearish), a RETEST is the first H1 bar to trade back to it after an H1
+bar closed beyond it, and a retest more than 100 H1 candles later is shown by skipping the bars between (50 either side of the
+cross bar and of the retest). `h1_cross_bars_2026` (Jan - Oct 2026, 59 bullish / 55 bearish) is gzipped into
+`public/reports/cross_bar/`; NOT public (not in `proxy.ts`). Regen: `python cross_bar/render_cross_bar_report.py --all --since
+2026-01-01 --label "2026 Jan - Oct" --output <scratch>.html`, then gzip. A report opened from disk keeps its notes in localStorage.
+
 # Trap variants (`trap_variants.py`)
 
 The daily-analysis trapVariants (`E:\daily-analysis\trapVariants`, engine
