@@ -200,8 +200,9 @@ ledger (`LC.m5_levels`, swapped to M1 behind the shared "m5" calls) is only a lo
   opposite-type P0 formed since the leg into the retest began), plain (stop / target / EOD flat) and managed (stop trail + RR
   floor). `engine_rows` ships them as the row's modes (`range-edge`, `swing-extreme`, `opposite-zz`, the old data-mode names and
   labels), so the "Target rules" checkboxes and the "Apply thrust-trail + RR-floor management" box swap targets, outcomes and
-  stats in place; several rules ticked = the farther target per row. Defaults on load, as the old reports: only the engine's
-  rule ticked (`--fade-target`, default range_edge per the user), management UNTICKED (old reports: unticked). The engine's
+  stats in place; several rules ticked = the farther target per row. Defaults on load: only opposite-zz ticked
+  (`--page-target`, user 2026-10-28; the engine still TRADES with `--fade-target`, default range_edge), management UNTICKED
+  (old reports: unticked). The engine's
   managed bracket of its own rule IS the real trade (checked identical, Sep 28-Oct 1).
   The trade SET is the engine's (entries, seats and the one position slot follow the engine's own target); another rule only
   changes how the same trades would have ended. No unfilled / NO TRADE rows, no go-with, no news-spike badge. A WIN is
@@ -231,6 +232,10 @@ ledger (`LC.m5_levels`, swapped to M1 behind the shared "m5" calls) is only a lo
 - `sep_oct_fade_tr` (2026-10-26, user): the same window and flags plus `--box-detector trading_range` (range boxes from
   `find_trading_range`, not the zigzag boxes; label "Sep 1 - Oct 16 2026, find_trading_range"), gzipped into
   `public/reports/ss_m1_confl/sep_oct_fade_tr.html.gz`. 17 fade trades; on load 82.4% win, avg R +0.41, +6.9R. NOT public.
+- `y2026_fade_tr` (2026-10-27, user): 2026 Jan 2 - Oct 26 with `--box-detector trading_range`, run natively (TradingView exports +
+  all four 2026 .scid contracts, not scid_only), label "2026 Jan 2 - Oct 26, find_trading_range"; replay 46.3M ticks in 85 min after
+  the swing-lookup speed fix. 127 fade trades (range edge: 63.0% win, +13.1R). Page ticks opposite-zz on load (115 with a target,
+  46.1% win, +12.5R; the checkbox was flipped in the HTML, no regen). NOT public.
 - The engine's tags on a row: `plain_p0`, `no_confl` (cluster of one), `swerved`, `breakout-from-range`, `fade1` (`fade2` /
   `fade-mixed` only with `--fade2`), `r_below_min`, `eod_flat`.
 

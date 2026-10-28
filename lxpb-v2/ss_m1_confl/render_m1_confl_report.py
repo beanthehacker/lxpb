@@ -1231,12 +1231,13 @@ ENGINE_TARGET_TEXT = {
 }
 
 
-def _target_chips(engine_rule):
+def _target_chips(page_rule):
     """The "Target rules" row of the filter panel, as the old M1/M2 reports had it (same three rules, labels and
     live behaviour): every trade ships each rule's own bracket (the engine follows the same fill and stop with every
     rule's target, plain and managed, engine `_views`), so ticking / unticking a rule re-resolves the rows and the stats
     in place. Several ticked: each row uses the rule with the FARTHER target. A row whose ticked rules have no target
-    becomes NO TARGET (dimmed, out of the stats). Ticked on load: the rule the engine traded with (--fade-target)."""
+    becomes NO TARGET (dimmed, out of the stats). Ticked on load: --page-target (default opposite-zz, user 2026-10-28),
+    which may differ from the rule the engine traded with (--fade-target)."""
     chips = [("opposite_zz", "opposite-zz", f"Opposite M{BAR_MIN} level, zigzag anchor (P1&hellip;fill)"),
              ("zigzag", "swing-extreme", "Swing extreme: last zigzag trough/crest (P1&hellip;P2)"),
              ("range_edge", "range-edge", "Range edge: faded box high (LLPB) / low (LHPB)")]
@@ -1247,9 +1248,9 @@ re-resolves each row against whichever others are still on: a trade can become a
 (dimmed, dropped from the stats) if the rule it was using was the only one that found a target.
 With several ticked, each trade uses whichever rule offers the FARTHER target. Untick all and no
 trade has a target at all. The trades themselves are the engine's, taken with its own rule
-(ticked on load); another rule only changes how the same trades would have ended.">Target rules</span>"""]
+(range edge); ticked on load: opposite-zz. Another rule only changes how the same trades would have ended.">Target rules</span>"""]
     for rule, mode, label in chips:
-        on = " checked" if rule == engine_rule else ""
+        on = " checked" if rule == page_rule else ""
         out.append(f'    <label class="chip"><input type="checkbox" class="f-target-mode" data-mode="{mode}"{on}>\n'
                    f'      {label}</label>')
     return "\n".join(out)
@@ -1615,7 +1616,7 @@ playbook. ENTRY: every live level is judged on its own (its own price beyond the
 searched for a better (more extreme) price that also qualifies on its own (src tag own / cluster); a level with a confirmed swing on
 it is skipped. STOP: one tick beyond the entry level's own spike
 candle (src p0_spike) or beyond the live thrust candle (thrust), widened to the last older P1 candle when closer than the minimum
-(wide_p1). TARGET (the engine's, ticked on load; the Target rules checkboxes switch between all three): {ENGINE_TARGET_TEXT[args.fade_target]}. A bracket below R
+(wide_p1). TARGET (the engine's own; on load the page shows opposite-zz, and the Target rules checkboxes switch between all three): {ENGINE_TARGET_TEXT[args.fade_target]}. A bracket below R
 {args.min_r:g} is still taken and tagged r_below_min. The stop trails when a P0 group breaks out past it and an RR-floor exit closes a
 trade whose remaining reward / risk falls to 0.2 (both shown as MGMT); no position is carried past 12:44 PT (EOD FLAT); the 05:30 PT
 news-pull window and the 15:00-15:05 PT reopen are blackouts. There is no news-spike check. Win = a trade that made money.
@@ -1866,7 +1867,7 @@ boxes are the only higher timeframes in this report. Only the fade playbook is s
 {SR.tab_bar_html([("trades", "Trades"), ("pctile", "Excursion percentiles")])}
 <div class="tab-panel" id="tab-trades">
 {summary_html}
-{filter_panel.replace("__P0_KIND_CHIPS__", p0_kind_chips).replace("__TARGET_CHIPS__", _target_chips(args.fade_target))}
+{filter_panel.replace("__P0_KIND_CHIPS__", p0_kind_chips).replace("__TARGET_CHIPS__", _target_chips(args.page_target))}
 {stats_bar_html}
 <div class="table-wrap"><table id="lvl-table">
 <thead><tr>{head}</tr></thead>
@@ -2865,6 +2866,8 @@ if __name__ == "__main__":
                         help="points an M5 box edge may poke out of the H1 box (default %(default)g)")
     parser.add_argument("--h1-days", type=float, default=25.0,
                         help="days of H1 / M5 history before the window seeded for the H1 range boxes (default %(default)g)")
+    parser.add_argument("--page-target", default="opposite_zz", choices=["range_edge", "zigzag", "opposite_zz"],
+                        help="target rule ticked when the page loads (user, 2026-10-28: opposite-zz). Only what the page shows on load; the engine trades with --fade-target")
     parser.add_argument("--fade-target", default="range_edge", choices=["range_edge", "zigzag", "opposite_zz"],
                         help="fade target: the faded range's edge (default; range low for a long, range high for a short) "
                              "or the old most recent zigzag pivot since the level's P1")
