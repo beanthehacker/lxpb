@@ -236,6 +236,12 @@ ledger (`LC.m5_levels`, swapped to M1 behind the shared "m5" calls) is only a lo
   all four 2026 .scid contracts, not scid_only), label "2026 Jan 2 - Oct 26, find_trading_range"; replay 46.3M ticks in 85 min after
   the swing-lookup speed fix. 127 fade trades (range edge: 63.0% win, +13.1R). Page ticks opposite-zz on load (115 with a target,
   46.1% win, +12.5R; the checkbox was flipped in the HTML, no regen). NOT public.
+- `y2026_fade_tr_swing` (2026-10-28, user): the 43 swing-P0-entry rows of `y2026_fade_tr`, cut from its HTML (no regen; charts as
+  rendered), with a Swing column (same-side M1 fractals within 2 pt in 24 h, P0 candle range in ATR, pullback before P1,
+  bars the level stayed the extreme, swing depth; hover = all features), Swing-features filters and a findings block.
+  Scripts + features.csv in `ss_m1_confl/swing_study/` (build_inputs -> features -> findings -> make_swing_report).
+  Finding: few nearby fractals (<=6) and a small P0 candle (<=1.1 ATR) won more, but ONLY in Jan-May; Jun-Oct showed no
+  difference. Hypotheses, not filters. NOT public.
 - The engine's tags on a row: `plain_p0`, `no_confl` (cluster of one), `swerved`, `breakout-from-range`, `fade1` (`fade2` /
   `fade-mixed` only with `--fade2`), `r_below_min`, `eod_flat`.
 
