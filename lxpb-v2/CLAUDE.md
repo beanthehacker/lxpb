@@ -665,12 +665,12 @@ filter -- a review aid, never a strategy input.
 A cross bar (user, 2026-10-27) is a bar that causes an SFP and is also a spike or an engulfing bar: patterns-pure's
 `find_cross_bar` (bullish = `find_sfp` low sweep + `find_hammer` / `find_engulfing_bullish`; bearish = high sweep +
 `find_shooting_star` / `find_engulfing_bearish`), built only from those detectors. `cross_bar/render_cross_bar_report.py` is
-the report (reuses the M1 fade report's CSS, chart JS and review store): H1 pane over M5 pane per cross bar, 100 candles either
-side; the bar's own level is its high (bullish) / low (bearish), a RETEST is the first H1 bar to trade back to it after an H1
-bar closed beyond it, and a retest more than 100 H1 candles later is shown by skipping the bars between (50 either side of the
-cross bar and of the retest). Charts 3 and 4 (M5-LXPB, M2-LXPB): the STRICTLY nearest LXPB level of that timeframe beyond the swept price
-(LHPB above for bullish, LLPB below for bearish) whose P0 starts within [bar - 1 h, bar + 2 h), unretested or not; the pane shows P0 (+ the
-cross bar's hour) 100 candles either side, P1 and its first retest 50 either side, gaps over 10 candles skipped with a marker. `h1_cross_bars_2026` (Jan - Oct 2026, 59 bullish / 55 bearish) is gzipped into
+the report (reuses the M1 fade report's CSS, chart JS and review store): four panes per cross bar. H1 and M5 END at the bar (no later
+bars; user 2026-10-28), 100 candles before it, swept swing + older same-side swings within 7 pt (either side, no bar between them
+and the bar past the swept price) drawn; detection reads the whole H1 history, not just --since. M5-LXPB / M2-LXPB: the nearest
+LXPB level (LHPB bullish, LLPB bearish) beyond the swept price whose P0 starts inside the bar's H1 hour, P0 to first retest (+5
+candles), gaps over 120 candles skipped; other same-type levels from that hour dotted behind the candles. Annotations are listed in a
+strip above each plot. `h1_cross_bars_2026` (Jan - Oct 2026, 115: 60 bullish / 55 bearish) is gzipped into
 `public/reports/cross_bar/`; NOT public (not in `proxy.ts`). Regen: `python cross_bar/render_cross_bar_report.py --all --since
 2026-01-01 --label "2026 Jan - Oct" --output <scratch>.html`, then gzip. A report opened from disk keeps its notes in localStorage.
 

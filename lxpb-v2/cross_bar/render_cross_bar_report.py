@@ -2,22 +2,21 @@
 render_cross_bar_report.py
 ==========================
 CROSS BAR REPORT: every cross bar (patterns_pure `find_cross_bar`: an H1 bar that causes an SFP and is also a spike or an
-engulfing bar) on continuous ES, one row per cross bar, with two panes per row in the M1 fade report's page layout:
-the H1 pane on top and the M5 pane under it, plus Reviewed / Valid / Notes per row (the M1 report's review store).
-Each pane shows 100 candles either side of the cross bar, and 50 either side of the retest. The cross bar's own LEVEL is its high for a bullish one (hammer /
-bullish engulfing) and its low for a bearish one (shooting star / bearish engulfing); "retest" = after an H1 bar has CLOSED
-beyond that level (above the high / below the low), the first later H1 bar that trades back to it. When the retest's 50
-candles do not join the cross bar's 100 (less than 10 candles apart), the bars in between are skipped with a "[... skipped]"
-marker; a level not retested yet just shows the 100 after.
-Candles stay grey; the swept swing is a dashed amber ray from its own bar to the right edge, the retest level a thin blue
-ray, the cross bar an arrow on its H1 candle and a dotted start/end pair on the M5 pane, with the M5 candle that made the
-sweep marked.
+engulfing bar) on continuous ES, one row per cross bar, four panes per row in the M1 fade report's page layout, plus Reviewed /
+Valid / Notes per row (the M1 report's review store). Detection reads the whole H1 history (a swing from before --since can be
+the one a bar sweeps); only cross bars from --since on are listed.
 
-Panes 3 and 4 (M5-LXPB, M2-LXPB): the nearest LXPB level of the cross bar's own direction (LHPB for a bullish one, LLPB for a
-bearish one) lying beyond the swept swing price (above it for bullish, below it for bearish) whose P0 (formation candle) starts from
-1 h before the cross bar to 1 h after it ended (retested or not): its P0, P1 (breakout) and FIRST retest, if any, are marked,
-windowed around the level's own life: 100 candles either side of its P0 together with the cross bar's hour, 50 either side of its P1
-and 50 either side of its first retest, with the bars between skipped where those stretches are more than 10 candles apart. Levels come from lxpb.py's state machine (every P0 kind) run over the M5 / M2 bars rolled up from the 1-minute ticks.
+1. H1: 100 candles before the cross bar, ending AT it (no later bars). The swept swing is a dashed amber ray; when it lies
+   further back, 50 candles round it are shown with the bars between skipped ("[... skipped]").
+2. M5: the same view, 100 candles before the bar's hour, ending with the hour's last candle.
+   Both draw the OLDER swings next to the swept one (dotted amber): same-side confirmed pivots within 7 pt of the swept price
+   (either side) with no bar between them and the cross bar reaching past the swept price.
+3. M5-LXPB / 4. M2-LXPB: the nearest LXPB level of the bar's direction (LHPB for a bullish one, LLPB for a bearish one) beyond the
+   swept price whose P0 starts INSIDE the cross bar's H1 hour; its P0, P1 and first retest are marked, the pane runs from 100
+   candles before P0 to 5 candles past the retest (to the last bar if not retested), skipping only stretches over 120 candles.
+   The other levels of that type with a P0 in the same hour are dotted rays behind the candles. Levels come from lxpb.py's state
+   machine (every P0 kind) over M5 / M2 bars rolled up from the 1-minute ticks.
+Every pane lists its annotations in a strip above the plot (marker text can hide behind candles). Candles stay grey.
 
 Data: E:\\data_source (es_data.load_es): H1 bars for the detector, 1-minute ticks rolled up to M5 for the lower pane. Times
 are Pacific (PT) everywhere. The chart code, CSS, page shell and review store are the M1 fade report's
@@ -41,6 +40,7 @@ for _p in (os.path.dirname(_REPO_ROOT), _REPO_ROOT, os.path.join(_REPO_ROOT, "ss
     sys.path.insert(0, _p)
 from es_data import load_es                       # noqa: E402
 from find_cross_bar import find_cross_bar         # noqa: E402
+from find_sfp_fractal import _pivots, SFP_SWING_K as SWING_K   # noqa: E402
 import lxpb                                       # noqa: E402  (repo root: the LXPB state machine)
 import render_m1_confl_report as M                # noqa: E402
 
@@ -53,8 +53,7 @@ BULL, BEAR = "#4ade80", "#f87171"
 SWING_COLOR = "#fbbf24"
 RETEST_COLOR = "#60a5fa"
 LXPB_COLOR = "#c084fc"
-LEVEL_BEFORE = pd.Timedelta(hours=1)    # an LXPB level counts when its P0 (formation bar) starts this long before the cross bar ...
-LEVEL_AFTER = pd.Timedelta(hours=2)     # ... up to this long after the cross bar's start (= 1 h after the bar has ended)
+LEVEL_GAP = 120                         # LXPB panes: skip only stretches longer than this many candles
 LEVEL_TFS = (("l5", "M5", 5), ("l2", "M2", 2))   # pane key, label, bar minutes
 
 
@@ -85,25 +84,36 @@ def _elapsed(a, b):
     return (f"{d}d " if d else "") + f"{rem // 60}h"
 
 
-def retest_of(h1, pos, bullish):
-    """(level, breakout bar start, retest bar start) of the cross bar at H1 position `pos`. The level is the bar's high
-    (bullish) / low (bearish). Breakout: the first later H1 bar that CLOSES beyond it (above the high / below the low).
-    Retest: the first bar after that which trades back to the level (low <= level / high >= level). None = not yet."""
-    level = float(h1["high"].iat[pos] if bullish else h1["low"].iat[pos])
-    after = h1.iloc[pos + 1:]
-    beyond = ((after["close"] > level) if bullish else (after["close"] < level)).to_numpy()
-    if not beyond.any():
-        return level, None, None
-    k = int(beyond.argmax())
-    rest = after.iloc[k + 1:]
-    touch = ((rest["low"] <= level) if bullish else (rest["high"] >= level)).to_numpy()
-    return level, after.index[k], (rest.index[int(touch.argmax())] if touch.any() else None)
+OLDER_PTS = 7.0       # an older swing this close to the swept price (either side of it) is drawn too
 
 
-def _pane(segments, cross_t, swing_t, swing_price, level, bullish, label, extra_markers=(), vlines=(), cross_marker=True,
-          extra_rays=(), show_level=True):
+def older_swings(h1, pos, swing_t, swing_price, bullish, k=SWING_K):
+    """Older same-side swings next to the swept one: confirmed before the cross bar at H1 position `pos`, within OLDER_PTS of
+    the swept price (above or below it), and with NO bar between that older pivot and the cross bar reaching past the swept
+    price (above it for a swept high, below it for a swept low). Returns [(pivot time, price, cross bar went past it)],
+    oldest first."""
+    side = "low" if bullish else "high"
+    ext = h1[side].to_numpy(float)
+    sp = h1.index.get_loc(swing_t)
+    out = []
+    for p in _pivots(ext, k, bullish):
+        p = int(p)
+        price = float(ext[p])
+        if p >= sp or p + k >= pos:
+            continue
+        if not 0 < abs(price - swing_price) <= OLDER_PTS:
+            continue
+        between = ext[p + 1: pos]
+        if (between.min() >= swing_price) if bullish else (between.max() <= swing_price):
+            hit = ext[pos] < price if bullish else ext[pos] > price
+            out.append((h1.index[p], price, bool(hit)))
+    return out
+
+
+def _pane(segments, cross_t, swing_t, swing_price, bullish, label, extra_markers=(), vlines=(), cross_marker=True,
+          extra_rays=(), older=(), notes=()):
     """One candle pane over one or two window segments (a skipped stretch between them gets a marker): the swept
-    swing and the cross bar's own level as rays, the swing bar and the cross bar marked."""
+    swing (and any older untested swings next to it) as rays to the last candle, the swing bars and the cross bar marked."""
     bars = pd.concat(segments)
     candles = _candles(bars)
     times = [c["time"] for c in candles]
@@ -115,6 +125,10 @@ def _pane(segments, cross_t, swing_t, swing_price, level, bullish, label, extra_
     if any(sg.index[0] <= swing_t <= sg.index[-1] for sg in segments):
         markers.append({"time": _snap(times, swing_t), "position": "belowBar" if bullish else "aboveBar",
                         "color": SWING_COLOR, "shape": "circle", "text": f"swing {'low' if bullish else 'high'}"})
+    for ot, op, hit in older:
+        if any(sg.index[0] <= ot <= sg.index[-1] for sg in segments):
+            markers.append({"time": _snap(times, ot), "position": "belowBar" if bullish else "aboveBar",
+                            "color": SWING_COLOR, "shape": "circle", "text": "older"})
     skipped = []
     for a, b in zip(segments, segments[1:]):
         txt = f"[{_elapsed(a.index[-1], b.index[0])} skipped]"
@@ -128,57 +142,50 @@ def _pane(segments, cross_t, swing_t, swing_price, level, bullish, label, extra_
         {"color": SWING_COLOR, "lineWidth": 1, "lineStyle": 2, "title": "swept level", "priceLabel": True,
          "label": f"swept swing {side} {swing_price:.2f} (swing bar {_pt(swing_t)})",
          "points": [{"time": start, "value": float(swing_price)}, {"time": times[-1], "value": float(swing_price)}]},
-        {"color": RETEST_COLOR, "lineWidth": 1, "lineStyle": 0, "title": "retest level", "priceLabel": True,
-         "label": f"cross bar's {'high' if bullish else 'low'} {level:.2f} (the level to retest)",
-         "points": [{"time": _snap(times, cross_t), "value": level}, {"time": times[-1], "value": level}]},
-    ][: 2 if show_level else 1] + list(extra_rays)
-    return {"title": f"{label}  |  {_pt(bars.index[0])} \u2192 {_pt(bars.index[-1])}"
+    ] + [
+        {"color": SWING_COLOR, "lineWidth": 1, "lineStyle": 3, "title": "older swing", "priceLabel": True,
+         "label": f"older swing {side} {op:.2f} (bar {_pt(ot)})" + (", cross bar went past it" if hit else ""),
+         "points": [{"time": _snap(times, max(ot, bars.index[0])), "value": float(op)}, {"time": times[-1], "value": float(op)}]}
+        for ot, op, hit in older] + list(extra_rays)
+    all_notes = [{"color": SWING_COLOR, "text": f"swept swing {side} {swing_price:.2f}, bar {_pt(swing_t)}"}] + [
+        {"color": SWING_COLOR, "text": f"older swing {side} {op:.2f}, bar {_pt(ot)}" + (" (cross bar went past it)" if hit else "")}
+        for ot, op, hit in older] + list(notes)
+    return {"notes": all_notes, "title": f"{label}  |  {_pt(bars.index[0])} \u2192 {_pt(bars.index[-1])}"
                      + (f"  {' '.join(skipped)}" if skipped else ""),
             "candles": candles, "markers": markers, "priceLines": [], "rays": rays, "vlines": list(vlines),
             "precision": 2, "dateOnly": False}
 
 
-def _plan(spans, n):
+def _plan(spans, n, merge_gap=MERGE_GAP):
     """Candle position ranges (inclusive, clipped to 0..n-1) to show: each span (lo, hi, k) is widened by k candles either
     side, then ranges less than MERGE_GAP candles apart are one window; the bars between the others are skipped."""
     rngs = sorted((max(0, lo - k), min(n - 1, hi + k)) for lo, hi, k in spans)
     out = [list(rngs[0])]
     for a, b in rngs[1:]:
-        if a <= out[-1][1] + MERGE_GAP:
+        if a <= out[-1][1] + merge_gap:
             out[-1][1] = max(out[-1][1], b)
         else:
             out.append([a, b])
     return [tuple(r) for r in out]
 
 
-def build_example(h1, m5, row, level, bo_t, rt_t):
-    """(chart dict: main = H1 pane, ctx = M5 pane) for one cross bar `row`, with its level and retest."""
+def build_example(h1, m5, row, older):
+    """(chart dict: main = H1 pane, ctx = M5 pane) for one cross bar `row`. Both stop at the cross bar's hour: no later bars."""
     t, bull = row.Index, row.bullish
     five = pd.Timedelta(minutes=5)
     h1_end = t + pd.Timedelta(hours=1)
     color = BULL if bull else BEAR
     pos = h1.index.get_loc(t)
 
-    # ---- H1
-    rp = h1.index.get_loc(rt_t) if rt_t is not None else None
-    h1_segs = [h1.iloc[lo: hi + 1] for lo, hi in _plan([(pos, pos, NEAR)] + ([(rp, rp, SPLIT)] if rp is not None else []), len(h1))]
-    h1_marks = []
-    for ts, text, up in ((bo_t, "breakout", bull), (rt_t, "retest", not bull)):
-        if ts is not None and any(sg.index[0] <= ts <= sg.index[-1] for sg in h1_segs):
-            h1_marks.append({"time": int(ts.timestamp()), "position": "aboveBar" if up else "belowBar",
-                             "color": RETEST_COLOR, "shape": "circle", "text": text})
-    h1_pane = _pane(h1_segs, t, row.swing_time, row.swing_price, level, bull, "H1", extra_markers=h1_marks)
+    # ---- H1: 100 candles before the bar, 50 round the swept swing and each older one when they lie further back; ends AT the bar
+    spans = [(pos, pos, NEAR)] + [(h1.index.get_loc(x),) * 2 + (SPLIT,) for x in [row.swing_time] + [o[0] for o in older]]
+    h1_segs = [h1.iloc[lo: hi + 1] for lo, hi in _plan(spans, pos + 1)]
+    h1_pane = _pane(h1_segs, t, row.swing_time, row.swing_price, bull, "H1", older=older)
 
-    # ---- M5: the retest M5 candle is the first one of the retest hour that trades at the level
-    rt5 = None
-    if rt_t is not None:
-        hour = m5.loc[rt_t: rt_t + pd.Timedelta(hours=1) - five]
-        hit = hour.loc[(hour["low"] <= level) if bull else (hour["high"] >= level)]
-        rt5 = hit.index[0] if len(hit) else None
+    # ---- M5: the same view, 100 candles before the hour, ends with the hour's last candle
     p0 = int(m5.index.searchsorted(t))
     p1 = int(m5.index.searchsorted(h1_end)) - 1
-    m5_segs = [m5.iloc[lo: hi + 1] for lo, hi in
-               _plan([(p0, p1, NEAR)] + ([(int(m5.index.get_loc(rt5)),) * 2 + (SPLIT,)] if rt5 is not None else []), len(m5))]
+    m5_segs = [m5.iloc[lo: hi + 1] for lo, hi in _plan([(p0, p1, NEAR)], p1 + 1)]
     inside = m5.loc[t: h1_end - five]
     sweep_t = inside["low"].idxmin() if bull else inside["high"].idxmax()
     sweep_px = inside.at[sweep_t, "low" if bull else "high"]
@@ -186,12 +193,8 @@ def build_example(h1, m5, row, level, bo_t, rt_t):
               "shape": "circle", "text": f"sweep {'low' if bull else 'high'} {sweep_px:.2f}"}]
     vl = [{"time": int(t.timestamp()), "color": color, "label": f"H1 cross bar {_pt(t, False)}"},
           {"time": int((h1_end - five).timestamp()), "color": color, "label": "bar end"}]
-    if rt5 is not None:
-        marks.append({"time": int(rt5.timestamp()), "position": "aboveBar" if bull else "belowBar",
-                      "color": RETEST_COLOR, "shape": "circle", "text": "retest"})
-        vl.append({"time": int(rt5.timestamp()), "color": RETEST_COLOR, "label": f"retest {_pt(rt5, False)}"})
-    m5_pane = _pane(m5_segs, t, row.swing_time, row.swing_price, level, bull, "M5", extra_markers=marks, vlines=vl,
-                    cross_marker=False)
+    m5_pane = _pane(m5_segs, t, row.swing_time, row.swing_price, bull, "M5", extra_markers=marks, vlines=vl,
+                    cross_marker=False, older=older)
     return {"main": h1_pane, "ctx": m5_pane}
 
 
@@ -204,33 +207,39 @@ def ledger(bars):
 
 def pick_level(led, t, swept_price, bullish):
     """The level row, or None. The level: a P0 (broken-out level) of the cross bar's direction (LHPB for a bullish bar,
-    LLPB for a bearish one), beyond the swept price (above / below it), its own P0 candle starting from 1 h before the cross
-    bar to 1 h after it ended; the NEAREST to the swept price, retested or not (retest_time NaT = not retested yet)."""
+    LLPB for a bearish one), beyond the swept price (above / below it), its own P0 candle starting inside the cross bar's
+    H1 hour; the NEAREST to the swept price, retested or not (retest_time NaT = not retested yet)."""
     c = led[(led["type"] == ("LHPB" if bullish else "LLPB"))
-            & (led["formation_time"] >= t - LEVEL_BEFORE) & (led["formation_time"] < t + LEVEL_AFTER)
+            & (led["formation_time"] >= t) & (led["formation_time"] < t + pd.Timedelta(hours=1))
             & ((led["price"] > swept_price) if bullish else (led["price"] < swept_price))]
     c = c.assign(dist=(c["price"] - swept_price).abs()).sort_values(["dist", "formation_time"])
     return None if c.empty else c.iloc[0]
 
 
-def level_pane(bars, minutes, label, lv, row, vlines_color):
+def level_pane(bars, minutes, label, lv, row, vlines_color, led):
     """The M5 / M2 pane of the LXPB level `lv`: P0, P1 and the first retest marked, the level as a ray from its P0."""
     t, bull = row.Index, row.bullish
     dt = pd.Timedelta(minutes=minutes)
     h1_end = t + pd.Timedelta(hours=1)
     rt = lv["retest_time"] if pd.notna(lv["retest_time"]) else None
 
-    # surrounded: the level's P0 together with the cross bar's hour (100 either side), its P1 and its first retest (50 each)
+    # shown: 100 candles round the level's P0 together with the cross bar's hour, 50 round its P1, and everything up to
+    # its first retest (+5 candles); a level not retested yet runs to the last bar. Only stretches over LEVEL_GAP are skipped.
     pos = bars.index.searchsorted
     f, bo = int(pos(lv["formation_time"])), int(pos(lv["breakout_time"]))
     spans = [(min(int(pos(t)), f), max(int(pos(h1_end)) - 1, f), NEAR), (bo, bo, SPLIT)]
     if rt is not None:
-        spans.append((int(pos(rt)),) * 2 + (SPLIT,))
-    segs = [bars.iloc[lo: hi + 1] for lo, hi in _plan(spans, len(bars))]
+        r = int(pos(rt))
+        spans.append((r, r, 5))
+        n = min(len(bars), r + 6)
+    else:
+        spans.append((len(bars) - 1, len(bars) - 1, NEAR))
+        n = len(bars)
+    segs = [bars.iloc[lo: hi + 1] for lo, hi in _plan(spans, n, LEVEL_GAP)]
     lvl_up = lv["type"] == "LHPB"        # an LHPB sits on a bar's high: P0 text above the bar, the retest touches from above
     price = float(lv["price"])
     marks = []
-    for ts, text, above in ((lv["formation_time"], f"P0 {lv['type']} {price:.2f}", lvl_up),
+    for ts, text, above in ((lv["formation_time"], "P0", lvl_up),
                             (lv["breakout_time"], "P1", lvl_up),
                             (rt, "retest", not lvl_up)):
         if ts is not None and any(sg.index[0] <= ts <= sg.index[-1] for sg in segs):
@@ -247,9 +256,35 @@ def level_pane(bars, minutes, label, lv, row, vlines_color):
            "label": (f"{label} {lv['type']} {price:.2f} ({lv['p0_kind']}): P0 {_pt(lv['formation_time'])}, "
                      f"P1 {_pt(lv['breakout_time'])}, " + (f"first retest {_pt(rt)}" if rt is not None else "not retested yet")),
            "points": [{"time": ray_from, "value": price}, {"time": last, "value": price}]}
-    pane = _pane(segs, t, row.swing_time, row.swing_price, 0.0, bull, f"{label}-LXPB", extra_markers=marks, vlines=vl,
-                 cross_marker=False, extra_rays=[ray], show_level=False)
+    notes = [{"color": LXPB_COLOR, "text": f"{label} {lv['type']} {price:.2f} ({lv['p0_kind']})"},
+             {"color": LXPB_COLOR, "text": f"P0 {_pt(lv['formation_time'])}"},
+             {"color": LXPB_COLOR, "text": f"P1 {_pt(lv['breakout_time'])}"},
+             {"color": LXPB_COLOR, "text": f"first retest {_pt(rt)}" if rt is not None else "not retested yet"}]
+    pane = _pane(segs, t, row.swing_time, row.swing_price, bull, f"{label}-LXPB", extra_markers=marks, vlines=vl,
+                 cross_marker=False, extra_rays=[ray], notes=notes)
+    bg = _other_levels(led, lv, pane["candles"], t, bull)
+    pane["bgRays"] = bg
+    if bg:
+        pane["notes"].append({"color": "#8b8b8b", "text": f"dotted: {len(bg)} other {label} {'LHPB' if bull else 'LLPB'} levels with their P0 inside the cross bar hour, P0 to first retest"})
     return pane
+
+
+def _other_levels(led, lv, candles, t, bullish):
+    """The OTHER levels of the chosen one's type (LHPB for a bullish bar, LLPB for a bearish one) whose P0 starts inside the
+    cross bar's H1 hour, any price, each a dotted ray behind the candles from its P0 to its first retest (or the last candle)."""
+    times = [c["time"] for c in candles]
+    first, last = times[0], times[-1]
+    keep = led[(led["type"] == ("LHPB" if bullish else "LLPB"))
+               & (led["formation_time"] >= t) & (led["formation_time"] < t + pd.Timedelta(hours=1))
+               & ~((led["formation_time"] == lv["formation_time"]) & (led["price"] == lv["price"]))]
+    out = []
+    for o in keep.itertuples():
+        a, b = int(o.formation_time.timestamp()), (int(o.retest_time.timestamp()) if pd.notna(o.retest_time) else last)
+        at = lambda x: times[max(bisect.bisect_right(times, x) - 1, 0)]
+        out.append({"color": LXPB_COLOR + "99", "lineWidth": 1, "lineStyle": 1,
+                    "points": [{"time": at(max(a, first)), "value": float(o.price)},
+                               {"time": at(min(b, last)), "value": float(o.price)}]})
+    return out
 
 
 def level_cell(lv, label):
@@ -295,29 +330,25 @@ HEAD_HTML = (
     "<th class=\"left\" title=\"Which spike / engulfing detector the SFP bar also satisfies\">Confirmed by</th>"
     "<th title=\"The swing price the bar swept and closed back across (find_sfp)\">Swept level</th>"
     "<th class=\"left\">Swing bar</th>"
-    "<th title=\"The cross bar's own level: its high for a bullish one, its low for a bearish one\">Retest level</th>"
-    "<th class=\"left\" title=\"First H1 bar to trade back to the level after an H1 bar closed beyond it (above the high / below the low)\">Retested</th>"
-    "<th class=\"left\" title=\"Nearest M5 LXPB level (P0) of the bar's direction beyond the swept price, its P0 candle from 1 h before to 1 h after the cross bar\">M5 LXPB level</th>"
+    "<th class=\"left\" title=\"Nearest M5 LXPB level (P0) of the bar's direction beyond the swept price, its P0 candle inside the cross bar's H1 hour\">M5 LXPB level</th>"
     "<th class=\"left\" title=\"The same on M2 bars\">M2 LXPB level</th>"
     "<th>Open</th><th>High</th><th>Low</th><th>Close</th>"
     "<th>Reviewed</th><th>Valid</th><th class=\"left\">Notes</th><th class=\"expand-th\">\u25b6</th>")
-N_COLS = 18
+N_COLS = 16
 
 
-def _row_html(i, row, level, bo_t, rt_t, cells):
+def _row_html(i, row, older, cells):
     cls = "type-lhpb" if row.bullish else "type-llpb"
     key = f"{row.Index.tz_convert('UTC').strftime('%Y-%m-%dT%H')}_{'bull' if row.bullish else 'bear'}"
-    retest_cell = _pt(rt_t) if rt_t is not None else ("no breakout yet" if bo_t is None else "not retested yet")
+    more = f"<br><span class=\"src-tag\">+{len(older)} older within {OLDER_PTS:g} pt</span>" if older else ""
     return f"""
 <tr class="lvl-row is-valid {cls}" data-idx="{i}" data-key="{key}" onclick="toggleChart({i})" style="cursor:pointer">
   <td class="left">{i + 1}</td>
   <td class="left">{_pt(row.Index)}</td>
   <td class="left" style="color:{BULL if row.bullish else BEAR}">{'Bullish' if row.bullish else 'Bearish'}</td>
   <td class="left">{_confirmation(row)}</td>
-  <td>{row.swing_price:.2f}<span class="src-tag"> swing {'low' if row.bullish else 'high'}</span></td>
+  <td>{row.swing_price:.2f}<span class="src-tag"> swing {'low' if row.bullish else 'high'}</span>{more}</td>
   <td class="left">{_pt(row.swing_time)}</td>
-  <td>{level:.2f}<span class="src-tag"> bar {'high' if row.bullish else 'low'}</span></td>
-  <td class="left">{retest_cell}</td>
   <td class="left">{cells['l5']}</td>
   <td class="left">{cells['l2']}</td>
   <td>{row.open:.2f}</td><td>{row.high:.2f}</td><td>{row.low:.2f}</td><td>{row.close:.2f}</td>
@@ -343,15 +374,15 @@ def render(rows, h1, output, label, since):
     led = {key: ledger(bars) for key, (_, _, bars) in tf.items()}
     charts, trs = [], []
     for i, row in enumerate(rows.itertuples()):
-        level, bo_t, rt_t = retest_of(h1, h1.index.get_loc(row.Index), row.bullish)
-        chart = build_example(h1, tf['l5'][2], row, level, bo_t, rt_t)
+        older = older_swings(h1, h1.index.get_loc(row.Index), row.swing_time, row.swing_price, row.bullish)
+        chart = build_example(h1, tf['l5'][2], row, older)
         cells = {}
         for key, (name, mins, bars) in tf.items():
             lv = pick_level(led[key], row.Index, row.swing_price, row.bullish)
             cells[key] = level_cell(lv, name)
-            chart[key] = None if lv is None else level_pane(bars, mins, name, lv, row, BULL if row.bullish else BEAR)
+            chart[key] = None if lv is None else level_pane(bars, mins, name, lv, row, BULL if row.bullish else BEAR, led[key])
         charts.append(chart)
-        trs.append(_row_html(i, row, level, bo_t, rt_t, cells))
+        trs.append(_row_html(i, row, older, cells))
     n_bull = int(rows["bullish"].sum())
     title = "ES H1 cross bars" + (f" ({label})" if label else "")
     storage_key = "lxpb_cross_bar_review_v1_" + "".join(c if c.isalnum() else "-" for c in label.lower()).strip("-")
@@ -360,17 +391,16 @@ def render(rows, h1, output, label, since):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
 {M.CSS}
+{NOTES_CSS}
 </head><body>
 <h1>{title}</h1>
 <p class="lead">A CROSS BAR is an H1 bar that causes an SFP (patterns_pure <code>find_sfp</code>: it sweeps a confirmed, still-untested
 fractal swing and closes back on the near side) AND is also a spike or an engulfing bar. Bullish: a swing LOW swept and the bar is
 a hammer or a bullish engulfing bar. Bearish: a swing HIGH swept and the bar is a shooting star or a bearish engulfing bar. All of it
-is existing detectors (<code>find_cross_bar</code> only combines them). Click a row for the H1 pane (top) and M5 pane (under it), 100
-candles either side of the cross bar. The dashed amber ray is the swept swing from its own bar to the right edge; the blue ray is the
-cross bar's own level (high for bullish, low for bearish). Retest = after an H1 bar closed beyond that level, the first later H1 bar that
-trades back to it. The retest always has 50 candles either side of it; when that is
-well past the cross bar's 100 the bars in between are skipped. The arrow is the cross bar; on M5 the dotted pair spans the cross bar's hour and the green /
-red circle is the M5 candle that made the sweep. Times are PT.</p>
+is existing detectors (<code>find_cross_bar</code> only combines them). Click a row: H1 and M5 panes end at the cross bar (amber dashed =
+the swept swing, dotted amber = older swings within 7 pt), then the M5-LXPB and M2-LXPB panes show the nearest LXPB level of the
+bar's direction beyond the swept price whose P0 formed inside the bar's hour, with its P1 and first retest (solid purple); other
+same-type levels formed in that hour are dotted behind the candles. Times are PT.</p>
 <div class="summary">
   <div class="box"><strong>{len(rows)}</strong>cross bars</div>
   <div class="box"><strong>{n_bull}</strong>bullish</div>
@@ -412,6 +442,39 @@ _LOCAL_FALLBACK_JS = """
 })();
 """
 
+# The marker / ray texts can sit behind candles, so each pane also lists them in a strip above the plot.
+NOTES_JS = """
+  if (cd.notes && cd.notes.length) {
+    const nd = document.createElement('div');
+    nd.className = 'pane-notes';
+    cd.notes.forEach(n => {
+      const sp = document.createElement('span');
+      sp.style.color = n.color;
+      sp.textContent = '\\u25cf ' + n.text;
+      nd.appendChild(sp);
+    });
+    el.parentNode.insertBefore(nd, el);
+    // the library's rule sizes the plot as 100% - 31px only when it directly follows the title: do it here
+    const fit = () => { el.style.height = 'calc(100% - ' + (31 + nd.offsetHeight) + 'px)'; };
+    fit();
+    window.addEventListener('resize', fit);
+  }
+"""
+
+# Other LXPB levels: dotted line series made BEFORE the candle series, so the candles are drawn over them.
+BG_JS = """
+  (cd.bgRays || []).forEach(r => {
+    const bs = chart.addLineSeries({ color: r.color, lineWidth: r.lineWidth || 1, lineStyle: r.lineStyle,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, pointMarkersVisible: false });
+    bs.setData(r.points);
+  });
+  """
+
+NOTES_CSS = """<style>
+.pane-notes { display: flex; flex-wrap: wrap; gap: 2px 18px; padding: 4px 10px; font: 12px/1.3 Courier New, monospace;
+  background: #0b0b0b; border-bottom: 1px solid #222; }
+</style>"""
+
 _OWN_JS = """
 function _renderStack(i) {
   const cd = CHARTS[i];
@@ -449,9 +512,15 @@ def _js(charts, storage_key):
     old_names = "const _PANE_NAME = { main: 'M1', ctx: 'M5', d1: 'D1', h1: 'H1' };"
     assert old_names in mid, "M1 report chart JS changed: re-check _PANE_NAME"
     mid = mid.replace(old_names, "const _PANE_NAME = { main: 'H1', ctx: 'M5', l5: 'M5-LXPB', l2: 'M2-LXPB' };")
+    old_candles = "const series = _addCandles(chart, cd.precision);"
+    assert old_candles in mid, "M1 report chart JS changed: re-check the candle series line"
+    mid = mid.replace(old_candles, BG_JS + old_candles, 1)
+    old_fs = "titleEl.appendChild(fsBtn);"
+    assert old_fs in mid, "M1 report chart JS changed: re-check the fullscreen button hook"
+    mid = mid.replace(old_fs, old_fs + NOTES_JS, 1)
     old_msg = "'  |  (no bars covering this trade)'"
     assert old_msg in mid, "M1 report chart JS changed: re-check the empty-pane message"
-    mid = mid.replace(old_msg, "'  |  (no LXPB level of this direction beyond the swept price with its P0 within 1 h of the cross bar)'")
+    mid = mid.replace(old_msg, "'  |  (no LXPB level of this direction beyond the swept price with its P0 formed inside the cross bar hour)'")
     marker = '<script src="/js/row-store.js"></script>'
     review = shared[shared.index(marker):]
     with open(ROW_STORE_JS, encoding="utf-8") as f:
@@ -471,8 +540,9 @@ def main():
     a = ap.parse_args()
     if not (a.all or a.last or a.at):
         ap.error("pass --all, --last N or --at")
-    h1 = load_es("1h", tz=PT).loc[a.since:]
+    h1 = load_es("1h", tz=PT)        # the whole history: a swing from before --since can be the one a bar sweeps
     rows = collect(h1)
+    rows = rows.loc[rows.index >= pd.Timestamp(a.since, tz=PT)]
     if a.at:
         want = [pd.Timestamp(x.strip(), tz=PT) for x in a.at.split(",")]
         rows = rows.loc[rows.index.isin(want)]
