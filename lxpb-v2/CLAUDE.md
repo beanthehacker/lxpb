@@ -674,6 +674,17 @@ strip above each plot. `h1_cross_bars_2026` (Jan - Oct 2026, 115: 60 bullish / 5
 `public/reports/cross_bar/`; NOT public (not in `proxy.ts`). Regen: `python cross_bar/render_cross_bar_report.py --all --since
 2026-01-01 --label "2026 Jan - Oct" --output <scratch>.html`, then gzip. A report opened from disk keeps its notes in localStorage.
 
+Cross bar TRADES (user, 2026-10-29): `cross_bar/render_cross_bar_trades.py`, same page, panes H1 / M5 / M5 trade / M2-LXPB. Entry
+levels = the M5 LXPB levels (LHPB long, LLPB short) with P0 inside the bar's hour, beyond the swept price; ONE SEAT: the first of them
+price comes back to after the bar closed takes the trade (an earlier one beats the nearest), a level touched before the close is
+spent. Fill = first 1 s bar reaching the level (open if gapped), no entry 12:45-15:00 PT. Stop 1 tick beyond the cross bar, no
+target, M1 fade managed bracket WITHOUT the RR floor (needs a target): thrust-P1 trail on the M5 ledger + 12:44 PT flat. The
+"Levels: stop or 1R first" column judges every level on its own (no seat, no trail, no EOD flat, same second = stop).
+`h1_cross_bar_trades_2026` (115 bars) is gzipped into `public/reports/cross_bar/`, NOT public: 82 trades, 39% win, -4.7R;
+levels 118/234 1R first. `cross_bar/level_race_trail.py` = the same levels with a 1R target + trail: +15.6R, 53% win; 56 of 83
+cross bars with decided levels have at least one winner (49 in the plain race). Regen: `--all --since 2026-01-01 --label
+"2026 Jan 2 - Oct 26"`, then gzip.
+
 # Trap variants (`trap_variants.py`)
 
 The daily-analysis trapVariants (`E:\daily-analysis\trapVariants`, engine
