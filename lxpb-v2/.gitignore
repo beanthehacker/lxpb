@@ -45,3 +45,5 @@ npm_install.log
 # never worth versioning.
 /data/levels_cache/m1_levels_recent.*
 /data/levels_cache/m2_levels_recent.*
+# cross bar trades: the per-row replay data, committed as .js.gz and inflated by decompress-gz-reports.mjs
+public/reports/cross_bar/*_data/*.js

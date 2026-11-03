@@ -4,7 +4,8 @@
 // build paths actually serve: imported by build-index.mjs (the static
 // Vercel deploy) and run standalone here before next dev/next build (the
 // alternate Next.js app path). The inflated .html is never committed -- see
-// .gitignore.
+// .gitignore. A report's side data (e.g. cross_bar/<report>_data/<row>.js, the
+// replay data a page loads per row) is committed as .js.gz and inflated the same way.
 import { readdirSync, statSync, readFileSync, writeFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import path from "node:path";
@@ -16,7 +17,7 @@ function walk(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) out.push(...walk(full));
-    else if (entry.isFile() && entry.name.endsWith(".html.gz")) out.push(full);
+    else if (entry.isFile() && (entry.name.endsWith(".html.gz") || entry.name.endsWith(".js.gz"))) out.push(full);
   }
   return out;
 }

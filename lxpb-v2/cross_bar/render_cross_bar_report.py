@@ -216,8 +216,9 @@ def pick_level(led, t, swept_price, bullish):
     return None if c.empty else c.iloc[0]
 
 
-def level_pane(bars, minutes, label, lv, row, vlines_color, led):
-    """The M5 / M2 pane of the LXPB level `lv`: P0, P1 and the first retest marked, the level as a ray from its P0."""
+def level_pane(bars, minutes, label, lv, row, vlines_color, led, until=None):
+    """The M5 / M2 pane of the LXPB level `lv`: P0, P1 and the first retest marked, the level as a ray from its P0.
+    `until` (a time): also every candle from the cross bar's hour to it, unbroken, and the pane runs at least that far."""
     t, bull = row.Index, row.bullish
     dt = pd.Timedelta(minutes=minutes)
     h1_end = t + pd.Timedelta(hours=1)
@@ -235,6 +236,10 @@ def level_pane(bars, minutes, label, lv, row, vlines_color, led):
     else:
         spans.append((len(bars) - 1, len(bars) - 1, NEAR))
         n = len(bars)
+    if until is not None:
+        u = min(len(bars) - 1, int(pos(until, side="right")) - 1)
+        spans.append((int(pos(t)), u, 0))
+        n = max(n, u + 1)
     segs = [bars.iloc[lo: hi + 1] for lo, hi in _plan(spans, n, LEVEL_GAP)]
     lvl_up = lv["type"] == "LHPB"        # an LHPB sits on a bar's high: P0 text above the bar, the retest touches from above
     price = float(lv["price"])

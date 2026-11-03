@@ -685,6 +685,19 @@ levels 118/234 1R first. `cross_bar/level_race_trail.py` = the same levels with 
 cross bars with decided levels have at least one winner (49 in the plain race). Regen: `--all --since 2026-01-01 --label
 "2026 Jan 2 - Oct 26"`, then gzip.
 
+Cross bar FORWARD REPLAY + manual trades (user, 2026-11-03), same report. Panes: H1 / M5 / M2 (blind: start at the bar's close),
+then the automated trade's M5 trade / M2-LXPB panes hidden behind a button. The three blind panes step forward together (replay bar,
+per-pane arrows, arrow keys, Play that pauses at the manual fill / exit); each shows its candles as they stood at the replay time,
+last one forming, built in the page from M1. Replay window (`replay_window`): >= 1 trading day (1,380 M1 bars) past the close, on until
+every P0 price of the bar (M5 and M2 entry levels not touched before the close) is revisited + 60 bars, at most 5 trading days.
+Position tool `public/js/position-tool.js` (TradingView-like, magnet to O/H/L/C): ONE box per row, kept in time + price, drawn on
+every pane. The ENTRY IS A PRICE: filled when price trades there again after the candle the box sits on (from the replay time when
+that candle is still forming); judged on the 1 s path (`s1_pack`: seconds not inside the previous kept second's range, per minute,
+exact for first touches): first second reaching stop or target, same second both = stop, no EOD flat. Manual columns (entry / stop
+& target / exit / R / P&L $ = R x tool risk $) show the trade as of the row's replay time; summary boxes count closed manual trades.
+Per-row data (M1 + 1 s path) is a side file `<report>_data/<row key>.js` loaded by script tag; committed as `.js.gz` next to the
+report and inflated by `scripts/decompress-gz-reports.mjs`. Boxes, replay times and settings live in the browser's localStorage.
+
 # Trap variants (`trap_variants.py`)
 
 The daily-analysis trapVariants (`E:\daily-analysis\trapVariants`, engine

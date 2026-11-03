@@ -25,6 +25,16 @@ The trade (user, 2026-10-29):
 Data: E:\\data_source (es_data.load_es): H1 for the cross bars, M5 rolled up from 1-minute bars for the ledger, 1 s bars for fill
 and exits. Times are PT.
 
+FORWARD REPLAY (user, 2026-11-03): panes 1-3 (H1, M5, M2) start at the cross bar's close and step forward together, one candle of
+any of them at a time; every pane shows its candles as they stood at the replay time (the last one still forming), built in the
+page from the row's M1 bars. The replay window runs at least MIN_FUTURE_M1 M1 bars past the close, on until every P0 price of the
+cross bar (its M5 and M2 entry levels not touched before the close) has been revisited, at most MAX_FUTURE_M1 bars
+(replay_window). The long / short position tool (public/js/position-tool.js) keeps ONE manual trade per row, drawn on all three
+panes (and on the automated trade's panes 4-5, hidden until asked for). It is judged on the 1 s price path: entered when price
+trades at its entry price again after the candle it was drawn on (or from the replay time when that candle is still forming), then
+the first second reaching its stop or target ends it (a second reaching both = the stop; no end-of-day flat). The M1 bars and the
+path of each row are in its own file next to the page (<page name>_data/<row key>.js), loaded when the row opens.
+
 Usage:
     python cross_bar/render_cross_bar_trades.py --last 5 --output <file>.html
     python cross_bar/render_cross_bar_trades.py --at "2026-10-06 02:00,2026-09-23 19:00" --output <file>.html
@@ -32,6 +42,7 @@ Usage:
 import os
 import sys
 import argparse
+import json
 import pandas as pd
 import numpy as np
 
@@ -49,7 +60,11 @@ EOD_LEAD = pd.Timedelta(minutes=1)
 REOPEN = pd.Timedelta(hours=15)
 STOP_COLOR = "#f87171"
 ENTRY_COLOR = "#60a5fa"
-AFTER_EXIT = 30                       # M5 candles shown after the exit
+AFTER_EXIT = 30                       # M5 candles shown after the exit (at least)
+MIN_FUTURE_M1 = 1380                  # replay window: at least this many M1 bars (one trading day, 23 h) past the cross bar ...
+MAX_FUTURE_M1 = 5 * 1380              # ... at most five trading days
+REVISIT_PAD = 60                      # ... and this many M1 bars past the last P0 price's revisit
+POS_TOOL_JS = os.path.join(CB._REPO_ROOT, "public", "js", "position-tool.js")   # TradingView-style long / short position tool
 
 
 # ---------------------------------------------------------------- 1 s bars (one month file read once)
@@ -276,14 +291,15 @@ def race_cell(races):
 
 
 # ---------------------------------------------------------------- the trade pane
-def trade_pane(m5, row, cands, lv, ft, fp, res, spent, races):
+def trade_pane(m5, row, cands, lv, ft, fp, res, spent, races, until):
     t, bull = row.Index, row.bullish
     h1_end = t + pd.Timedelta(hours=1)
     pos = lambda x: int(m5.index.searchsorted(x, side="right")) - 1
-    e, x = pos(ft), pos(res["exit_t"])
+    e, x, u = pos(ft), pos(res["exit_t"]), pos(until)
     spans = [(int(m5.index.searchsorted(t)), pos(h1_end - FIVE), 30), (e, e, 20), (x, x, AFTER_EXIT)]
     spans += [(pos(tr), pos(tr), 6) for tr, _, _ in res["trails"]]
-    n = min(len(m5), x + AFTER_EXIT + 1)
+    spans.append((int(m5.index.searchsorted(t)), u, 0))          # every candle from the cross bar to the horizon
+    n = min(len(m5), max(x + AFTER_EXIT, u) + 1)
     segs = [m5.iloc[lo: hi + 1] for lo, hi in CB._plan(spans, n, CB.LEVEL_GAP)]
     bars = pd.concat(segs)
     times = [int(i.timestamp()) for i in bars.index]
@@ -357,6 +373,401 @@ def trade_pane(m5, row, cands, lv, ft, fp, res, spent, races):
     return pane
 
 
+def blind_pane(bars, minutes, label, row, older):
+    """The M5 context pane's view on other bars (the M2 one): NEAR candles before the cross bar's hour, ends with its last candle."""
+    t, bull = row.Index, row.bullish
+    dt = pd.Timedelta(minutes=minutes)
+    h1_end = t + pd.Timedelta(hours=1)
+    color = CB.BULL if bull else CB.BEAR
+    p0 = int(bars.index.searchsorted(t))
+    p1 = int(bars.index.searchsorted(h1_end)) - 1
+    segs = [bars.iloc[lo: hi + 1] for lo, hi in CB._plan([(p0, p1, CB.NEAR)], p1 + 1)]
+    inside = bars.loc[t: h1_end - dt]
+    sweep_t = inside["low"].idxmin() if bull else inside["high"].idxmax()
+    sweep_px = inside.at[sweep_t, "low" if bull else "high"]
+    marks = [{"time": int(sweep_t.timestamp()), "position": "belowBar" if bull else "aboveBar", "color": color,
+              "shape": "circle", "text": f"sweep {'low' if bull else 'high'} {sweep_px:.2f}"}]
+    vl = [{"time": int(t.timestamp()), "color": color, "label": f"H1 cross bar {CB._pt(t, False)}"},
+          {"time": int((h1_end - dt).timestamp()), "color": color, "label": "bar end"}]
+    return CB._pane(segs, t, row.swing_time, row.swing_price, bull, label, extra_markers=marks, vlines=vl,
+                    cross_marker=False, older=older)
+
+
+def future_pane(bars, minutes, label, row, until):
+    """A plain pane for a row with no trade / no level: NEAR candles before the cross bar's hour, then every candle to `until`."""
+    t, bull = row.Index, row.bullish
+    dt = pd.Timedelta(minutes=minutes)
+    h1_end = t + pd.Timedelta(hours=1)
+    color = CB.BULL if bull else CB.BEAR
+    p0 = int(bars.index.searchsorted(t))
+    u = int(bars.index.searchsorted(until, side="right")) - 1
+    segs = [bars.iloc[lo: hi + 1] for lo, hi in CB._plan([(p0, u, 0), (p0, p0, CB.NEAR)], u + 1)]
+    vl = [{"time": int(t.timestamp()), "color": color, "label": f"H1 cross bar {CB._pt(t, False)}"},
+          {"time": int((h1_end - dt).timestamp()), "color": color, "label": "bar end"}]
+    return CB._pane(segs, t, row.swing_time, row.swing_price, bull, label, vlines=vl, cross_marker=False)
+
+
+def m1_pack(bars):
+    """M1 bars for the page's replay, compact: flat [minute step, open, high, low, close], prices in ticks from a base."""
+    tk = np.rint(bars[["open", "high", "low", "close"]].to_numpy(float) / TICK).astype(np.int64)
+    base = int(tk[0, 0])
+    sec = bars.index.asi8 // 1_000_000_000
+    steps = np.diff(sec, prepend=sec[0]) // 60
+    rows = np.column_stack([steps, tk - base]).ravel().tolist()
+    return {"t0": int(sec[0]), "b": base, "r": rows}
+
+
+# ---------------------------------------------------------------- forward replay and the manual trade
+MANUAL_CSS = """<style>
+.replay-bar { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; padding: 6px 10px; position: sticky; top: 0;
+  z-index: 6; background: #0b0f17; border: 1px solid #1f2937; font: 12px Courier New, monospace; color: #9ca3af; }
+.replay-bar button, .replay-bar select { background: #1b2330; color: #e5e7eb; border: 1px solid #334155; border-radius: 4px;
+  padding: 2px 8px; font: 12px/1.6 Courier New, monospace; cursor: pointer; }
+.replay-bar button:hover { background: #273449; }
+.replay-bar button.on { background: #2962ff; color: #fff; }
+.replay-bar .rp-time { color: #e5e7eb; font-weight: bold; }
+.reveal-bar { display: flex; gap: 14px; align-items: center; padding: 8px 10px; font: 12px Courier New, monospace; color: #9ca3af; }
+.reveal-btn { background: #374151; color: #fff; border: 0; border-radius: 4px; padding: 5px 14px; cursor: pointer;
+  font: bold 13px Courier New, monospace; }
+.future-wrap.hidden { display: none; }
+td.man-entry, td.man-exit { white-space: nowrap; }
+</style>"""
+
+MANUAL_JS = r"""
+// FORWARD REPLAY. The H1, M5 and M2 panes start at the cross bar's close and step forward together: a step of one pane's candle
+// moves the replay time T to that candle's end, and every pane shows its candles as they stood at T (the last one still forming),
+// built from the row's M1 bars (loaded from its data file when the row opens). The row's one manual trade (the position tool's
+// box, shared by the three panes) is judged on the row's 1 s price path up to T: entered when price trades at its entry price
+// from the box's `from` on, then the first second reaching the stop or the target ends it (a second reaching both = the stop).
+const _DATA_DIR = '__DATA_DIR__';
+const _BLIND = { main: 3600, ctx: 300, m2: 120 };          // pane -> candle length (s)
+const _TFN = { main: 'H1', ctx: 'M5', m2: 'M2' };
+const _RP = {};
+const _FILE = location.pathname.split('/').pop();
+const _key = (i) => ((document.querySelector('tr.lvl-row[data-idx="' + i + '"]') || {}).dataset || {}).key;
+const _ls = (k, d) => { try { const v = localStorage.getItem('postool_v1_' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
+const _lsSet = (k, v) => { try { localStorage.setItem('postool_v1_' + k, JSON.stringify(v)); } catch (e) { /* private window */ } };
+function _rp(i) {
+  if (!_RP[i]) {
+    const cd = CHARTS[i];
+    _RP[i] = { close: cd.close, end: cd.end, T: Math.max(cd.close, Math.min(cd.end, _ls('cursor_' + _FILE + '_' + _key(i), cd.close))),
+               data: null, panes: {}, res: null, fin: null, play: null };
+  }
+  return _RP[i];
+}
+const _lb = (a, t) => { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] < t) lo = m + 1; else hi = m; } return lo; };
+
+// ---- the row's data file: M1 bars and the 1 s path (seconds whose range is not inside the one kept before it, that minute)
+function _decode(d) {
+  const m = d.m1, M = [];
+  let t = m.t0;
+  for (let k = 0; k < m.r.length; k += 5) {
+    t += m.r[k] * 60;
+    M.push({ time: t, open: (m.b + m.r[k + 1]) * 0.25, high: (m.b + m.r[k + 2]) * 0.25, low: (m.b + m.r[k + 3]) * 0.25,
+             close: (m.b + m.r[k + 4]) * 0.25 });
+  }
+  const s = d.s1, n = s.r.length / 3, T = new Float64Array(n), L = new Float64Array(n), H = new Float64Array(n);
+  let ts = s.t0, lo = s.b;
+  for (let k = 0; k < n; k++) { ts += s.r[3 * k]; lo += s.r[3 * k + 1]; T[k] = ts; L[k] = lo * 0.25; H[k] = (lo + s.r[3 * k + 2]) * 0.25; }
+  return { m1: M, m1t: M.map(c => c.time), s1: { n, t: T, lo: L, hi: H } };
+}
+window.__replayData = (key, d) => {
+  document.querySelectorAll('tr.lvl-row').forEach(tr => {
+    if (tr.dataset.key !== key) return;
+    const st = _rp(+tr.dataset.idx);
+    st.data = _decode(d);
+    (st.waiting || []).splice(0).forEach(f => f());
+  });
+};
+function _load(i, cb) {
+  const st = _rp(i);
+  if (st.data) { cb(); return; }
+  (st.waiting = st.waiting || []).push(cb);
+  if (st.loading) return;
+  st.loading = true;
+  const sc = document.createElement('script');
+  sc.src = _DATA_DIR + '/' + _key(i) + '.js';
+  sc.onerror = () => { st.loading = false; _syncBar(i, 'replay data not found (' + sc.src + ')'); };
+  document.head.appendChild(sc);
+}
+
+// ---- candles at T
+function _barsAt(i, pane) {
+  const st = _rp(i), p = st.panes[pane], b = _BLIND[pane], out = p.hist.slice();
+  if (!st.data) return out;
+  const M = st.data.m1;
+  for (let k = _lb(st.data.m1t, st.close); k < M.length && M[k].time < st.T; k++) {
+    const c = M[k], bt = Math.floor(c.time / b) * b, last = out[out.length - 1];
+    if (last.time === bt && bt >= st.close) {
+      last.high = Math.max(last.high, c.high); last.low = Math.min(last.low, c.low); last.close = c.close;
+    } else out.push({ time: bt, open: c.open, high: c.high, low: c.low, close: c.close });
+  }
+  return out;
+}
+function _apply(i) {
+  const st = _rp(i);
+  Object.keys(st.panes).forEach(pane => {
+    const p = st.panes[pane], bars = _barsAt(i, pane);
+    const ts = p.chart.timeScale(), vr = ts.getVisibleLogicalRange(), n0 = (p.cd.live || p.cd.candles).length;
+    p.cd.live = bars;
+    p.series.setData(bars);
+    if (vr) {
+      const d = bars.length - n0;
+      ts.setVisibleLogicalRange(vr.to >= n0 - 1.5 ? { from: vr.from + d, to: vr.to + d } : vr);   // follow the right edge
+    }
+  });
+  _evalRow(i);
+  PosTool.refresh(i);
+  _syncBar(i);
+  _fillRow(i);
+  _manualStats();
+}
+function _setT(i, T) {
+  const st = _rp(i);
+  st.T = Math.max(st.close, Math.min(st.end, T));
+  _lsSet('cursor_' + _FILE + '_' + _key(i), st.T);
+  _apply(i);
+}
+function _step(i, pane, dir) {
+  const st = _rp(i), b = _BLIND[pane];
+  if (!st.data) return;
+  let T = dir > 0 ? (Math.floor(st.T / b) + 1) * b : (Math.ceil(st.T / b) - 1) * b;
+  if (dir > 0) {                                  // no bars in that step (market closed): on to the candle the next bar is in
+    const k = _lb(st.data.m1t, st.T), nx = st.data.m1[k];
+    if (nx && nx.time >= T) T = (Math.floor(nx.time / b) + 1) * b;
+  }
+  _setT(i, T);
+}
+
+// ---- the manual trade on the 1 s path, up to `upto`
+function _lastPx(D, upto) {
+  const k = _lb(D.m1t, upto - 59) - 1;                     // the last M1 bar that has closed by upto
+  return k >= 0 ? { t: D.m1[k].time, px: D.m1[k].close } : null;
+}
+function _eval(p, D, upto) {
+  const S = D.s1, s = p.side === 'long' ? 1 : -1, risk = Math.abs(p.entry - p.sl);
+  let f = -1, fp = null;
+  for (let k = _lb(S.t, p.from); k < S.n && S.t[k] < upto; k++) {
+    const lo = S.lo[k], hi = S.hi[k];
+    if (lo <= p.entry && hi >= p.entry) { f = k; fp = p.entry; break; }
+    if (k > 0 && S.hi[k - 1] < p.entry && lo > p.entry) { f = k; fp = lo; break; }      // jumped over it: its first price
+    if (k > 0 && S.lo[k - 1] > p.entry && hi < p.entry) { f = k; fp = hi; break; }
+  }
+  if (f < 0) return { state: 'waiting' };
+  const out = (state, j, px, hit) => ({ state, fillT: S.t[f], fillPx: fp, exitT: j == null ? null : S.t[j], exitPx: px, hit,
+                                        r: risk > 0 ? s * (px - fp) / risk : 0 });
+  for (let j = f; j < S.n && S.t[j] < upto; j++) {
+    const lo = S.lo[j], hi = S.hi[j], ref = j === f;
+    if (s > 0 ? lo <= p.sl : hi >= p.sl)
+      return out('closed', j, ref ? (s > 0 ? Math.min(p.sl, fp) : Math.max(p.sl, fp)) : (s > 0 ? Math.min(p.sl, hi) : Math.max(p.sl, lo)), 'stop');
+    if (s > 0 ? hi >= p.tp : lo <= p.tp)
+      return out('closed', j, ref ? (s > 0 ? Math.max(p.tp, fp) : Math.min(p.tp, fp)) : (s > 0 ? Math.max(p.tp, lo) : Math.min(p.tp, hi)), 'target');
+  }
+  const last = _lastPx(D, upto);
+  const o = out('open', null, last && last.t >= S.t[f] - 60 ? last.px : fp, null);
+  o.lastT = last ? Math.max(last.t, S.t[f]) : S.t[f]; o.lastPx = o.exitPx;
+  return o;
+}
+function _evalRow(i) {
+  const st = _rp(i), box = PosTool.getBox(i);
+  st.res = box && st.data ? _eval(box, st.data, st.T) : null;
+  st.fin = box && st.data ? _eval(box, st.data, st.end) : null;
+  if (st.data) _lsSet('state_' + _FILE + '_' + _key(i), st.res ? { T: st.T, res: st.res } : null);
+}
+const _cached = (i) => { const st = _rp(i); return st.data ? (st.res ? { T: st.T, res: st.res } : null) : _ls('state_' + _FILE + '_' + _key(i), null); };
+
+// ---- table cells, stats, replay bar
+const _f2 = (v) => v.toFixed(2);
+const _ptTime = (t, sec) => new Date(t * 1000).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short',
+  month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: sec ? '2-digit' : undefined, hour12: false }) + ' PT';
+const _riskUsd = () => PosTool.settings.account * PosTool.settings.riskPct / 100;
+const _sgn = (v, d) => (v >= 0 ? '+' : '') + v.toFixed(d);
+function _fillRow(i) {
+  const tr = document.querySelector('tr.lvl-row[data-idx="' + i + '"]');
+  if (!tr) return;
+  const cell = (c) => tr.querySelector('td.' + c);
+  const b = PosTool.getBox(i), c = _cached(i), r = c && c.res;
+  if (!b) {
+    cell('man-entry').innerHTML = '<span class="src-tag">-</span>';
+    ['man-plan', 'man-exit', 'man-r', 'man-usd'].forEach(k => { cell(k).innerHTML = ''; });
+    return;
+  }
+  const risk = Math.abs(b.entry - b.sl), rr = risk > 0 ? Math.abs(b.tp - b.entry) / risk : 0;
+  const col = b.side === 'long' ? '#4ade80' : '#f87171';
+  cell('man-entry').innerHTML = '<span style="color:' + col + '">' + b.side + '</span> ' + _f2(b.entry)
+    + '<br><span class="src-tag">' + (r && r.fillT != null ? 'fill ' + _f2(r.fillPx) + ' ' + _ptTime(r.fillT, true)
+                                                           : 'drawn on ' + (_TFN[b.pane] || b.pane)) + '</span>';
+  cell('man-plan').innerHTML = _f2(b.sl) + ' / ' + _f2(b.tp) + '<br><span class="src-tag">' + rr.toFixed(2) + ' : 1</span>';
+  const asOf = c ? '<br><span class="src-tag">replay at ' + _ptTime(c.T) + '</span>' : '';
+  if (!r || r.state === 'waiting') {
+    cell('man-exit').innerHTML = '<span class="src-tag">' + (r ? 'waiting for the entry' : 'open the row to replay') + '</span>' + asOf;
+    cell('man-r').innerHTML = ''; cell('man-usd').innerHTML = '';
+    return;
+  }
+  const rc = r.r > 0 ? '#4ade80' : r.r < 0 ? '#f87171' : '#e5e7eb', usd = r.r * _riskUsd();
+  if (r.state === 'open') {
+    cell('man-exit').innerHTML = '<span class="src-tag">open, last ' + _f2(r.exitPx) + '</span>' + asOf;
+    cell('man-r').innerHTML = '<em style="color:' + rc + '">' + _sgn(r.r, 2) + '</em><br><span class="src-tag">open</span>';
+    cell('man-usd').innerHTML = '<em style="color:' + rc + '">' + _sgn(Math.round(usd), 0) + '</em>';
+    return;
+  }
+  cell('man-exit').innerHTML = _f2(r.exitPx) + '<br><span class="src-tag">' + _ptTime(r.exitT, true) + ' &middot; ' + r.hit + '</span>';
+  cell('man-r').innerHTML = '<strong style="color:' + rc + '">' + _sgn(r.r, 2) + '</strong>';
+  cell('man-usd').innerHTML = '<span style="color:' + rc + '">' + _sgn(Math.round(usd), 0).replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '</span>';
+}
+function _manualStats() {
+  let n = 0, open = 0, wait = 0, wins = 0, tot = 0;
+  document.querySelectorAll('tr.lvl-row').forEach(tr => {
+    const i = +tr.dataset.idx;
+    if (!PosTool.getBox(i)) return;
+    const c = _cached(i), r = c && c.res;
+    if (!r || r.state === 'waiting') { wait++; return; }
+    if (r.state === 'open') { open++; return; }
+    n++; tot += r.r; if (r.r > 0) wins++;
+  });
+  const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  set('man-n', n); set('man-open', open); set('man-wait', wait);
+  set('man-win', n ? Math.round(100 * wins / n) + '%' : '-');
+  set('man-avg', n ? _sgn(tot / n, 2) : '-');
+  set('man-total', n ? _sgn(tot, 2) : '-');
+  set('man-usd', n ? _sgn(Math.round(tot * _riskUsd()), 0).replace(/\B(?=(\d{3})+(?!\d))/g, ',') : '-');
+}
+function _syncBar(i, msg) {
+  const bar = document.querySelector('.replay-bar[data-idx="' + i + '"]');
+  if (!bar) return;
+  const st = _rp(i), r = st.res;
+  bar.querySelector('.rp-time').textContent = msg || (st.data ? 'replay at ' + _ptTime(st.T) : 'loading the replay data ...');
+  bar.querySelector('.rp-end').textContent = 'runs to ' + _ptTime(st.end) + ' (' + CHARTS[i].endWhy + ')';
+  bar.querySelector('.rp-trade').textContent = !PosTool.getBox(i) ? 'draw a Long / Short on any of the three panes'
+    : !r ? '' : r.state === 'waiting' ? 'manual trade: waiting for the entry'
+    : r.state === 'open' ? 'manual trade: open since ' + _ptTime(r.fillT, true) + ', ' + _sgn(r.r, 2) + 'R'
+    : 'manual trade: ' + r.hit + ' ' + _ptTime(r.exitT, true) + ', ' + _sgn(r.r, 2) + 'R';
+  const pb = bar.querySelector('[data-a="play"]');
+  pb.textContent = st.play ? '❚❚ Pause' : '▶ Play'; pb.classList.toggle('on', !!st.play);
+}
+function _togglePlay(i) {
+  const st = _rp(i);
+  if (st.play) { clearInterval(st.play); st.play = null; _syncBar(i); return; }
+  const bar = document.querySelector('.replay-bar[data-idx="' + i + '"]');
+  const pane = bar.querySelector('[data-a="tf"]').value, ms = +bar.querySelector('[data-a="speed"]').value;
+  st.play = setInterval(() => {
+    const was = st.res ? st.res.state : null;
+    _step(i, pane, 1);
+    // pause at the end, and when the manual trade fills or ends
+    if (st.T >= st.end || (st.res && st.res.state !== was && was != null)) { clearInterval(st.play); st.play = null; _syncBar(i); }
+  }, ms);
+  _syncBar(i);
+}
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.replay-bar button');
+  if (!btn) return;
+  e.stopPropagation();
+  const i = +btn.closest('.replay-bar').dataset.idx, a = btn.dataset.a, st = _rp(i);
+  if (a === 'fwd') _step(i, btn.dataset.tf, 1);
+  else if (a === 'back') _step(i, btn.dataset.tf, -1);
+  else if (a === 'start') _setT(i, st.close);
+  else if (a === 'end') _setT(i, st.end);
+  else if (a === 'play') _togglePlay(i);
+});
+// arrow keys step the pane last clicked (its own candle length)
+let _activePane = null;
+document.addEventListener('keydown', (e) => {
+  if (!_activePane || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName || '')) return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { _step(_activePane.i, _activePane.pane, e.key === 'ArrowRight' ? 1 : -1); e.preventDefault(); }
+});
+
+const Replay = {
+  attach(chart, series, el, titleEl, cd) {
+    const m = /^c-(\w+)-(\d+)$/.exec(el.id || '');
+    if (!m || !(m[1] in _BLIND)) return;
+    const pane = m[1], i = +m[2], st = _rp(i);
+    st.panes[pane] = { chart, series, cd, hist: cd.candles };
+    el.addEventListener('pointerdown', () => { _activePane = { i, pane }; }, true);
+    const bar = titleEl.querySelector('.pos-bar') || titleEl;
+    const fs = bar.querySelector('.fs-btn');
+    [['◀', -1], ['▶', 1]].forEach(([txt, dir]) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'pos-btn'; b.textContent = txt;
+      b.title = (dir > 0 ? 'Replay forward' : 'Replay back') + ' one ' + _TFN[pane] + ' candle (all three panes follow; arrow keys too)';
+      b.addEventListener('click', (e) => { e.stopPropagation(); _step(i, pane, dir); });
+      bar.insertBefore(b, fs || null);
+    });
+    _syncBar(i);
+    _load(i, () => _apply(i));
+  },
+};
+
+// ---- the automated trade's panes (M5 trade, M2-LXPB), hidden until asked for
+const _autoDone = {};
+function toggleAuto(i) {
+  const wrap = document.getElementById('future-' + i), btn = document.querySelector('.reveal-btn[data-idx="' + i + '"]');
+  const show = wrap.classList.contains('hidden');
+  wrap.classList.toggle('hidden', !show);
+  btn.textContent = show ? 'Hide the automated trade' : 'Show the automated trade (M5 trade, M2-LXPB: the whole replay window) ▼';
+  if (show && !_autoDone[i]) { _autoDone[i] = true; _renderChartPane(i, 'l5', CHARTS[i].l5); _renderChartPane(i, 'l2', CHARTS[i].l2); }
+  _load(i, () => { _evalRow(i); PosTool.refresh(i); });
+}
+
+PosTool.config.shared = Object.keys(_BLIND);
+PosTool.config.mirror = ['l5', 'l2'];
+PosTool.config.cursor = (i) => _rp(i).T;
+PosTool.config.result = (i, pane) => (pane in _BLIND ? _rp(i).res : _rp(i).fin);
+PosTool.config.onChange = (i) => {
+  if (i == null) document.querySelectorAll('tr.lvl-row').forEach(tr => _fillRow(+tr.dataset.idx));
+  else { _evalRow(i); PosTool.refresh(i); _fillRow(i); _syncBar(i); }
+  _manualStats();
+};
+window.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('tr.lvl-row').forEach(tr => _fillRow(+tr.dataset.idx));
+  _manualStats();
+});
+"""
+
+
+def replay_window(m1, closed, levels):
+    """(last M1 bar of the replay, why): at least MIN_FUTURE_M1 bars past the cross bar's close, on until every level in
+    `levels` not already touched before the close has been revisited (+ REVISIT_PAD bars), at most MAX_FUTURE_M1 bars."""
+    c0 = int(m1.index.searchsorted(closed))
+    lo, hi = c0 + MIN_FUTURE_M1 - 1, c0 + MAX_FUTURE_M1 - 1
+    live = levels[~(levels["retest_time"] < closed)]
+    if live["retest_time"].isna().any():
+        k, why = hi, "5 trading days: a P0 price of this cross bar is not revisited by then"
+    elif len(live):
+        k = int(m1.index.searchsorted(live["retest_time"].max())) + REVISIT_PAD
+        why = f"every P0 price of this cross bar revisited ({len(live)} levels)"
+        if k > hi:
+            k, why = hi, "5 trading days: a P0 price of this cross bar is not revisited by then"
+        elif k < lo:
+            k, why = lo, f"1 trading day; every P0 price of this cross bar revisited sooner ({len(live)} levels)"
+    else:
+        k, why = lo, "1 trading day (no P0 price of this cross bar left to revisit)"
+    k = min(k, len(m1) - 1)
+    if k == len(m1) - 1:
+        why += "; cut at the data's end"
+    return m1.index[k], why
+
+
+def s1_pack(s):
+    """The 1 s price path for the page's trade walk: every second whose range is not inside the range of the second kept just
+    before it within the same minute (a dropped second only repeats prices that second traded earlier, so the first touch of
+    any price is the same; each minute starts afresh, so a watch starting on a minute loses nothing). Flat [dt s, low step,
+    range] in ticks."""
+    lo = np.rint(s["low"].to_numpy(float) / TICK).astype(np.int64)
+    hi = np.rint(s["high"].to_numpy(float) / TICK).astype(np.int64)
+    sec = s.index.asi8 // 1_000_000_000
+    keep, kl, kh, km = [], 0, 0, -1
+    for j in range(len(sec)):
+        m = sec[j] // 60
+        if m == km and lo[j] >= kl and hi[j] <= kh:
+            continue
+        keep.append(j)
+        kl, kh, km = lo[j], hi[j], m
+    keep = np.array(keep, dtype=np.int64)
+    t, l, h = sec[keep], lo[keep], hi[keep]
+    rows = np.column_stack([np.diff(t, prepend=t[0]), np.diff(l, prepend=l[0]), h - l])
+    return {"t0": int(t[0]), "b": int(l[0]), "r": rows.ravel().tolist()}
+
+
 # ---------------------------------------------------------------- page
 HEAD_HTML = (
     "<th class=\"left\">#</th><th class=\"left\">Cross bar (H1 start)</th><th class=\"left\">Side</th>"
@@ -366,13 +777,21 @@ HEAD_HTML = (
     "<th title=\"Thrust-P1 trail steps fired\">Trails</th><th class=\"left\">Exit</th><th>R</th>"
     "<th title=\"Best open profit before the exit, in R\">Best R</th>"
     "<th class=\"left\" title=\"Every entry level on its own (no seat): entered at its first touch after the cross bar closed, same stop, which came first: the stop or +1R. No trail, no end-of-day flat. Hover a level for the numbers\">Levels: stop or 1R first</th>"
+    "<th class=\"left man-th\" title=\"Your manual trade, drawn with Long / Short on the H1, M5 or M2 pane (one per row): side, entry price, and its fill once the replay reaches it\">Manual entry</th>"
+    "<th class=\"man-th\" title=\"Stop / target and their reward to risk\">Manual stop / target</th>"
+    "<th class=\"left man-th\" title=\"As of the row's replay time: the first second reaching the stop or the target after the fill, or still open (last price)\">Manual exit</th>"
+    "<th class=\"man-th\">Manual R</th><th class=\"man-th\" title=\"R x the risk $ of the position tool's settings (gear)\">Manual P&amp;L $</th>"
     "<th>Reviewed</th><th>Valid</th><th class=\"left\">Notes</th><th class=\"expand-th\">\u25b6</th>")
-N_COLS = 17
+N_COLS = 22
+
+
+def _row_key(row):
+    return f"{row.Index.tz_convert('UTC').strftime('%Y-%m-%dT%H')}_{'bull' if row.bullish else 'bear'}"
 
 
 def _row_html(i, row, tr, cells_extra, races):
     cls = "type-lhpb" if row.bullish else "type-llpb"
-    key = f"{row.Index.tz_convert('UTC').strftime('%Y-%m-%dT%H')}_{'bull' if row.bullish else 'bear'}"
+    key = _row_key(row)
     if tr is None:
         trade_tds = f'<td class="left" colspan="7"><span class="src-tag">NO TRADE: {cells_extra}</span></td>'
     else:
@@ -394,6 +813,7 @@ def _row_html(i, row, tr, cells_extra, races):
   <td class="left">{CB._confirmation(row)}</td>
   <td>{row.swing_price:.2f}</td>{trade_tds}
   <td class="left" style="white-space:nowrap">{race_cell(races)}</td>
+  <td class="left man-entry"></td><td class="man-plan"></td><td class="left man-exit"></td><td class="man-r"></td><td class="man-usd"></td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
   <td class="valid-cell" onclick="event.stopPropagation();"><input type="checkbox" class="valid-cb" checked></td>
   <td class="left" onclick="event.stopPropagation();"><textarea class="trade-note" placeholder="notes..."></textarea></td>
@@ -401,25 +821,47 @@ def _row_html(i, row, tr, cells_extra, races):
 </tr>
 <tr class="chart-row hidden" data-idx="{i}" id="chart-row-{i}">
   <td colspan="{N_COLS}"><div class="chart-stack">
+    <div class="replay-bar" data-idx="{i}">
+      <button type="button" data-a="start" title="Back to the cross bar's close">\u23ee</button>
+      <button type="button" data-a="back" data-tf="m2" title="Back one M2 candle">\u25c0 M2</button>
+      <button type="button" data-a="fwd" data-tf="m2" title="Forward one M2 candle">M2 \u25b6</button>
+      <button type="button" data-a="fwd" data-tf="ctx" title="Forward one M5 candle">M5 \u25b6</button>
+      <button type="button" data-a="fwd" data-tf="main" title="Forward one H1 candle">H1 \u25b6</button>
+      <button type="button" data-a="play" title="Step forward on its own; pauses when your trade fills or ends"></button>
+      <select data-a="tf" title="Play steps"><option value="m2">M2</option><option value="ctx" selected>M5</option><option value="main">H1</option></select>
+      <select data-a="speed" title="Play speed"><option value="1000">1 / s</option><option value="400" selected>2.5 / s</option><option value="150">7 / s</option></select>
+      <button type="button" data-a="end" title="Jump to the end of the replay window">\u23ed</button>
+      <span class="rp-time"></span><span class="rp-trade"></span><span class="rp-end src-tag"></span>
+    </div>
     <div class="chart-cell chart-pane"><div class="chart-title" id="t-main-{i}"></div><div class="chart-ph" id="c-main-{i}"></div></div>
     <div class="chart-cell chart-pane"><div class="chart-title" id="t-ctx-{i}"></div><div class="chart-ph" id="c-ctx-{i}"></div></div>
+    <div class="chart-cell chart-pane"><div class="chart-title" id="t-m2-{i}"></div><div class="chart-ph" id="c-m2-{i}"></div></div>
+    <div class="reveal-bar"><button type="button" class="reveal-btn" data-idx="{i}" onclick="event.stopPropagation();toggleAuto({i})">Show the automated trade (M5 trade, M2-LXPB: the whole replay window) \u25bc</button></div>
+    <div class="future-wrap hidden" id="future-{i}">
     <div class="chart-cell chart-pane"><div class="chart-title" id="t-l5-{i}"></div><div class="chart-ph" id="c-l5-{i}"></div></div>
     <div class="chart-cell chart-pane"><div class="chart-title" id="t-l2-{i}"></div><div class="chart-ph" id="c-l2-{i}"></div></div>
+    </div>
   </div></td>
 </tr>"""
 
 
 def render(rows, h1, output, label):
+    data_dir = os.path.splitext(output)[0] + "_data"
+    os.makedirs(data_dir, exist_ok=True)
     lo = rows.index.min() - pd.Timedelta(days=30)
     m5 = load_es("5min", start=lo, tz=PT)
     led = CB.ledger(m5)
     m2 = load_es("2min", start=lo, tz=PT)
     led2 = CB.ledger(m2)
+    m1 = load_es("1m", start=lo, tz=PT)[["open", "high", "low", "close"]]
     charts, trs, rs, all_races = [], [], [], []
     for i, row in enumerate(rows.itertuples()):
         older = CB.older_swings(h1, h1.index.get_loc(row.Index), row.swing_time, row.swing_price, row.bullish)
         chart = CB.build_example(h1, m5, row, older)
+        chart["m2"] = blind_pane(m2, 2, "M2", row, older)
+        closed = row.Index + pd.Timedelta(hours=1)
         cands = candidates(led, row)
+        until, end_why = replay_window(m1, closed, pd.concat([cands, candidates(led2, row)]))
         races = [race(lv, row) for _, lv in cands.iterrows()]
         all_races.extend((j == 0, rc) for j, rc in enumerate(races))
         tr, why = None, ""
@@ -431,19 +873,33 @@ def render(rows, h1, output, label):
                 why = "; ".join(f"{float(s['price']):.2f}: {w}" for s, w in spent)
             else:
                 res = manage(led, m5, row, ft, fp)
+                ex = int(m5.index.searchsorted(res["exit_t"], side="right")) - 1
+                auto_end = m5.index[min(len(m5) - 1, ex + AFTER_EXIT)] + FIVE - pd.Timedelta(minutes=1)
+                if auto_end > until:
+                    until, end_why = auto_end, end_why + "; 30 M5 candles past the automated trade's exit"
                 near = cands.iloc[0]
                 which = ("nearest" if (near["price"] == lv["price"] and near["formation_time"] == lv["formation_time"])
                          else f"earlier (nearest {float(near['price']):.2f})")
                 tr = (lv, ft, fp, res, which)
                 rs.append(res["r"])
-                chart["l5"] = trade_pane(m5, row, cands, lv, ft, fp, res, spent, races)
+                chart["l5"] = trade_pane(m5, row, cands, lv, ft, fp, res, spent, races, until)
                 print(f"{CB._pt(row.Index)} {'long ' if row.bullish else 'short'} {which:28s} fill {fp:.2f} stop {res['stop0']:.2f} "
                       f"trails {len(res['trails'])} exit {res['exit_px']:.2f} {res['why']}: {res['r']:+.2f}R")
         if tr is None:
-            chart["l5"] = None
+            chart["l5"] = future_pane(m5, 5, "M5 (no trade)", row, until)
             print(f"{CB._pt(row.Index)} no trade: {why}")
         lv2 = CB.pick_level(led2, row.Index, row.swing_price, row.bullish)
-        chart["l2"] = None if lv2 is None else CB.level_pane(m2, 2, "M2", lv2, row, CB.BULL if row.bullish else CB.BEAR, led2)
+        chart["l2"] = (future_pane(m2, 2, "M2 (no M2 level)", row, until) if lv2 is None else
+                       CB.level_pane(m2, 2, "M2", lv2, row, CB.BULL if row.bullish else CB.BEAR, led2, until=until))
+        # the replay's data file: M1 bars and the 1 s path from the M5 pane's first candle (the earliest a box on M5 / M2 can
+        # start its watch; one on an older H1 candle starts there too) to the end of the replay window
+        start = pd.Timestamp(chart["ctx"]["candles"][0]["time"], unit="s", tz="UTC").tz_convert(PT)
+        stop = until + pd.Timedelta(minutes=1)
+        key = _row_key(row)
+        with open(os.path.join(data_dir, key + ".js"), "w", encoding="utf-8") as f:
+            f.write("__replayData(" + json.dumps(key) + "," + json.dumps(
+                {"m1": m1_pack(m1.loc[start: until]), "s1": s1_pack(s1_between(start, stop))}, separators=(",", ":")) + ");\n")
+        chart["close"], chart["end"], chart["endWhy"] = int(closed.timestamp()), int(stop.timestamp()), end_why
         charts.append(chart)
         trs.append(_row_html(i, row, tr, why, races))
     n, wins = len(rs), sum(r > 0 for r in rs)
@@ -458,7 +914,20 @@ def render(rows, h1, output, label):
           f"nearest {near_1r}/{len(near)}, earlier {earl_1r}/{len(earl)}")
     title = "ES H1 cross bar trades" + (f" ({label})" if label else "")
     storage_key = "lxpb_cross_bar_trades_v1_" + "".join(c if c.isalnum() else "-" for c in label.lower()).strip("-")
-    js = CB._js(charts, storage_key).replace("l5: 'M5-LXPB'", "l5: 'M5 trade'").replace(
+    hook = "_touchPriceAxis(chart, el, series, rayInfo.map(r => r.series), queueThin);"
+    data_rel = os.path.basename(data_dir)
+    with open(POS_TOOL_JS, encoding="utf-8") as f:
+        pos_tool = f.read()
+    js = CB._js(charts, storage_key)
+    assert js.count(hook) == 1, "M1 report chart JS changed: re-check the position tool hook"
+    js = "<script>\n" + pos_tool + "\n</script>\n" + js.replace(
+        hook, hook + "\n  if (window.PosTool) PosTool.attach(chart, series, el, titleEl, cd);"
+                     + "\n  if (window.Replay) Replay.attach(chart, series, el, titleEl, cd);")
+    old_stack = "_renderChartPane(i, 'l5', cd.l5);\n  _renderChartPane(i, 'l2', cd.l2);"
+    assert js.count(old_stack) == 1, "cross bar report JS changed: re-check _renderStack"
+    js = js.replace(old_stack, "_renderChartPane(i, 'm2', cd.m2);")
+    js = js + "<script>\n" + MANUAL_JS.replace("__DATA_DIR__", data_rel) + "\nwindow.Replay = Replay;\n</script>\n"
+    js = js.replace("l5: 'M5-LXPB'", "m2: 'M2', l5: 'M5 trade'").replace(
         "(no LXPB level of this direction beyond the swept price with its P0 formed inside the cross bar hour)",
         "(no trade / no level of this direction beyond the swept price with its P0 inside the cross bar hour)")
     html = f"""<!DOCTYPE html>
@@ -467,6 +936,7 @@ def render(rows, h1, output, label):
 <title>{title}</title>
 {CB.M.CSS}
 {CB.NOTES_CSS}
+{MANUAL_CSS}
 </head><body>
 <h1>{title}</h1>
 <p class="lead">One trade per H1 cross bar. ENTRY: a limit order on the M5 LXPB levels of the bar's direction (LHPB = long after a
@@ -482,6 +952,17 @@ exit) and the cross bar report's M2-LXPB pane (nearest M2 level, for reference: 
 entered at its first touch after the cross bar closed (same fill rule), the same stop, and which comes first, the stop or +1R
 (entry + risk). No trail, no end-of-day flat (the race can run over days); a second reaching both counts as the stop. "spent" =
 touched before the cross bar closed, "not reached" = price has not come back to it. The boxes count the decided levels only.</p>
+<p class="lead">FORWARD REPLAY. The H1, M5 and M2 panes start at the cross bar's close. Step forward with the replay bar (M2 / M5 / H1
+candle, Play, back, start, end), the &#9664; &#9654; buttons on each pane or the arrow keys (the pane last clicked): all three move to
+the same time, and the other panes show their last candle still forming (one M5 step = 2.5 M2 candles and a twelfth of an H1
+candle). The window runs at least one trading day past the cross bar and on until every P0 price of the cross bar (its M5 and M2
+entry levels) has been revisited, at most five trading days. Draw your trade with Long / Short on any of the three (one per row,
+shown on all of them; a new one replaces the old). Its entry is a PRICE: entered when price trades there again after the candle
+you drew it on (from the replay time when that candle is still forming). Judged on the 1 s price path: the first second reaching
+the stop or the target after the fill ends it (a second reaching both counts as the stop; no end-of-day flat). The Manual columns
+show it as of the row's replay time (open = last price), and the manual boxes above count the trades closed so far. Manual R =
+(exit - fill) / (entry - stop), P&amp;L $ = R x the risk $ in the tool's settings (gear). The automated trade's M5 and M2 panes stay
+hidden under the charts until you ask for them. Boxes, replay times and settings are kept in this browser.</p>
 <div class="summary">
   <div class="box"><strong>{len(rows)}</strong>cross bars</div>
   <div class="box"><strong>{n}</strong>trades</div>
@@ -491,6 +972,13 @@ touched before the cross bar closed, "not reached" = price has not come back to 
   <div class="box"><strong>{one_r}/{len(decided)}</strong>levels 1R first ({pct(one_r, len(decided))})</div>
   <div class="box"><strong>{near_1r}/{len(near)}</strong>nearest levels 1R first</div>
   <div class="box"><strong>{earl_1r}/{len(earl)}</strong>earlier levels 1R first</div>
+  <div class="box man-box"><strong id="man-n">0</strong>manual trades closed</div>
+  <div class="box man-box"><strong id="man-open">0</strong>manual open</div>
+  <div class="box man-box"><strong id="man-wait">0</strong>manual waiting for entry</div>
+  <div class="box man-box"><strong id="man-win">-</strong>manual win rate</div>
+  <div class="box man-box"><strong id="man-avg">-</strong>manual avg R</div>
+  <div class="box man-box"><strong id="man-total">-</strong>manual total R</div>
+  <div class="box man-box"><strong id="man-usd">-</strong>manual P&amp;L $</div>
   <div class="box"><strong id="sum-shown">{len(rows)}</strong>shown</div>
   <div class="box"><strong id="sum-reviewed">0</strong>reviewed</div>
   <div class="box"><strong id="sum-valid">0</strong>valid</div>{CB.TOOLBAR_HTML}
