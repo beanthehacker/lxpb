@@ -9,7 +9,8 @@
 // range away, 20 candles wide). Drag the target / stop / entry lines to move them, the right edge to widen it, inside the box to
 // move the whole box. While dragging, prices stick to the nearest open / high / low / close of the candle under the cursor
 // ("strong" magnet: always; "weak": within 12 px; hold Ctrl to drag freely); time edges stick to candles. Click a box to select
-// it, Delete removes it, double-click opens its numbers. Boxes are drawn by a series primitive (the library's plugin hook), so
+// it, Delete removes it, double-click opens its numbers. A pane drawn again on the same element (cd.tfName: another
+// timeframe) gets a fresh tool, and cd.barSec gives the candle length when the candles alone cannot. Boxes are drawn by a series primitive (the library's plugin hook), so
 // they pan / zoom with the chart, and are kept in this browser's localStorage.
 //
 // The entry is a PRICE, not a time: the trade is entered when price trades at it again from `from` on = the end of the candle
@@ -70,9 +71,11 @@
       this.row = m ? +m[2] : el.id; this.pane = m ? m[1] : '';
       this.edit = config.shared.indexOf(this.pane) >= 0;
       this.show = this.edit || config.mirror.indexOf(this.pane) >= 0;
-      let bs = Infinity;                                   // bar length in seconds: the smallest step between candles
+      let bs = Infinity;                                   // bar length in seconds: the pane's own, else the smallest step between candles
       for (let k = 1; k < Math.min(cd.candles.length, 40); k++) bs = Math.min(bs, cd.candles[k].time - cd.candles[k - 1].time);
-      this.barSec = isFinite(bs) && bs > 0 ? bs : 60;
+      this.barSec = cd.barSec || (isFinite(bs) && bs > 0 ? bs : 60);
+      // a pane drawn again (another timeframe) replaces its old tool
+      tools.filter(t => t.el.id === el.id).forEach(t => { t.dead = true; tools.splice(tools.indexOf(t), 1); });
       this.sel = false; this.hover = false; this.arm = null; this.drag = null; this.requestUpdate = null;
       if (!this.show) return;
       const tool = this;
@@ -190,7 +193,7 @@
       const d = Math.max(1, roundTick(avg * 1.5)), sign = this.arm === 'long' ? 1 : -1;
       const t0 = c[i].time;
       setBox(this.row, { side: this.arm, t0, t1: this.timeOf(i + 20), entry, sl: entry - sign * d, tp: entry + sign * 2 * d,
-                         from: this.fromFor(t0), pane: this.pane });
+                         from: this.fromFor(t0), pane: this.cd.tfName || this.pane });
       this.sel = true;
       this.arm = null;
       this.syncButtons();
@@ -278,6 +281,7 @@
       // the library pans on mousedown / touchstart: keep those from it while a box is being placed or dragged
       ['mousedown', 'touchstart'].forEach(t => el.addEventListener(t, (e) => { if (this.blockMouse) block(e); }, { capture: true, passive: false }));
       window.addEventListener('pointermove', (e) => {
+        if (this.dead) return;
         if (!this.drag) {
           const pt = this.plotPoint(e);
           const h = pt && this.hit(pt.x, pt.y);
@@ -300,7 +304,7 @@
             const dp = ne - d.p0.entry;
             const i0 = Math.max(0, Math.min(this.candles.length - 1, Math.round(this.logicalOf(d.p0.t0)) + di));
             const t0 = this.candles[i0].time;
-            Object.assign(p, { t0, t1: this.timeOf(this.logicalOf(d.p0.t1) + di), from: this.fromFor(t0), pane: this.pane,
+            Object.assign(p, { t0, t1: this.timeOf(this.logicalOf(d.p0.t1) + di), from: this.fromFor(t0), pane: this.cd.tfName || this.pane,
                                entry: d.p0.entry + dp, tp: d.p0.tp + dp, sl: d.p0.sl + dp });
           }
         } else {

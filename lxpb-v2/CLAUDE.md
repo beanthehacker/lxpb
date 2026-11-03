@@ -685,17 +685,22 @@ levels 118/234 1R first. `cross_bar/level_race_trail.py` = the same levels with 
 cross bars with decided levels have at least one winner (49 in the plain race). Regen: `--all --since 2026-01-01 --label
 "2026 Jan 2 - Oct 26"`, then gzip.
 
-Cross bar FORWARD REPLAY + manual trades (user, 2026-11-03), same report. Panes: H1 / M5 / M2 (blind: start at the bar's close),
-then the automated trade's M5 trade / M2-LXPB panes hidden behind a button. The three blind panes step forward together (replay bar,
-per-pane arrows, arrow keys, Play that pauses at the manual fill / exit); each shows its candles as they stood at the replay time,
-last one forming, built in the page from M1. Replay window (`replay_window`): >= 1 trading day (1,380 M1 bars) past the close, on until
+Cross bar FORWARD REPLAY + manual trades (user, 2026-11-03), same report, which since then shows NO automated trade (user,
+2026-11-03: no automated entry / exit / R / race columns or boxes, no M5 trade / M2-LXPB panes; the functions stay for
+level_race_trail.py and the numbers above) and lists rows OLDEST first. ONE chart per row (+ an optional 2nd), timeframe switch
+D1 / H4 / H1 / M30 / M15 / M5 / M2 / M1 (title buttons, keys 1-8; opens on M2, 2nd on M5; user 2026-11-03): D1 and H4 as TradingView draws ES (D1 =
+session 15:00 PT to 14:00 PT, checked equal to data_source 1d; H4 from 15:00 PT). The replay STARTS inside the cross bar's hour (user, 2026-11-03, `replay_start`): at the close of the first M2 candle
+that closes back above the swept swing low (below the swept high, bearish) at or after the first M2 candle that traded past it,
+so the cross bar is still forming and may not end up confirmed; ⏮ / back steps stop there. It steps one candle of its own timeframe (title
+arrows, replay bar, arrow keys, Play that pauses at the manual fill / exit); candles are built in the page as they stood at the replay
+time (last one forming) from the row's H1 bars before the cross bar's hour (history of H1 and up, 150 days) and M1 bars (3 trading days of history + the window). Replay window (`replay_window`): >= 1 trading day (1,380 M1 bars) past the close, on until
 every P0 price of the bar (M5 and M2 entry levels not touched before the close) is revisited + 60 bars, at most 5 trading days.
 Position tool `public/js/position-tool.js` (TradingView-like, magnet to O/H/L/C): ONE box per row, kept in time + price, drawn on
 every pane. The ENTRY IS A PRICE: filled when price trades there again after the candle the box sits on (from the replay time when
 that candle is still forming); judged on the 1 s path (`s1_pack`: seconds not inside the previous kept second's range, per minute,
 exact for first touches): first second reaching stop or target, same second both = stop, no EOD flat. Manual columns (entry / stop
 & target / exit / R / P&L $ = R x tool risk $) show the trade as of the row's replay time; summary boxes count closed manual trades.
-Per-row data (M1 + 1 s path) is a side file `<report>_data/<row key>.js` loaded by script tag; committed as `.js.gz` next to the
+Per-row data (H1 + M1 + 1 s path) is a side file `<report>_data/<row key>.js` loaded by script tag; committed as `.js.gz` next to the
 report and inflated by `scripts/decompress-gz-reports.mjs`. Boxes, replay times and settings live in the browser's localStorage.
 
 # Trap variants (`trap_variants.py`)
