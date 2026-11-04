@@ -314,13 +314,12 @@ const _FILE = location.pathname.split('/').pop();
 const _key = (i) => ((document.querySelector('tr.lvl-row[data-idx="' + i + '"]') || {}).dataset || {}).key;
 const _ls = (k, d) => { try { const v = localStorage.getItem('postool_v1_' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
 const _lsSet = (k, v) => { try { localStorage.setItem('postool_v1_' + k, JSON.stringify(v)); } catch (e) { /* private window */ } };
-const _tfKey = (p) => 'tf2_' + _FILE + '_' + p;          // tf2_: M2 is the new default
 function _rp(i) {
   if (!_RP[i]) {
     const cd = CHARTS[i];
     _RP[i] = { start: cd.start, end: cd.end, T: Math.max(cd.start, Math.min(cd.end, _ls('cursor2_' + _FILE + '_' + _key(i), cd.start))),
                data: null, panes: {}, hist: {}, res: null, play: null,
-               tf: { a: _ls(_tfKey('a'), _DEF_TF.a), b: _ls(_tfKey('b'), _DEF_TF.b) } };
+               tf: { a: _DEF_TF.a, b: _DEF_TF.b } };   // every row opens on M2 (2nd chart M5), whatever was picked before
   }
   return _RP[i];
 }
@@ -492,7 +491,6 @@ function _setTf(i, pane, tf) {
   const st = _rp(i);
   if (st.tf[pane] === tf) return;
   st.tf[pane] = tf;
-  _lsSet(_tfKey(pane), tf);                        // the next row opens on it too
   _renderTf(i, pane);
   _syncBar(i);
 }
@@ -904,7 +902,7 @@ so it stays put through a timeframe switch; a new one replaces the old). Its ent
 after the candle you drew it on (from the replay time when that candle is still forming). Judged on the 1 s price path: the first
 second reaching the stop or the target after the fill ends it (a second reaching both counts as the stop; no end-of-day flat). The
 Manual columns show it as of the row's replay time (open = last price), and the manual boxes above count the trades closed so far.
-Manual R = (exit - fill) / (entry - stop), P&amp;L $ = R x the risk $ in the tool's settings (gear). Boxes, replay times, timeframes
+Manual R = (exit - fill) / (entry - stop), P&amp;L $ = R x the risk $ in the tool's settings (gear). Boxes, replay times
 and settings are kept in this browser.</p>
 <div class="summary">
   <div class="box"><strong>{len(rows)}</strong>cross bars</div>
