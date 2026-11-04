@@ -18,9 +18,9 @@
 // (config.result(row, pane) = { state 'waiting' / 'open' / 'closed', fillT, fillPx, exitT, exitPx, lastT, lastPx }); the box
 // shades the stretch from the fill to the exit (or to the last price).
 //
-// The numbers follow TradingView's labels, for ES (0.25 tick, $50 a point): Target / Stop = points (% of entry) ticks,
-// Amount = the account after the target / stop, for Qty = risk $ / (stop points x $50); the Risk/Reward Ratio shows only while
-// the box is hovered (no P&L label).
+// The box itself carries no text (user, 2026-11-03): its numbers show in one small panel beside it (right of the box, left when
+// there is no room) while the box is hovered or dragged: target / stop = points and ticks, and $ at the risk $ of the settings
+// (Qty = risk $ / (stop points x $50), ES: 0.25 tick, $50 a point), and the risk / reward ratio.
 (function () {
   const PT_VALUE = 50, TICK = 0.25, MAGNET_PX = 12, HANDLE_PX = 6;
   const LS = 'postool_v1_';
@@ -49,19 +49,16 @@
     return out;
   };
 
-  function label(ctx, text, cx, y, bg, above) {
-    const lines = text.split('\n');
+  function panel(ctx, rows, x0, x1, ymid, wMax) {       // [text, colour] rows in one box beside x0..x1, centred on ymid
     ctx.font = '12px Courier New, monospace';
-    const w = Math.max(...lines.map(l => ctx.measureText(l).width)) + 14, lh = 15, h = lines.length * lh + 6;
-    const x = cx - w / 2, top = above ? y - h - 4 : y + 4;
-    ctx.fillStyle = bg;
+    const w = Math.max(...rows.map(r => ctx.measureText(r[0]).width)) + 14, lh = 15, h = rows.length * lh + 8;
+    const x = x1 + 8 + w <= wMax ? x1 + 8 : x0 - 8 - w >= 0 ? x0 - 8 - w : Math.max(0, wMax - w), top = ymid - h / 2;
+    ctx.fillStyle = 'rgba(19, 23, 34, 0.92)'; ctx.strokeStyle = '#363a45'; ctx.lineWidth = 1;
     ctx.beginPath();
     if (ctx.roundRect) ctx.roundRect(x, top, w, h, 3); else ctx.rect(x, top, w, h);
-    ctx.fill();
-    ctx.fillStyle = '#ffffff';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    lines.forEach((l, j) => ctx.fillText(l, cx, top + 4 + j * lh));
+    ctx.fill(); ctx.stroke();
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    rows.forEach(([t, c], j) => { ctx.fillStyle = c; ctx.fillText(t, x + 7, top + 5 + j * lh); });
   }
 
   class Tool {
@@ -242,16 +239,13 @@
       }
       ctx.strokeStyle = '#9ca3af'; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(g.x0, g.ye); ctx.lineTo(g.x1, g.ye); ctx.stroke();
-      const cx = (g.x0 + g.x1) / 2;
-      const pct = (v) => num(v / p.entry * 100, 2);
-      const tgtText = 'Target: ' + num(rewPts, 2) + ' (' + pct(rewPts) + '%) ' + num(rewPts / TICK, 0)
-        + ', Amount: ' + num(settings.account + qty * rewPts * PT_VALUE, 2);
-      const stopText = 'Stop: ' + num(riskPts, 2) + ' (' + pct(riskPts) + '%) ' + num(riskPts / TICK, 0)
-        + ', Amount: ' + num(settings.account - riskUsd, 2);
-      const tgtAbove = g.yt < g.ye;
-      label(ctx, tgtText, cx, g.yt, '#26a69a', tgtAbove);
-      label(ctx, stopText, cx, g.ys, '#ef5350', !tgtAbove);
-      if (this.hover || this.drag) label(ctx, 'Risk/Reward Ratio: ' + num(riskPts > 0 ? rewPts / riskPts : 0, 2), cx, g.ye + 11, '#2a2e39', true);
+      if (this.hover || this.drag) {
+        const usd = (v) => '$' + num(Math.round(v), 0);
+        const tgt = ['target ' + num(rewPts, 2) + ' pt  ' + num(rewPts / TICK, 0) + ' t  +' + usd(qty * rewPts * PT_VALUE), '#26a69a'];
+        const stp = ['stop   ' + num(riskPts, 2) + ' pt  ' + num(riskPts / TICK, 0) + ' t  -' + usd(riskUsd), '#ef5350'];
+        const rr = ['R:R    ' + num(riskPts > 0 ? rewPts / riskPts : 0, 2) + '  qty ' + num(qty, 2), '#d1d4dc'];
+        panel(ctx, g.yt < g.ys ? [tgt, rr, stp] : [stp, rr, tgt], g.x0, g.x1, g.ye, this.chart.timeScale().width());
+      }
       if (this.sel && this.edit) {
         [[g.x0, g.yt], [g.x0, g.ys], [g.x0, g.ye], [g.x1, g.ye]].forEach(([hx, hy]) => {
           ctx.fillStyle = '#131722'; ctx.strokeStyle = '#2962ff'; ctx.lineWidth = 2;
