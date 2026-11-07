@@ -688,7 +688,7 @@ cross bars with decided levels have at least one winner (49 in the plain race). 
 Cross bar FORWARD REPLAY + manual trades (user, 2026-11-03), same report, which since then shows NO automated trade (user,
 2026-11-03: no automated entry / exit / R / race columns or boxes, no M5 trade / M2-LXPB panes; the functions stay for
 level_race_trail.py and the numbers above) and lists rows OLDEST first. ONE chart per row (+ an optional 2nd), timeframe switch
-D1 / H4 / H1 / M30 / M15 / M5 / M2 / M1 (title buttons, keys 1-8; opens on M2, 2nd on M5; user 2026-11-03): D1 and H4 as TradingView draws ES (D1 =
+D1 / H4 / H1 / M30 / M15 / M5 / M2 / M1 (title buttons, keys 1-8; opens on H1, 2nd on M5; user 2026-11-07): D1 and H4 as TradingView draws ES (D1 =
 session 15:00 PT to 14:00 PT, checked equal to data_source 1d; H4 from 15:00 PT). The replay STARTS inside the cross bar's hour (user, 2026-11-03, `replay_start`): at the close of the first M2 candle
 that closes back above the swept swing low (below the swept high, bearish) at or after the first M2 candle that traded past it,
 so the cross bar is still forming and may not end up confirmed; ⏮ / back steps stop there. It steps one candle of its own timeframe (title

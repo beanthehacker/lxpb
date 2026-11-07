@@ -6,8 +6,8 @@
 // and an M2 pane show it at the same moment: { side, t0, t1 (left / right edge, epoch s), entry, sl, tp, from, pane }.
 //
 // Click Long / Short, then a candle: the box is placed with its entry on that candle (target 2R, stop 1.5 x the average bar
-// range away, 20 candles wide). Drag the target / stop / entry lines to move them, the right edge to widen it, inside the box to
-// move the whole box. While dragging, prices stick to the nearest open / high / low / close of the candle under the cursor
+// range away, 20 candles wide). Drag the target / stop / entry lines to move them, the start point (left end of the entry line)
+// to move the start in time and price, the left / right edge to move that edge in time, inside the box to move the whole box. While dragging, prices stick to the nearest open / high / low / close of the candle under the cursor
 // ("strong" magnet: always; "weak": within 12 px; hold Ctrl to drag freely); time edges stick to candles. Click a box to select
 // it, Delete removes it, double-click opens its numbers. A pane drawn again on the same element (cd.tfName: another
 // timeframe) gets a fresh tool, and cd.barSec gives the candle length when the candles alone cannot. Boxes are drawn by a series primitive (the library's plugin hook), so
@@ -204,10 +204,12 @@
       const p = getBox(this.row), g = p && this.geom(p);
       if (!g || x < g.x0 - HANDLE_PX || x > g.x1 + HANDLE_PX) return null;
       const top = Math.min(g.yt, g.ys), bot = Math.max(g.yt, g.ys);
+      if (Math.hypot(x - g.x0, y - g.ye) <= 2 * HANDLE_PX) return 'start';   // the start point: its time and the entry price
       if (Math.abs(x - g.x1) <= HANDLE_PX && y >= top && y <= bot) return 'right';
+      if (Math.abs(x - g.x0) <= HANDLE_PX && y >= top && y <= bot) return 'left';
       if (Math.abs(y - g.yt) <= HANDLE_PX) return 'tp';
       if (Math.abs(y - g.ys) <= HANDLE_PX) return 'sl';
-      if (Math.abs(y - g.ye) <= HANDLE_PX && x <= g.x0 + 3 * HANDLE_PX) return 'entry';
+      if (Math.abs(y - g.ye) <= HANDLE_PX) return 'entry';
       if (y > top && y < bot) return 'body';
       return null;
     }
@@ -279,7 +281,8 @@
         if (!this.drag) {
           const pt = this.plotPoint(e);
           const h = pt && this.hit(pt.x, pt.y);
-          const cur = this.arm && pt ? 'crosshair' : !h ? '' : h === 'right' ? 'ew-resize' : h === 'body' ? 'move' : 'ns-resize';
+          const cur = this.arm && pt ? 'crosshair' : !h ? '' : h === 'right' || h === 'left' ? 'ew-resize'
+            : h === 'body' || h === 'start' ? 'move' : 'ns-resize';
           el.querySelectorAll('canvas').forEach(c => { c.style.cursor = cur; });
           if (!!h !== this.hover) { this.hover = !!h; if (this.requestUpdate) this.requestUpdate(); }
           return;
@@ -290,6 +293,14 @@
         if (d.part === 'right') {
           const i = this.idxAt(x);
           if (i != null) p.t1 = this.timeOf(Math.max(Math.round(this.logicalOf(p.t0)) + 1, i));
+        } else if (d.part === 'left' || d.part === 'start') {   // move the start in time (and, from the start point, the entry price)
+          const i = this.idxAt(x);
+          if (i != null) {
+            const k = Math.max(0, Math.min(this.candles.length - 1, i, Math.round(this.logicalOf(p.t1)) - 1));
+            p.t0 = this.candles[k].time; p.from = this.fromFor(p.t0); p.pane = this.cd.tfName || this.pane;
+          }
+          const v = d.part === 'start' ? this.snap(x, y, e.ctrlKey) : null;
+          if (v != null) p.entry = s > 0 ? Math.min(Math.max(v, p.sl + minGap), p.tp - minGap) : Math.min(Math.max(v, p.tp + minGap), p.sl - minGap);
         } else if (d.part === 'body') {
           const l = this.chart.timeScale().coordinateToLogical(x);
           const di = l == null ? 0 : Math.round(l - d.l0);

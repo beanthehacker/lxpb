@@ -29,7 +29,7 @@ and exits. Times are PT.
 
 FORWARD REPLAY (user, 2026-11-03): one chart per row (and an optional second one) whose timeframe switches between D1 / H4 /
 H1 / M30 / M15 / M5 / M2 / M1 (TradingView's D1 and H4 for ES: the session 15:00 PT to 14:00 PT, H4 from 15:00 PT); it opens on
-M2. It starts INSIDE the cross bar's hour, at the close of the first M2 candle that closes back above the swept swing low (below
+H1. It starts INSIDE the cross bar's hour, at the close of the first M2 candle that closes back above the swept swing low (below
 the swept high for a bearish bar) after price traded below it (above it), the reclaim (replay_start): the cross bar is still
 forming then and may not end up confirmed. It steps forward one candle of its timeframe at a time, its candles as they stood at
 the replay time (the last one still forming), built in the page from the row's H1 bars before the cross bar's hour (history of
@@ -295,7 +295,7 @@ td.man-entry, td.man-exit { white-space: nowrap; }
 
 MANUAL_JS = r"""
 // FORWARD REPLAY. Each row has one chart (and an optional second one) whose timeframe switches between D1 / H4 / H1 / M30 /
-// M15 / M5 / M2 / M1 (opens on M2). It starts inside the cross bar's hour, at the close of the first M2 candle back past the
+// M15 / M5 / M2 / M1 (opens on H1). It starts inside the cross bar's hour, at the close of the first M2 candle back past the
 // swept swing (cd.start; the cross bar may not end up confirmed), and steps forward one candle of its own timeframe at a time;
 // whatever the timeframe, the candles are the ones that stood at the replay time T (the last one still forming), built in the
 // page from the row's H1 bars before the cross bar's hour (history of the H1 / H4 / D1 views) and M1 bars (everything from the
@@ -307,7 +307,7 @@ MANUAL_JS = r"""
 const _DATA_DIR = '__DATA_DIR__';
 const _TFS = ['D1', 'H4', 'H1', 'M30', 'M15', 'M5', 'M2', 'M1'];
 const _LEN = { D1: 86400, H4: 14400, H1: 3600, M30: 1800, M15: 900, M5: 300, M2: 120, M1: 60 };
-const _DEF_TF = { a: 'M2', b: 'M5' };
+const _DEF_TF = { a: 'H1', b: 'M5' };
 const _NEAR = 120;                                          // candles in view when a chart opens or switches timeframe
 const _RP = {};
 const _FILE = location.pathname.split('/').pop();
@@ -319,7 +319,7 @@ function _rp(i) {
     const cd = CHARTS[i];
     _RP[i] = { start: cd.start, end: cd.end, T: Math.max(cd.start, Math.min(cd.end, _ls('cursor2_' + _FILE + '_' + _key(i), cd.start))),
                data: null, panes: {}, hist: {}, res: null, play: null,
-               tf: { a: _DEF_TF.a, b: _DEF_TF.b } };   // every row opens on M2 (2nd chart M5), whatever was picked before
+               tf: { a: _DEF_TF.a, b: _DEF_TF.b } };   // every row opens on H1 (2nd chart M5), whatever was picked before
   }
   return _RP[i];
 }
@@ -891,7 +891,7 @@ engulfing bar), oldest first, for MANUAL trades: long after a bullish bar, short
 its replay starts INSIDE the cross bar's hour, at the close of the first M2 candle that closed back above the swept swing low
 (below the swept high, bearish) after price traded below (above) it, so the cross bar is still forming and may not end up confirmed
 (amber = the swept swing). Times are PT.</p>
-<p class="lead">FORWARD REPLAY. The chart opens on M2; switch it with D1 / H4 / H1 / M30 / M15 / M5 / M2 / M1 in its title bar (or
+<p class="lead">FORWARD REPLAY. The chart opens on H1; switch it with D1 / H4 / H1 / M30 / M15 / M5 / M2 / M1 in its title bar (or
 keys 1-8; D1 and H4 as TradingView draws ES: a D1 candle is the session from 15:00 PT to 14:00 PT, H4 candles start at 15:00 PT).
 "+ 2nd chart" adds a second one under it with its own timeframe. Step forward one candle of a chart's timeframe with the &#9664;
 &#9654; buttons on it, the replay bar (the chart last clicked), the arrow keys, or Play (steps of the chosen timeframe; pauses when
