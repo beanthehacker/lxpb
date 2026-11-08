@@ -21,12 +21,25 @@
 // The box itself carries no text (user, 2026-11-03): its numbers show in one small panel beside it (right of the box, left when
 // there is no room) while the box is hovered or dragged: target / stop = points and ticks, and $ at the risk $ of the settings
 // (Qty = risk $ / (stop points x $50), ES: 0.25 tick, $50 a point), and the risk / reward ratio.
+//
+// DRAWINGS (user, 2026-11-08), like TradingView's: a horizontal ray (Alt+J or the "─ Ray" button, then click a point: a line from
+// that point to the right, its price tagged on the price axis) and a rectangle (Alt+Shift+R or "▭ Rect", then click two corners,
+// or press, drag and release). Any number per row, shared by the row's panes like the box, kept in time and price, prices stuck to
+// O/H/L/C by the magnet (Ctrl: free), times to candles. Hover shows a drawing's points; click selects it (a rectangle's prices
+// and times then show on the axes); drag a point to move it (rectangle: 4 corners, 4 edge midpoints), the line / inside to move
+// the whole drawing; Delete removes, Esc cancels, double-click opens its colours, width, style and prices. The last style used
+// becomes the default for the next one.
 (function () {
   const PT_VALUE = 50, TICK = 0.25, MAGNET_PX = 12, HANDLE_PX = 6;
   const LS = 'postool_v1_';
   const lsGet = (k, d) => { try { const v = localStorage.getItem(LS + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
   const lsSet = (k, v) => { try { localStorage.setItem(LS + k, JSON.stringify(v)); } catch (e) { /* private window */ } };
-  const settings = Object.assign({ account: 50000, riskPct: 1, magnet: 'strong' }, lsGet('settings', {}));
+  const settings = Object.assign({ account: 50000, riskPct: 1, magnet: 'strong',
+                                   rayStyle: { color: '#2962ff', width: 1, dash: 'solid' },
+                                   rectStyle: { color: '#9c27b0', fill: '#9c27b0', alpha: 0.2, width: 1, dash: 'solid' } },
+                                 lsGet('settings', {}));
+  const DASH = { solid: [], dashed: [6, 4], dotted: [1.5, 2.5] };
+  const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return 'rgba(' + (n >> 16 & 255) + ',' + (n >> 8 & 255) + ',' + (n & 255) + ',' + a + ')'; };
   const tools = [];
   const config = { shared: [], mirror: [], cursor: () => null, result: () => null, onChange: null };
   let active = null;                       // the tool last clicked: Delete / Esc go to it
@@ -43,6 +56,18 @@
     tools.forEach(t => { if (t.row === i && t.requestUpdate) t.requestUpdate(); });
     if (config.onChange) config.onChange(i);
   }
+  // the row's drawings (rays and rectangles): [{ id, type 'ray', t, p, color, width, dash }
+  //                                          | { id, type 'rect', t0, p0, t1, p1, color, fill, alpha, width, dash }]
+  const drawKey = (i) => 'draw_' + FILE + '_' + rowKey(i);
+  const draws = {};
+  const getDraws = (i) => (i in draws ? draws[i] : (draws[i] = lsGet(drawKey(i), [])));
+  function setDraws(i, list) {
+    draws[i] = list;
+    lsSet(drawKey(i), list);
+    tools.forEach(t => { if (t.row === i && t.requestUpdate) t.requestUpdate(); });
+  }
+  const putDraw = (i, d) => setDraws(i, getDraws(i).map(o => (o.id === d.id ? d : o)));
+  const dropDraw = (i, id) => setDraws(i, getDraws(i).filter(o => o.id !== id));
   const lastAtOrBefore = (bars, t) => {          // index of the last bar starting at or before t (-1 if none)
     let lo = 0, hi = bars.length - 1, out = -1;
     while (lo <= hi) { const m = (lo + hi) >> 1; if (bars[m].time <= t) { out = m; lo = m + 1; } else hi = m - 1; }
@@ -74,6 +99,7 @@
       // a pane drawn again (another timeframe) replaces its old tool
       tools.filter(t => t.el.id === el.id).forEach(t => { t.dead = true; tools.splice(tools.indexOf(t), 1); });
       this.sel = false; this.hover = false; this.arm = null; this.drag = null; this.requestUpdate = null;
+      this.selD = null; this.hoverD = null; this.creating = null;   // selected / hovered drawing id, the rectangle being drawn
       if (!this.show) return;
       const tool = this;
       series.attachPrimitive({
@@ -87,13 +113,32 @@
         // entry / target / stop prices as tags on the right-hand price axis, like TradingView's
         priceAxisViews() {
           const p = getBox(tool.row), out = [];
-          if (p) [[p.tp, '#26a69a'], [p.entry, '#787b86'], [p.sl, '#ef5350']].forEach(([v, bg]) => {
+          const tag = (v, bg) => {
             const y = tool.y(v);
             if (y != null) out.push({ coordinate: () => y, text: () => v.toFixed(2), textColor: () => '#ffffff', backColor: () => bg,
                                       visible: () => true, tickVisible: () => true });
+          };
+          if (p) [[p.tp, '#26a69a'], [p.entry, '#787b86'], [p.sl, '#ef5350']].forEach(([v, bg]) => tag(v, bg));
+          getDraws(tool.row).forEach(d => {          // a ray's price always; a rectangle's two prices while it is selected / hovered
+            if (d.type === 'ray') tag(d.p, d.color);
+            else if (tool.focus(d)) { tag(d.p0, d.color); tag(d.p1, d.color); }
           });
           return out;
         },
+        timeAxisViews() {                            // the selected / hovered drawing's times on the time axis
+          const d = tool.focused(), out = [];
+          if (!d) return out;
+          const f = tool.chart.options().localization.timeFormatter;
+          (d.type === 'ray' ? [d.t] : [d.t0, d.t1]).forEach(t => {
+            const x = tool.x(t);
+            if (x != null) out.push({ coordinate: () => x, text: () => (f ? f(t) : String(t)), textColor: () => '#ffffff',
+                                      backColor: () => d.color, visible: () => true, tickVisible: () => true });
+          });
+          return out;
+        },
+        // a selected rectangle's price and time span shaded on the axes, as TradingView does
+        priceAxisPaneViews() { return tool.axisBand('price'); },
+        timeAxisPaneViews() { return tool.axisBand('time'); },
       });
       if (this.edit) { this.buttons(titleEl); this.events(); }
       tools.push(this);
@@ -149,6 +194,8 @@
         lsSet('settings', settings);
         tools.forEach(t => t.syncButtons());
       });
+      this.bRay = mk('─ Ray', 'Horizontal ray (Alt+J): click a point', () => this.armFor('ray'));
+      this.bRect = mk('▭ Rect', 'Rectangle (Alt+Shift+R): click two corners, or press, drag and release', () => this.armFor('rect'));
       mk('⚙', 'Account size and risk', (b) => this.popover(b, false));
       this.syncButtons();
     }
@@ -157,8 +204,11 @@
       this.bMag.textContent = '⌖ magnet: ' + settings.magnet;
       this.bLong.classList.toggle('pos-on', this.arm === 'long');
       this.bShort.classList.toggle('pos-on', this.arm === 'short');
+      this.bRay.classList.toggle('pos-on', this.arm === 'ray');
+      this.bRect.classList.toggle('pos-on', this.arm === 'rect');
     }
-    armFor(side) { this.arm = this.arm === side ? null : side; active = this; this.syncButtons(); }
+    armFor(side) { this.cancelCreate(); this.arm = this.arm === side ? null : side; active = this; this.syncButtons(); }
+    cancelCreate() { if (this.creating) { dropDraw(this.row, this.creating.id); this.creating = null; this.selD = null; } }
 
     plotPoint(ev) {
       const r = this.el.getBoundingClientRect(), ts = this.chart.timeScale();
@@ -214,7 +264,109 @@
       return null;
     }
 
+    // ---- drawings
+    tAt(x) {                                      // the start of the candle under x (past the last candle: extrapolated)
+      const l = this.chart.timeScale().coordinateToLogical(x);
+      return l == null ? null : this.timeOf(Math.round(l));
+    }
+    focus(d) { return this.selD === d.id || this.hoverD === d.id; }
+    focused() {
+      const id = this.selD || this.hoverD;
+      return id ? getDraws(this.row).find(d => d.id === id) || null : null;
+    }
+    dGeom(d) {
+      if (d.type === 'ray') { const x = this.x(d.t), y = this.y(d.p); return x == null || y == null ? null : { x, y }; }
+      const x0 = this.x(d.t0), x1 = this.x(d.t1), y0 = this.y(d.p0), y1 = this.y(d.p1);
+      return [x0, x1, y0, y1].some(v => v == null) ? null : { x0, x1, y0, y1 };
+    }
+    dHandles(d, g) {                              // [part, x, y]: c<t><p> corner, et<k> time edge, ep<k> price edge
+      if (d.type === 'ray') return [['a', g.x, g.y]];
+      const mx = (g.x0 + g.x1) / 2, my = (g.y0 + g.y1) / 2;
+      return [['c00', g.x0, g.y0], ['c01', g.x0, g.y1], ['c10', g.x1, g.y0], ['c11', g.x1, g.y1],
+              ['et0', g.x0, my], ['et1', g.x1, my], ['ep0', mx, g.y0], ['ep1', mx, g.y1]];
+    }
+    onLine(d, g, x, y) {                          // on a ray's line or a rectangle's border
+      if (d.type === 'ray') return x >= g.x - HANDLE_PX && Math.abs(y - g.y) <= HANDLE_PX;
+      const l = Math.min(g.x0, g.x1), r = Math.max(g.x0, g.x1), t = Math.min(g.y0, g.y1), b = Math.max(g.y0, g.y1);
+      const inX = x >= l - HANDLE_PX && x <= r + HANDLE_PX, inY = y >= t - HANDLE_PX && y <= b + HANDLE_PX;
+      return (inY && (Math.abs(x - l) <= HANDLE_PX || Math.abs(x - r) <= HANDLE_PX))
+          || (inX && (Math.abs(y - t) <= HANDLE_PX || Math.abs(y - b) <= HANDLE_PX));
+    }
+    // what is under the cursor: the selected drawing's points, then drawings' points and lines / borders (newest first), then
+    // the box, then the inside of rectangles
+    hitAll(x, y) {
+      const ds = getDraws(this.row);
+      const sd = this.selD && ds.find(d => d.id === this.selD), sg = sd && this.dGeom(sd);
+      if (sg) for (const [part, hx, hy] of this.dHandles(sd, sg)) if (Math.hypot(x - hx, y - hy) <= HANDLE_PX + 2) return { d: sd, part };
+      for (let k = ds.length - 1; k >= 0; k--) {
+        const d = ds[k], g = this.dGeom(d);
+        if (!g) continue;
+        if (d.id !== this.selD) for (const [part, hx, hy] of this.dHandles(d, g)) if (Math.hypot(x - hx, y - hy) <= HANDLE_PX + 2) return { d, part };
+        if (this.onLine(d, g, x, y)) return { d, part: 'move' };
+      }
+      const b = this.hit(x, y);
+      if (b) return { box: b };
+      for (let k = ds.length - 1; k >= 0; k--) {
+        const d = ds[k], g = d.type === 'rect' && this.dGeom(d);
+        if (g && x > Math.min(g.x0, g.x1) && x < Math.max(g.x0, g.x1) && y > Math.min(g.y0, g.y1) && y < Math.max(g.y0, g.y1)) return { d, part: 'move' };
+      }
+      return null;
+    }
+    handleCursor(h) {
+      if (!h) return '';
+      if (h.box) return h.box === 'right' || h.box === 'left' ? 'ew-resize' : h.box === 'body' || h.box === 'start' ? 'move' : 'ns-resize';
+      const q = h.part;
+      if (q === 'move' || q === 'a') return 'pointer';
+      if (q[1] === 't') return 'ew-resize';
+      if (q[1] === 'p') return 'ns-resize';
+      const g = this.dGeom(h.d), xr = (q[1] === '1') === (g.x1 > g.x0), yb = (q[2] === '1') === (g.y1 > g.y0);
+      return xr === yb ? 'nwse-resize' : 'nesw-resize';
+    }
+    newDraw(type, q) {
+      const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      const d = type === 'ray' ? Object.assign({ id, type, t: q.t, p: q.p }, settings.rayStyle)
+                               : Object.assign({ id, type, t0: q.t, p0: q.p, t1: q.t, p1: q.p }, settings.rectStyle);
+      setDraws(this.row, getDraws(this.row).concat([d]));
+      this.selD = id; this.sel = false;
+      return d;
+    }
+    axisBand(which) {
+      const d = this.focused();
+      if (!d || d.type !== 'rect' || this.selD !== d.id) return [];
+      const tool = this;
+      return [{ zOrder: () => 'bottom', renderer: () => ({ draw: (target) => target.useMediaCoordinateSpace(({ context, mediaSize }) => {
+        const g = tool.dGeom(d);
+        if (!g) return;
+        context.fillStyle = rgba(d.color, 0.25);
+        if (which === 'price') context.fillRect(0, Math.min(g.y0, g.y1), mediaSize.width, Math.abs(g.y1 - g.y0));
+        else context.fillRect(Math.min(g.x0, g.x1), 0, Math.abs(g.x1 - g.x0), mediaSize.height);
+      }) }) }];
+    }
+    drawDraws(ctx) {
+      const W = this.chart.timeScale().width();
+      const crisp = (v, w) => (w % 2 ? Math.round(v) + 0.5 : Math.round(v));
+      getDraws(this.row).forEach(d => {
+        const g = this.dGeom(d);
+        if (!g) return;
+        ctx.lineWidth = d.width || 1; ctx.strokeStyle = d.color; ctx.setLineDash(DASH[d.dash] || []);
+        if (d.type === 'ray') {
+          const y = crisp(g.y, ctx.lineWidth);
+          ctx.beginPath(); ctx.moveTo(g.x, y); ctx.lineTo(Math.max(W, g.x), y); ctx.stroke();
+        } else {
+          const l = Math.min(g.x0, g.x1), t = Math.min(g.y0, g.y1), w = Math.abs(g.x1 - g.x0), h = Math.abs(g.y1 - g.y0);
+          ctx.fillStyle = rgba(d.fill, d.alpha); ctx.fillRect(l, t, w, h);
+          ctx.strokeRect(crisp(l, ctx.lineWidth), crisp(t, ctx.lineWidth), Math.round(w), Math.round(h));
+        }
+        ctx.setLineDash([]);
+        if (this.edit && this.focus(d)) this.dHandles(d, g).forEach(([, hx, hy]) => {
+          ctx.fillStyle = '#131722'; ctx.strokeStyle = '#2962ff'; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(hx, hy, 5, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+        });
+      });
+    }
+
     draw(ctx) {
+      this.drawDraws(ctx);
       const p = getBox(this.row), g = p && this.geom(p);
       if (!g) return;
       const riskPts = Math.abs(p.entry - p.sl), rewPts = Math.abs(p.tp - p.entry);
@@ -263,10 +415,38 @@
         const pt = this.plotPoint(e);
         if (!pt) return;
         active = this;
+        if (this.creating) {                       // a rectangle's second corner
+          const c = this.creating, d = getDraws(this.row).find(o => o.id === c.id);
+          this.creating = null;
+          if (d && d.t0 === d.t1 && d.p0 === d.p1) { dropDraw(this.row, c.id); this.selD = null; }
+          this.blockMouse = true; block(e); return;
+        }
+        if (this.arm === 'ray' || this.arm === 'rect') {
+          const q = { t: this.tAt(pt.x), p: this.snap(pt.x, pt.y, e.ctrlKey) };
+          if (q.t != null && q.p != null) {
+            const d = this.newDraw(this.arm, q);
+            if (this.arm === 'rect') this.creating = { id: d.id, x: pt.x, y: pt.y, moved: false };
+          }
+          this.arm = null; this.syncButtons();
+          this.blockMouse = true; block(e); return;
+        }
         if (this.arm) { this.place(pt, e.ctrlKey); this.blockMouse = true; block(e); return; }
-        const h = this.hit(pt.x, pt.y);
-        if (!h) { if (this.sel) { this.sel = false; if (this.requestUpdate) this.requestUpdate(); } return; }
-        this.sel = true;
+        const hh = this.hitAll(pt.x, pt.y);
+        if (!hh) {
+          if (this.sel || this.selD) { this.sel = false; this.selD = null; if (this.requestUpdate) this.requestUpdate(); }
+          return;
+        }
+        if (hh.d) {                                // a drawing: select it, drag a point or the whole of it
+          const d0 = Object.assign({}, hh.d);
+          this.selD = d0.id; this.sel = false;
+          this.drag = { draw: d0.id, part: hh.part, d0, l0: this.chart.timeScale().coordinateToLogical(pt.x),
+                        dy: pt.y - this.y(d0.type === 'ray' ? d0.p : d0.p0) };
+          this.blockMouse = true; block(e);
+          if (this.requestUpdate) this.requestUpdate();
+          return;
+        }
+        const h = hh.box;
+        this.sel = true; this.selD = null;
         const p = getBox(this.row);
         this.drag = { part: h, p0: Object.assign({}, p), l0: this.chart.timeScale().coordinateToLogical(pt.x),
                       dy: pt.y - this.y(p.entry) };
@@ -278,16 +458,26 @@
       ['mousedown', 'touchstart'].forEach(t => el.addEventListener(t, (e) => { if (this.blockMouse) block(e); }, { capture: true, passive: false }));
       window.addEventListener('pointermove', (e) => {
         if (this.dead) return;
-        if (!this.drag) {
-          const pt = this.plotPoint(e);
-          const h = pt && this.hit(pt.x, pt.y);
-          const cur = this.arm && pt ? 'crosshair' : !h ? '' : h === 'right' || h === 'left' ? 'ew-resize'
-            : h === 'body' || h === 'start' ? 'move' : 'ns-resize';
-          el.querySelectorAll('canvas').forEach(c => { c.style.cursor = cur; });
-          if (!!h !== this.hover) { this.hover = !!h; if (this.requestUpdate) this.requestUpdate(); }
+        const r = el.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+        if (this.creating) {                       // the rectangle being drawn follows the cursor
+          const c = this.creating, d = getDraws(this.row).find(o => o.id === c.id);
+          if (!d) { this.creating = null; return; }
+          const t = this.tAt(x), p = this.snap(x, y, e.ctrlKey);
+          if (Math.hypot(x - c.x, y - c.y) > 4) c.moved = true;
+          if (t != null && p != null) putDraw(this.row, Object.assign({}, d, { t1: t, p1: p }));
+          el.querySelectorAll('canvas').forEach(cv => { cv.style.cursor = 'crosshair'; });
           return;
         }
-        const r = el.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+        if (!this.drag) {
+          const pt = this.plotPoint(e);
+          const h = pt && this.hitAll(pt.x, pt.y);
+          const cur = this.arm && pt ? 'crosshair' : this.handleCursor(h);
+          el.querySelectorAll('canvas').forEach(c => { c.style.cursor = cur; });
+          const hb = !!(h && h.box), hd = h && h.d ? h.d.id : null;
+          if (hb !== this.hover || hd !== this.hoverD) { this.hover = hb; this.hoverD = hd; if (this.requestUpdate) this.requestUpdate(); }
+          return;
+        }
+        if (this.drag.draw) { this.dragDraw(x, y, e.ctrlKey); return; }
         const d = this.drag, p = Object.assign({}, getBox(this.row)), s = d.p0.side === 'long' ? 1 : -1;
         const minGap = TICK;
         if (d.part === 'right') {
@@ -324,13 +514,71 @@
         }
         setBox(this.row, p);
       });
-      window.addEventListener('pointerup', () => { this.drag = null; setTimeout(() => { this.blockMouse = false; }, 0); });
+      window.addEventListener('pointerup', () => {
+        if (this.creating && this.creating.moved) this.creating = null;   // press, drag, release: done
+        this.drag = null; setTimeout(() => { this.blockMouse = false; }, 0);
+      });
       el.addEventListener('dblclick', (e) => {
-        const pt = this.plotPoint(e);
-        if (!pt || !this.hit(pt.x, pt.y)) return;
+        const pt = this.plotPoint(e), h = pt && this.hitAll(pt.x, pt.y);
+        if (!h) return;
         block(e);
-        this.popover(null, true, e.clientX, e.clientY);
+        if (h.d) this.drawPopover(h.d.id, e.clientX, e.clientY);
+        else this.popover(null, true, e.clientX, e.clientY);
       }, true);
+    }
+    dragDraw(x, y, free) {
+      const d = this.drag, cur = getDraws(this.row).find(o => o.id === d.draw);
+      if (!cur) return;
+      const q = Object.assign({}, cur), d0 = d.d0;
+      if (d.part === 'move') {                    // the whole drawing: whole candles in time, its anchor price by the magnet
+        const l = this.chart.timeScale().coordinateToLogical(x), di = l == null ? 0 : Math.round(l - d.l0);
+        const sh = (t) => this.timeOf(this.logicalOf(t) + di);
+        const ne = this.snap(x, y - d.dy, free);
+        if (ne == null) return;
+        if (q.type === 'ray') Object.assign(q, { t: sh(d0.t), p: ne });
+        else Object.assign(q, { t0: sh(d0.t0), t1: sh(d0.t1), p0: ne, p1: d0.p1 + ne - d0.p0 });
+      } else {
+        const t = this.tAt(x), p = this.snap(x, y, free), k = d.part;
+        if (k === 'a') { if (t != null) q.t = t; if (p != null) q.p = p; }
+        else if (k[0] === 'c') { if (t != null) q['t' + k[1]] = t; if (p != null) q['p' + k[2]] = p; }
+        else if (k[1] === 't') { if (t != null) q['t' + k[2]] = t; }
+        else if (p != null) q['p' + k[2]] = p;
+      }
+      putDraw(this.row, q);
+    }
+    drawPopover(id, cx, cy) {                     // a drawing's colours, width, style and prices
+      document.querySelectorAll('.pos-pop').forEach(n => n.remove());
+      const d = getDraws(this.row).find(o => o.id === id);
+      if (!d) return;
+      const box = document.createElement('div');
+      box.className = 'pos-pop';
+      box.style.left = Math.min(cx, window.innerWidth - 240) + 'px';
+      box.style.top = Math.min(cy + 4, window.innerHeight - 260) + 'px';
+      const row = (l, inner) => '<label>' + l + inner + '</label>';
+      const sel = (f, opts, v) => '<select data-f="' + f + '">' + opts.map(o => '<option' + (String(o) === String(v) ? ' selected' : '') + '>' + o + '</option>').join('') + '</select>';
+      const numIn = (f, v) => '<input data-f="' + f + '" type="number" step="0.25" value="' + v + '">';
+      let h = row(d.type === 'ray' ? 'Line' : 'Border', '<input data-f="color" type="color" value="' + d.color + '">');
+      if (d.type === 'rect') h += row('Fill', '<span class="pos-fill"><input data-f="fill" type="color" value="' + d.fill + '">'
+                                   + '<input data-f="alpha" type="range" min="0" max="1" step="0.05" value="' + d.alpha + '"></span>');
+      h += row('Width', sel('width', [1, 2, 3, 4], d.width)) + row('Style', sel('dash', ['solid', 'dashed', 'dotted'], d.dash));
+      h += d.type === 'ray' ? row('Price', numIn('p', d.p)) : row('Price 1', numIn('p0', d.p0)) + row('Price 2', numIn('p1', d.p1));
+      box.innerHTML = h + '<div class="pos-pop-btns"><button data-a="del">Delete</button><button data-a="ok">Apply</button></div>';
+      document.body.appendChild(box);
+      const val = (f) => box.querySelector('[data-f="' + f + '"]').value;
+      box.addEventListener('click', (e) => {
+        const a = e.target.dataset && e.target.dataset.a;
+        if (a === 'ok') {
+          const q = Object.assign({}, d, { color: val('color'), width: +val('width'), dash: val('dash') });
+          if (d.type === 'rect') Object.assign(q, { fill: val('fill'), alpha: +val('alpha') });
+          (d.type === 'ray' ? ['p'] : ['p0', 'p1']).forEach(f => { const v = parseFloat(val(f)); if (!isNaN(v)) q[f] = v; });
+          const st = d.type === 'ray' ? 'rayStyle' : 'rectStyle';      // the next one is drawn in this style
+          settings[st] = d.type === 'ray' ? { color: q.color, width: q.width, dash: q.dash }
+                                          : { color: q.color, fill: q.fill, alpha: q.alpha, width: q.width, dash: q.dash };
+          lsSet('settings', settings);
+          putDraw(this.row, q);
+          box.remove();
+        } else if (a === 'del') { this.selD = null; dropDraw(this.row, id); box.remove(); }
+      });
     }
 
     popover(btn, withBox, cx, cy) {
@@ -364,9 +612,14 @@
 
   document.addEventListener('keydown', (e) => {
     if (!active || /INPUT|TEXTAREA|SELECT/.test((e.target.tagName || ''))) return;
-    if ((e.key === 'Delete' || e.key === 'Backspace') && active.sel) {
+    if (e.altKey && !e.ctrlKey && active.bRay && (e.code === 'KeyJ' || (e.shiftKey && e.code === 'KeyR'))) {
+      active.armFor(e.code === 'KeyJ' ? 'ray' : 'rect'); e.preventDefault();
+    } else if ((e.key === 'Delete' || e.key === 'Backspace') && active.selD) {
+      dropDraw(active.row, active.selD); active.selD = null; active.hoverD = null; e.preventDefault();
+    } else if ((e.key === 'Delete' || e.key === 'Backspace') && active.sel) {
       active.sel = false; setBox(active.row, null); e.preventDefault();
     } else if (e.key === 'Escape') {
+      active.cancelCreate();
       active.arm = null; active.syncButtons();
       document.querySelectorAll('.pos-pop').forEach(n => n.remove());
     }
@@ -384,13 +637,15 @@
     + '.pos-pop{position:fixed;z-index:10000;background:#1e222d;border:1px solid #363a45;border-radius:4px;padding:8px 10px;'
     + 'font:12px Courier New,monospace;color:#d1d4dc;display:flex;flex-direction:column;gap:5px;width:220px}'
     + '.pos-pop label{display:flex;justify-content:space-between;gap:8px;align-items:center}'
-    + '.pos-pop input{width:100px;background:#131722;color:#d1d4dc;border:1px solid #363a45;padding:2px 4px}'
+    + '.pos-pop input,.pos-pop select{width:100px;background:#131722;color:#d1d4dc;border:1px solid #363a45;padding:2px 4px;box-sizing:border-box}'
+    + '.pos-pop input[type=color]{width:40px;height:22px;padding:0 2px}.pos-fill{display:flex;gap:4px;align-items:center}'
+    + '.pos-fill input[type=range]{width:56px;padding:0}'
     + '.pos-pop-btns{display:flex;justify-content:flex-end;gap:6px;margin-top:4px}'
     + '.pos-pop button{background:#2962ff;color:#fff;border:0;border-radius:3px;padding:3px 10px;cursor:pointer}';
   document.head.appendChild(css);
 
   window.PosTool = {
-    tools, config, settings, getBox,
+    tools, config, settings, getBox, getDraws,
     refresh: (i) => tools.filter(t => i == null || t.row === i).forEach(t => { if (t.requestUpdate) t.requestUpdate(); }),
     attach: (chart, series, el, titleEl, cd) => new Tool(chart, series, el, titleEl, cd),
   };

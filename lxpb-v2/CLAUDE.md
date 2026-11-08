@@ -702,6 +702,7 @@ exact for first touches): first second reaching stop or target, same second both
 & target / exit / R / P&L $ = R x tool risk $) show the trade as of the row's replay time; summary boxes count closed manual trades.
 Per-row data (H1 + M1 + 1 s path) is a side file `<report>_data/<row key>.js` loaded by script tag; committed as `.js.gz` next to the
 report and inflated by `scripts/decompress-gz-reports.mjs`. Boxes, replay times and settings live in the browser's localStorage.
+Drawings (user, 2026-11-08, same file): TradingView-style horizontal rays (Alt+J) and rectangles (Alt+Shift+R), any number per row, shared by both panes, kept in time + price, magnet-snapped; hover shows points, drag points / line / inside, Delete, double-click = colour / width / style / prices.
 
 # Trap variants (`trap_variants.py`)
 
