@@ -67,7 +67,8 @@ REOPEN = pd.Timedelta(hours=15)
 MIN_FUTURE_M1 = 1380                  # replay window: at least this many M1 bars (one trading day, 23 h) past the cross bar ...
 MAX_FUTURE_M1 = 5 * 1380              # ... at most five trading days
 H1_HISTORY = pd.Timedelta(days=150)   # H1 bars before the close in a row's data file (D1 / H4 / H1 history: ~100 D1 candles)
-M1_HISTORY = 3 * 1380                 # M1 bars before the close (M30 and below: ~130 M30 candles)
+M1_HISTORY = 6 * 1380                 # M1 bars before the close (M30 and below: ~270 M30 candles; user 2026-11-09: was 3 days)
+VISIT_BAND = 50.0                     # ... both reach back at least to the last visit of the day's open +- this many points
 S1_HISTORY = 100                      # the 1 s path starts this many M5 candles before the cross bar's hour
 REVISIT_PAD = 60                      # ... and this many M1 bars past the last P0 price's revisit
 POS_TOOL_JS = os.path.join(CB._REPO_ROOT, "public", "js", "position-tool.js")   # TradingView-style long / short position tool
@@ -308,7 +309,8 @@ const _DATA_DIR = '__DATA_DIR__';
 const _TFS = ['D1', 'H4', 'H1', 'M30', 'M15', 'M5', 'M2', 'M1'];
 const _LEN = { D1: 86400, H4: 14400, H1: 3600, M30: 1800, M15: 900, M5: 300, M2: 120, M1: 60 };
 const _DEF_TF = { a: 'H1', b: 'M5' };
-const _NEAR = 120;                                          // candles in view when a chart opens or switches timeframe
+const _NEAR = 400;                                          // candles in view when a chart opens or switches timeframe
+const _BLANK = 0.2;                                         // ... and the share of the chart left blank right of the last one
 const _RP = {};
 const _FILE = location.pathname.split('/').pop();
 const _key = (i) => ((document.querySelector('tr.lvl-row[data-idx="' + i + '"]') || {}).dataset || {}).key;
@@ -435,7 +437,7 @@ function _paneCd(i, pane) {
                precision: 2, dateOnly: false };
   cd.fit = (chart) => {
     const n = (cd.live || cd.candles).length;
-    chart.timeScale().setVisibleLogicalRange({ from: n - _NEAR, to: n + 6 });
+    chart.timeScale().setVisibleLogicalRange({ from: n - _NEAR, to: n + _NEAR * _BLANK / (1 - _BLANK) });
   };
   return cd;
 }
@@ -700,6 +702,29 @@ window.addEventListener('DOMContentLoaded', () => {
 """
 
 
+def trading_day(t):
+    """The start of the trading day holding t: 15:00 PT the day before (the session's reopen)."""
+    d0 = t.normalize() + REOPEN
+    return d0 if t >= d0 else d0 - pd.Timedelta(days=1)
+
+
+def last_visit(h1, t):
+    """How far back a row's history must reach (user, 2026-11-09): the start of the trading day in which price last traded within
+    VISIT_BAND points of the open of the cross bar's trading day, before it left that band. From the day's start, step back
+    through the H1 bars that traded inside the band (price is still in the area), then through the ones that did not (away),
+    to the last one inside it again (the previous visit). None when price never left the band or never traded there before
+    (the data's start): the default history then."""
+    d0 = trading_day(t)
+    k0 = int(h1.index.searchsorted(d0))
+    p = float(h1["open"].iloc[k0])
+    inb = ((h1["low"].to_numpy()[:k0] <= p + VISIT_BAND) & (h1["high"].to_numpy()[:k0] >= p - VISIT_BAND))[::-1]
+    away = np.flatnonzero(~inb)
+    if not len(away):
+        return None
+    back = np.flatnonzero(inb[away[0]:])
+    return trading_day(h1.index[k0 - 1 - away[0] - back[0]]) if len(back) else None
+
+
 def replay_start(m2, row):
     """The replay's start: the close of the first M2 candle of the cross bar's hour that closes back above the swept swing low
     (bullish; below the swept high, bearish) at or after the first M2 candle that traded below it (above it). It always exists:
@@ -813,12 +838,13 @@ def _row_html(i, row):
 def render(rows, h1, output, label):
     data_dir = os.path.splitext(output)[0] + "_data"
     os.makedirs(data_dir, exist_ok=True)
+    visits = {t: last_visit(h1, t) for t in rows.index}
     lo = rows.index.min() - pd.Timedelta(days=30)
     m5 = load_es("5min", start=lo, tz=PT)
     led = CB.ledger(m5)
     m2 = load_es("2min", start=lo, tz=PT)
     led2 = CB.ledger(m2)
-    m1 = load_es("1m", start=lo, tz=PT)[["open", "high", "low", "close"]]
+    m1 = load_es("1m", start=min([lo] + [v for v in visits.values() if v is not None]), tz=PT)[["open", "high", "low", "close"]]
     h1b = h1[["open", "high", "low", "close"]]
     charts, trs = [], []
     for i, row in enumerate(rows.itertuples()):
@@ -840,23 +866,28 @@ def render(rows, h1, output, label):
                  "notes": [{"color": CB.SWING_COLOR, "text": f"swept swing {side} {row.swing_price:.2f}, bar {CB._pt(row.swing_time)}"}]
                           + [{"color": CB.SWING_COLOR, "text": f"older swing {side} {op:.2f}, bar {CB._pt(ot)}"
                               + (" (cross bar went past it)" if hit else "")} for ot, op, hit in older]}
-        # the replay's data file: H1 bars before the cross bar's hour, M1 bars from M1_HISTORY before the close (the hour and
-        # 3 trading days of history before it) and the 1 s path from S1_HISTORY M5
+        # the replay's data file: H1 bars before the cross bar's hour (from H1_HISTORY before the close), M1 bars from M1_HISTORY
+        # before the close (the hour and 6 trading days of history before it), both from the last visit of the area when that
+        # is further back (last_visit), and the 1 s path from S1_HISTORY M5
         # candles before the cross bar's hour (a box drawn further back starts its watch there), both to the end of the window
         c1 = int(m1.index.searchsorted(closed))
+        visit = visits[t]
+        m1_from = min(c1 - M1_HISTORY, int(m1.index.searchsorted(visit))) if visit is not None else c1 - M1_HISTORY
+        h1_from = min(closed - H1_HISTORY, visit) if visit is not None else closed - H1_HISTORY
         p5 = int(m5.index.searchsorted(t))
         start = m5.index[max(0, p5 - S1_HISTORY)]
         stop = until + pd.Timedelta(minutes=1)
         key = _row_key(row)
         with open(os.path.join(data_dir, key + ".js"), "w", encoding="utf-8") as f:
             f.write("__replayData(" + json.dumps(key) + "," + json.dumps(
-                {"h1": m1_pack(h1b[(h1b.index >= closed - H1_HISTORY) & (h1b.index < t)]),
-                 "m1": m1_pack(m1.iloc[max(0, c1 - M1_HISTORY): int(m1.index.searchsorted(until, side="right"))]),
+                {"h1": m1_pack(h1b[(h1b.index >= h1_from) & (h1b.index < t)]),
+                 "m1": m1_pack(m1.iloc[max(0, m1_from): int(m1.index.searchsorted(until, side="right"))]),
                  "s1": s1_pack(s1_between(start, stop))}, separators=(",", ":")) + ");\n")
         chart["end"], chart["endWhy"] = int(stop.timestamp()), end_why
         charts.append(chart)
         trs.append(_row_html(i, row))
-        print(f"{CB._pt(row.Index)} {'long ' if row.bullish else 'short'} replay {CB._pt(start_t)} to {CB._pt(until)}: {end_why}")
+        print(f"{CB._pt(row.Index)} {'long ' if row.bullish else 'short'} replay {CB._pt(start_t)} to {CB._pt(until)}: {end_why}; "
+              f"history from {CB._pt(m1.index[max(0, m1_from)])}" + (" (last visit)" if visit is not None and m1_from < c1 - M1_HISTORY else ""))
     title = "ES H1 cross bar trades" + (f" ({label})" if label else "")
     storage_key = "lxpb_cross_bar_trades_v1_" + "".join(c if c.isalnum() else "-" for c in label.lower()).strip("-")
     hook = "_touchPriceAxis(chart, el, series, rayInfo.map(r => r.series), queueThin);"

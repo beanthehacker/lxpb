@@ -22,13 +22,15 @@
 // there is no room) while the box is hovered or dragged: target / stop = points and ticks, and $ at the risk $ of the settings
 // (Qty = risk $ / (stop points x $50), ES: 0.25 tick, $50 a point), and the risk / reward ratio.
 //
-// DRAWINGS (user, 2026-11-08), like TradingView's: a horizontal ray (Alt+J or the "─ Ray" button, then click a point: a line from
-// that point to the right, its price tagged on the price axis) and a rectangle (Alt+Shift+R or "▭ Rect", then click two corners,
+// DRAWINGS (user, 2026-11-08), like TradingView's: a horizontal line (Alt+H or "─ Line", then click a point: a line across the
+// whole chart), a horizontal ray (Alt+J or "→ Ray", then click a point: a line from that point to the right; both with their
+// price tagged on the price axis) and a rectangle (Alt+Shift+R or "▭ Rect", then click two corners,
 // or press, drag and release). Any number per row, shared by the row's panes like the box, kept in time and price, prices stuck to
 // O/H/L/C by the magnet (Ctrl: free), times to candles. Hover shows a drawing's points; click selects it (a rectangle's prices
 // and times then show on the axes); drag a point to move it (rectangle: 4 corners, 4 edge midpoints), the line / inside to move
-// the whole drawing; Delete removes, Esc cancels, double-click opens its colours, width, style and prices. The last style used
-// becomes the default for the next one.
+// the whole drawing; Delete removes, Esc cancels, double-click opens its colours (7 swatches, user 2026-11-09: blue, orange, red,
+// bright green, dark green, white, pink; no colour picker), width, style and prices. The last style used becomes the default for
+// the next one.
 (function () {
   const PT_VALUE = 50, TICK = 0.25, MAGNET_PX = 12, HANDLE_PX = 6;
   const LS = 'postool_v1_';
@@ -36,13 +38,17 @@
   const lsSet = (k, v) => { try { localStorage.setItem(LS + k, JSON.stringify(v)); } catch (e) { /* private window */ } };
   const settings = Object.assign({ account: 50000, riskPct: 1, magnet: 'strong',
                                    rayStyle: { color: '#2962ff', width: 1, dash: 'solid' },
+                                   hlineStyle: { color: '#2962ff', width: 1, dash: 'solid' },
                                    rectStyle: { color: '#9c27b0', fill: '#9c27b0', alpha: 0.2, width: 1, dash: 'solid' } },
                                  lsGet('settings', {}));
   const DASH = { solid: [], dashed: [6, 4], dotted: [1.5, 2.5] };
+  const PALETTE = [['blue', '#2962ff'], ['orange', '#ff9800'], ['red', '#f23645'], ['bright green', '#00e676'],
+                   ['dark green', '#1b8a3c'], ['white', '#ffffff'], ['pink', '#ff5cb8']];
   const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return 'rgba(' + (n >> 16 & 255) + ',' + (n >> 8 & 255) + ',' + (n & 255) + ',' + a + ')'; };
   const tools = [];
   const config = { shared: [], mirror: [], cursor: () => null, result: () => null, onChange: null };
   let active = null;                       // the tool last clicked: Delete / Esc go to it
+  let under = null;                        // the tool under the mouse: drawing shortcuts (Alt+H / J / Shift+R) go to it
   const roundTick = (p) => Math.round(p / TICK) * TICK;
   const num = (v, d) => v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
   const FILE = location.pathname.split('/').pop();
@@ -56,7 +62,7 @@
     tools.forEach(t => { if (t.row === i && t.requestUpdate) t.requestUpdate(); });
     if (config.onChange) config.onChange(i);
   }
-  // the row's drawings (rays and rectangles): [{ id, type 'ray', t, p, color, width, dash }
+  // the row's drawings (lines, rays, rectangles): [{ id, type 'hline' / 'ray', t, p, color, width, dash }
   //                                          | { id, type 'rect', t0, p0, t1, p1, color, fill, alpha, width, dash }]
   const drawKey = (i) => 'draw_' + FILE + '_' + rowKey(i);
   const draws = {};
@@ -120,7 +126,7 @@
           };
           if (p) [[p.tp, '#26a69a'], [p.entry, '#787b86'], [p.sl, '#ef5350']].forEach(([v, bg]) => tag(v, bg));
           getDraws(tool.row).forEach(d => {          // a ray's price always; a rectangle's two prices while it is selected / hovered
-            if (d.type === 'ray') tag(d.p, d.color);
+            if (d.type !== 'rect') tag(d.p, d.color);
             else if (tool.focus(d)) { tag(d.p0, d.color); tag(d.p1, d.color); }
           });
           return out;
@@ -129,7 +135,7 @@
           const d = tool.focused(), out = [];
           if (!d) return out;
           const f = tool.chart.options().localization.timeFormatter;
-          (d.type === 'ray' ? [d.t] : [d.t0, d.t1]).forEach(t => {
+          (d.type === 'rect' ? [d.t0, d.t1] : d.type === 'ray' ? [d.t] : []).forEach(t => {
             const x = tool.x(t);
             if (x != null) out.push({ coordinate: () => x, text: () => (f ? f(t) : String(t)), textColor: () => '#ffffff',
                                       backColor: () => d.color, visible: () => true, tickVisible: () => true });
@@ -194,7 +200,8 @@
         lsSet('settings', settings);
         tools.forEach(t => t.syncButtons());
       });
-      this.bRay = mk('─ Ray', 'Horizontal ray (Alt+J): click a point', () => this.armFor('ray'));
+      this.bHline = mk('─ Line', 'Horizontal line (Alt+H): click a point', () => this.armFor('hline'));
+      this.bRay = mk('→ Ray', 'Horizontal ray (Alt+J): click a point', () => this.armFor('ray'));
       this.bRect = mk('▭ Rect', 'Rectangle (Alt+Shift+R): click two corners, or press, drag and release', () => this.armFor('rect'));
       mk('⚙', 'Account size and risk', (b) => this.popover(b, false));
       this.syncButtons();
@@ -204,6 +211,7 @@
       this.bMag.textContent = '⌖ magnet: ' + settings.magnet;
       this.bLong.classList.toggle('pos-on', this.arm === 'long');
       this.bShort.classList.toggle('pos-on', this.arm === 'short');
+      this.bHline.classList.toggle('pos-on', this.arm === 'hline');
       this.bRay.classList.toggle('pos-on', this.arm === 'ray');
       this.bRect.classList.toggle('pos-on', this.arm === 'rect');
     }
@@ -275,17 +283,18 @@
       return id ? getDraws(this.row).find(d => d.id === id) || null : null;
     }
     dGeom(d) {
-      if (d.type === 'ray') { const x = this.x(d.t), y = this.y(d.p); return x == null || y == null ? null : { x, y }; }
+      if (d.type !== 'rect') { const x = this.x(d.t), y = this.y(d.p); return x == null || y == null ? null : { x, y }; }
       const x0 = this.x(d.t0), x1 = this.x(d.t1), y0 = this.y(d.p0), y1 = this.y(d.p1);
       return [x0, x1, y0, y1].some(v => v == null) ? null : { x0, x1, y0, y1 };
     }
     dHandles(d, g) {                              // [part, x, y]: c<t><p> corner, et<k> time edge, ep<k> price edge
-      if (d.type === 'ray') return [['a', g.x, g.y]];
+      if (d.type !== 'rect') return [['a', g.x, g.y]];
       const mx = (g.x0 + g.x1) / 2, my = (g.y0 + g.y1) / 2;
       return [['c00', g.x0, g.y0], ['c01', g.x0, g.y1], ['c10', g.x1, g.y0], ['c11', g.x1, g.y1],
               ['et0', g.x0, my], ['et1', g.x1, my], ['ep0', mx, g.y0], ['ep1', mx, g.y1]];
     }
-    onLine(d, g, x, y) {                          // on a ray's line or a rectangle's border
+    onLine(d, g, x, y) {                          // on a line, a ray or a rectangle's border
+      if (d.type === 'hline') return Math.abs(y - g.y) <= HANDLE_PX;
       if (d.type === 'ray') return x >= g.x - HANDLE_PX && Math.abs(y - g.y) <= HANDLE_PX;
       const l = Math.min(g.x0, g.x1), r = Math.max(g.x0, g.x1), t = Math.min(g.y0, g.y1), b = Math.max(g.y0, g.y1);
       const inX = x >= l - HANDLE_PX && x <= r + HANDLE_PX, inY = y >= t - HANDLE_PX && y <= b + HANDLE_PX;
@@ -324,7 +333,7 @@
     }
     newDraw(type, q) {
       const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-      const d = type === 'ray' ? Object.assign({ id, type, t: q.t, p: q.p }, settings.rayStyle)
+      const d = type !== 'rect' ? Object.assign({ id, type, t: q.t, p: q.p }, settings[type + 'Style'])
                                : Object.assign({ id, type, t0: q.t, p0: q.p, t1: q.t, p1: q.p }, settings.rectStyle);
       setDraws(this.row, getDraws(this.row).concat([d]));
       this.selD = id; this.sel = false;
@@ -349,9 +358,9 @@
         const g = this.dGeom(d);
         if (!g) return;
         ctx.lineWidth = d.width || 1; ctx.strokeStyle = d.color; ctx.setLineDash(DASH[d.dash] || []);
-        if (d.type === 'ray') {
+        if (d.type !== 'rect') {
           const y = crisp(g.y, ctx.lineWidth);
-          ctx.beginPath(); ctx.moveTo(g.x, y); ctx.lineTo(Math.max(W, g.x), y); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(d.type === 'hline' ? 0 : g.x, y); ctx.lineTo(Math.max(W, g.x), y); ctx.stroke();
         } else {
           const l = Math.min(g.x0, g.x1), t = Math.min(g.y0, g.y1), w = Math.abs(g.x1 - g.x0), h = Math.abs(g.y1 - g.y0);
           ctx.fillStyle = rgba(d.fill, d.alpha); ctx.fillRect(l, t, w, h);
@@ -421,7 +430,7 @@
           if (d && d.t0 === d.t1 && d.p0 === d.p1) { dropDraw(this.row, c.id); this.selD = null; }
           this.blockMouse = true; block(e); return;
         }
-        if (this.arm === 'ray' || this.arm === 'rect') {
+        if (this.arm === 'hline' || this.arm === 'ray' || this.arm === 'rect') {
           const q = { t: this.tAt(pt.x), p: this.snap(pt.x, pt.y, e.ctrlKey) };
           if (q.t != null && q.p != null) {
             const d = this.newDraw(this.arm, q);
@@ -440,7 +449,7 @@
           const d0 = Object.assign({}, hh.d);
           this.selD = d0.id; this.sel = false;
           this.drag = { draw: d0.id, part: hh.part, d0, l0: this.chart.timeScale().coordinateToLogical(pt.x),
-                        dy: pt.y - this.y(d0.type === 'ray' ? d0.p : d0.p0) };
+                        dy: pt.y - this.y(d0.type === 'rect' ? d0.p0 : d0.p) };
           this.blockMouse = true; block(e);
           if (this.requestUpdate) this.requestUpdate();
           return;
@@ -470,6 +479,7 @@
         }
         if (!this.drag) {
           const pt = this.plotPoint(e);
+          if (pt) under = this; else if (under === this) under = null;
           const h = pt && this.hitAll(pt.x, pt.y);
           const cur = this.arm && pt ? 'crosshair' : this.handleCursor(h);
           el.querySelectorAll('canvas').forEach(c => { c.style.cursor = cur; });
@@ -535,7 +545,7 @@
         const sh = (t) => this.timeOf(this.logicalOf(t) + di);
         const ne = this.snap(x, y - d.dy, free);
         if (ne == null) return;
-        if (q.type === 'ray') Object.assign(q, { t: sh(d0.t), p: ne });
+        if (q.type !== 'rect') Object.assign(q, { t: sh(d0.t), p: ne });
         else Object.assign(q, { t0: sh(d0.t0), t1: sh(d0.t1), p0: ne, p1: d0.p1 + ne - d0.p0 });
       } else {
         const t = this.tAt(x), p = this.snap(x, y, free), k = d.part;
@@ -557,22 +567,28 @@
       const row = (l, inner) => '<label>' + l + inner + '</label>';
       const sel = (f, opts, v) => '<select data-f="' + f + '">' + opts.map(o => '<option' + (String(o) === String(v) ? ' selected' : '') + '>' + o + '</option>').join('') + '</select>';
       const numIn = (f, v) => '<input data-f="' + f + '" type="number" step="0.25" value="' + v + '">';
-      let h = row(d.type === 'ray' ? 'Line' : 'Border', '<input data-f="color" type="color" value="' + d.color + '">');
-      if (d.type === 'rect') h += row('Fill', '<span class="pos-fill"><input data-f="fill" type="color" value="' + d.fill + '">'
-                                   + '<input data-f="alpha" type="range" min="0" max="1" step="0.05" value="' + d.alpha + '"></span>');
+      const sws = (f, v) => '<span class="pos-sws" data-f="' + f + '" data-v="' + v + '">' + PALETTE.map(([n, c]) =>
+        '<button type="button" class="pos-sw' + (c === v ? ' on' : '') + '" data-c="' + c + '" title="' + n + '" style="background:' + c + '"></button>').join('') + '</span>';
+      let h = row(d.type !== 'rect' ? 'Line' : 'Border', sws('color', d.color));
+      if (d.type === 'rect') h += row('Fill', sws('fill', d.fill))
+                                + row('Opacity', '<input data-f="alpha" type="range" min="0" max="1" step="0.05" value="' + d.alpha + '">');
       h += row('Width', sel('width', [1, 2, 3, 4], d.width)) + row('Style', sel('dash', ['solid', 'dashed', 'dotted'], d.dash));
-      h += d.type === 'ray' ? row('Price', numIn('p', d.p)) : row('Price 1', numIn('p0', d.p0)) + row('Price 2', numIn('p1', d.p1));
+      h += d.type !== 'rect' ? row('Price', numIn('p', d.p)) : row('Price 1', numIn('p0', d.p0)) + row('Price 2', numIn('p1', d.p1));
       box.innerHTML = h + '<div class="pos-pop-btns"><button data-a="del">Delete</button><button data-a="ok">Apply</button></div>';
       document.body.appendChild(box);
-      const val = (f) => box.querySelector('[data-f="' + f + '"]').value;
+      const val = (f) => { const n = box.querySelector('[data-f="' + f + '"]'); return n.classList.contains('pos-sws') ? n.dataset.v : n.value; };
       box.addEventListener('click', (e) => {
-        const a = e.target.dataset && e.target.dataset.a;
-        if (a === 'ok') {
+        const a = e.target.dataset && e.target.dataset.a, sw = e.target.dataset && e.target.dataset.c;
+        if (sw) {                                   // a colour swatch: it becomes its row's colour
+          const grp = e.target.parentNode;
+          grp.dataset.v = sw;
+          grp.querySelectorAll('.pos-sw').forEach(b => b.classList.toggle('on', b === e.target));
+        } else if (a === 'ok') {
           const q = Object.assign({}, d, { color: val('color'), width: +val('width'), dash: val('dash') });
           if (d.type === 'rect') Object.assign(q, { fill: val('fill'), alpha: +val('alpha') });
-          (d.type === 'ray' ? ['p'] : ['p0', 'p1']).forEach(f => { const v = parseFloat(val(f)); if (!isNaN(v)) q[f] = v; });
-          const st = d.type === 'ray' ? 'rayStyle' : 'rectStyle';      // the next one is drawn in this style
-          settings[st] = d.type === 'ray' ? { color: q.color, width: q.width, dash: q.dash }
+          (d.type !== 'rect' ? ['p'] : ['p0', 'p1']).forEach(f => { const v = parseFloat(val(f)); if (!isNaN(v)) q[f] = v; });
+          const st = d.type + 'Style';                                // the next one is drawn in this style
+          settings[st] = d.type !== 'rect' ? { color: q.color, width: q.width, dash: q.dash }
                                           : { color: q.color, fill: q.fill, alpha: q.alpha, width: q.width, dash: q.dash };
           lsSet('settings', settings);
           putDraw(this.row, q);
@@ -611,10 +627,13 @@
   }
 
   document.addEventListener('keydown', (e) => {
-    if (!active || /INPUT|TEXTAREA|SELECT/.test((e.target.tagName || ''))) return;
-    if (e.altKey && !e.ctrlKey && active.bRay && (e.code === 'KeyJ' || (e.shiftKey && e.code === 'KeyR'))) {
-      active.armFor(e.code === 'KeyJ' ? 'ray' : 'rect'); e.preventDefault();
-    } else if ((e.key === 'Delete' || e.key === 'Backspace') && active.selD) {
+    if (/INPUT|TEXTAREA|SELECT/.test((e.target.tagName || ''))) return;
+    const to = under && !under.dead ? under : active;
+    if (to && e.altKey && !e.ctrlKey && to.bRay && (e.code === 'KeyH' || e.code === 'KeyJ' || (e.shiftKey && e.code === 'KeyR'))) {
+      to.armFor({ KeyH: 'hline', KeyJ: 'ray', KeyR: 'rect' }[e.code]); e.preventDefault(); return;
+    }
+    if (!active) return;
+    if ((e.key === 'Delete' || e.key === 'Backspace') && active.selD) {
       dropDraw(active.row, active.selD); active.selD = null; active.hoverD = null; e.preventDefault();
     } else if ((e.key === 'Delete' || e.key === 'Backspace') && active.sel) {
       active.sel = false; setBox(active.row, null); e.preventDefault();
@@ -638,8 +657,9 @@
     + 'font:12px Courier New,monospace;color:#d1d4dc;display:flex;flex-direction:column;gap:5px;width:220px}'
     + '.pos-pop label{display:flex;justify-content:space-between;gap:8px;align-items:center}'
     + '.pos-pop input,.pos-pop select{width:100px;background:#131722;color:#d1d4dc;border:1px solid #363a45;padding:2px 4px;box-sizing:border-box}'
-    + '.pos-pop input[type=color]{width:40px;height:22px;padding:0 2px}.pos-fill{display:flex;gap:4px;align-items:center}'
-    + '.pos-fill input[type=range]{width:56px;padding:0}'
+    + '.pos-pop input[type=range]{padding:0}.pos-sws{display:flex;gap:3px}'
+    + '.pos-pop .pos-sw{width:15px;height:15px;padding:0;border:1px solid #363a45;border-radius:3px;cursor:pointer}'
+    + '.pos-pop .pos-sw.on{outline:2px solid #d1d4dc;outline-offset:1px}'
     + '.pos-pop-btns{display:flex;justify-content:flex-end;gap:6px;margin-top:4px}'
     + '.pos-pop button{background:#2962ff;color:#fff;border:0;border-radius:3px;padding:3px 10px;cursor:pointer}';
   document.head.appendChild(css);
