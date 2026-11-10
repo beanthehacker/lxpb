@@ -56,6 +56,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 import render_cross_bar_report as CB              # noqa: E402  (sets up the import paths)
 from es_data import load_es                       # noqa: E402
+import vap                                        # noqa: E402  (volume at price from the .scid ticks, for the volume profiles)
 
 PT = CB.PT
 TICK = 0.25
@@ -71,6 +72,9 @@ M1_HISTORY = 6 * 1380                 # M1 bars before the close (M30 and below:
 VISIT_BAND = 50.0                     # ... both reach back at least to the last visit of the day's open +- this many points
 S1_HISTORY = 100                      # the 1 s path starts this many M5 candles before the cross bar's hour
 REVISIT_PAD = 60                      # ... and this many M1 bars past the last P0 price's revisit
+VP_JS = os.path.join(CB._REPO_ROOT, "public", "js", "volume-profile.js")     # volume profiles (sample, --vp)
+VP_COARSE = 1800                      # volume at price per 30 minutes before the M1 history, per minute from there on
+VP_DAYS = 35                          # ... reaching back at least this many days (weekly levels, 20-day composite)
 POS_TOOL_JS = os.path.join(CB._REPO_ROOT, "public", "js", "position-tool.js")   # TradingView-style long / short position tool
 
 
@@ -362,7 +366,7 @@ function _decode(d) {
   const s = d.s1, n = s.r.length / 3, T = new Float64Array(n), L = new Float64Array(n), Hi = new Float64Array(n);
   let ts = s.t0, lo = s.b;
   for (let k = 0; k < n; k++) { ts += s.r[3 * k]; lo += s.r[3 * k + 1]; T[k] = ts; L[k] = lo * 0.25; Hi[k] = (lo + s.r[3 * k + 2]) * 0.25; }
-  return { m1: M, m1t: M.map(c => c.time), h1: H, h1t: H.map(c => c.time), s1: { n, t: T, lo: L, hi: Hi } };
+  return { m1: M, m1t: M.map(c => c.time), h1: H, h1t: H.map(c => c.time), s1: { n, t: T, lo: L, hi: Hi }, vp: d.vp };
 }
 window.__replayData = (key, d) => {
   document.querySelectorAll('tr.lvl-row').forEach(tr => {
@@ -835,7 +839,7 @@ def _row_html(i, row):
 </tr>"""
 
 
-def render(rows, h1, output, label):
+def render(rows, h1, output, label, vp=False):
     data_dir = os.path.splitext(output)[0] + "_data"
     os.makedirs(data_dir, exist_ok=True)
     visits = {t: last_visit(h1, t) for t in rows.index}
@@ -846,6 +850,9 @@ def render(rows, h1, output, label):
     led2 = CB.ledger(m2)
     m1 = load_es("1m", start=min([lo] + [v for v in visits.values() if v is not None]), tz=PT)[["open", "high", "low", "close"]]
     h1b = h1[["open", "high", "low", "close"]]
+    if vp:                                       # zigzag pivots for the leg profiles: patterns-pure find_zigzag, M5 and H1
+        from find_zigzag import find_zigzag
+        zz = {"m5": find_zigzag(m5[["open", "high", "low", "close"]]), "h1": find_zigzag(h1b)}
     charts, trs = [], []
     for i, row in enumerate(rows.itertuples()):
         older = CB.older_swings(h1, h1.index.get_loc(row.Index), row.swing_time, row.swing_price, row.bullish)
@@ -878,11 +885,19 @@ def render(rows, h1, output, label):
         start = m5.index[max(0, p5 - S1_HISTORY)]
         stop = until + pd.Timedelta(minutes=1)
         key = _row_key(row)
+        payload = {"h1": m1_pack(h1b[(h1b.index >= h1_from) & (h1b.index < t)]),
+                   "m1": m1_pack(m1.iloc[max(0, m1_from): int(m1.index.searchsorted(until, side="right"))]),
+                   "s1": s1_pack(s1_between(start, stop))}
+        if vp:
+            fine = trading_day(m1.index[max(0, c1 - M1_HISTORY)])
+            coarse = min([trading_day(t) - pd.Timedelta(days=VP_DAYS)] + ([visit] if visit is not None else []))
+            payload["vp"] = {
+                "c": vap.pack(vap.buckets(coarse, fine, VP_COARSE), VP_COARSE),
+                "f": vap.pack(vap.buckets(fine, stop, 60), 60),
+                "zz": {k: [[int(z.time.timestamp()), float(z.price), 1 if z.kind == "crest" else -1, int(z.confirm_time.timestamp())]
+                           for z in f.itertuples() if coarse <= z.time and z.confirm_time < stop] for k, f in zz.items()}}
         with open(os.path.join(data_dir, key + ".js"), "w", encoding="utf-8") as f:
-            f.write("__replayData(" + json.dumps(key) + "," + json.dumps(
-                {"h1": m1_pack(h1b[(h1b.index >= h1_from) & (h1b.index < t)]),
-                 "m1": m1_pack(m1.iloc[max(0, m1_from): int(m1.index.searchsorted(until, side="right"))]),
-                 "s1": s1_pack(s1_between(start, stop))}, separators=(",", ":")) + ");\n")
+            f.write("__replayData(" + json.dumps(key) + "," + json.dumps(payload, separators=(",", ":")) + ");\n")
         chart["end"], chart["endWhy"] = int(stop.timestamp()), end_why
         charts.append(chart)
         trs.append(_row_html(i, row))
@@ -898,7 +913,8 @@ def render(rows, h1, output, label):
     assert js.count(hook) == 1, "M1 report chart JS changed: re-check the position tool hook"
     js = "<script>\n" + pos_tool + "\n</script>\n" + js.replace(
         hook, hook + "\n  if (window.PosTool) PosTool.attach(chart, series, el, titleEl, cd);"
-                     + "\n  if (window.Replay) Replay.attach(chart, series, el, titleEl, cd);")
+                     + "\n  if (window.Replay) Replay.attach(chart, series, el, titleEl, cd);"
+                     + ("\n  if (window.VolProfile) VolProfile.attach(chart, series, el, titleEl, cd);" if vp else ""))
     old_stack = ("_renderChartPane(i, 'main', cd.main);\n  _renderChartPane(i, 'ctx', cd.ctx);\n"
                  "  _renderChartPane(i, 'l5', cd.l5);\n  _renderChartPane(i, 'l2', cd.l2);")
     assert js.count(old_stack) == 1, "cross bar report JS changed: re-check _renderStack"
@@ -907,6 +923,9 @@ def render(rows, h1, output, label):
     assert js.count(fit) == 2, "M1 report chart JS changed: re-check the candle fit"
     js = js.replace(fit, "(cd.fit ? cd.fit(chart) : _fitBars(chart, cd.candles.length));")   # a replay chart: the last candles
     js = js + "<script>\n" + MANUAL_JS.replace("__DATA_DIR__", data_rel) + "\nwindow.Replay = Replay;\n</script>\n"
+    if vp:
+        with open(VP_JS, encoding="utf-8") as f:
+            js += "<script>\n" + f.read() + "\n</script>\n"
     js = js.replace("l5: 'M5-LXPB'", "a: 'chart', b: '2nd chart', l5: 'M5-LXPB'")
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -969,6 +988,7 @@ def main():
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--label", default="")
     ap.add_argument("--output", required=True)
+    ap.add_argument("--vp", action="store_true", help="volume profiles (sample)")
     a = ap.parse_args()
     if not (a.all or a.last or a.at):
         ap.error("pass --all, --last N or --at")
@@ -981,7 +1001,7 @@ def main():
     elif a.last:
         rows = pd.concat([g.tail(a.last) for _, g in rows.groupby("bullish")]).sort_index()
     rows = rows.sort_index()                      # oldest first
-    render(rows, h1, a.output, a.label or "sample")
+    render(rows, h1, a.output, a.label or "sample", vp=a.vp)
 
 
 if __name__ == "__main__":
