@@ -5,12 +5,10 @@
 //
 //   Day          the current trading day's developing profile (15:00 PT the day before to T), drawn from the session's start,
 //                with its VAH / VAL / POC; "+ past days" also draws every earlier day's own profile where it happened.
-//   Right side   one profile on the chart's right edge (in its blank 20%):
-//                  composite  every minute of the lookback up to T, rows within +-band of the last price, HVN / LVN marked
-//                  last visit the previous visit of the area (same rule as the history: the stretch of H1 bars that last traded
-//                             within 50 pt of the day's open before price left that band), at most its last 5 trading days
-//                  last leg   the last completed zigzag leg known at T (patterns-pure find_zigzag, M5 or H1, from the data file)
-//                  current leg from the last confirmed zigzag pivot to T
+//   Last visit   one profile on the chart's right edge (in its blank 20%; user 2026-11-09): every trade from the start of the last
+//                visit of the current price up to T, today included, rows within +-50 pt of the last price. The last visit: the
+//                last H1 bar before today's session that traded the last price, back through the H1 bars before it that traded
+//                within 50 pt of it, at most 5 trading days of them. HVN / LVN marked (see `nodes`).
 //   Levels       VAH / VAL / POC of the last N complete days and weeks, as lines from the period's end to the right edge;
 //                solid = naked (price has not traded there since, up to T), dotted = traded since. Prices of different
 //                periods within the confluence tolerance are joined into one band, labelled with how many lines it holds.
@@ -19,22 +17,22 @@
 // profile's middle); from it the value area grows by comparing the volume of the next TWO prices above with the next two below and
 // adding the larger pair (both on a tie), until it holds >= the value-area percentage (70%) of the profile's volume.
 (function () {
-  const KEY = 'postool_v1_vp_settings';
-  const DEF = { day: true, past: false, right: 'comp', look: 'visit', band: 50, legTf: 'M5', dN: 3, wN: 2, naked: false,
-                tol: 1, va: 70 };
+  const KEY = 'postool_v1_vp_settings3';
+  const BAND = 50;
+  const DEF = { day: true, past: true, vis: true, dN: 3, wN: 2, naked: false, tol: 1, va: 70, bw: 2, prom: 20 };
   let S = Object.assign({}, DEF);
   try { Object.assign(S, JSON.parse(localStorage.getItem(KEY) || '{}')); } catch (e) { /* private window */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* private window */ } };
   const panes = [];
   const C = {
-    va: 'rgba(41,98,255,0.42)', out: 'rgba(120,123,134,0.30)', poc: 'rgba(255,152,0,0.85)',
+    va: 'rgba(41,98,255,0.5)', out: 'rgba(120,123,134,0.38)', poc: 'rgba(255,152,0,0.85)',
     vaLine: '#2962ff', pocLine: '#ff9800', hvn: '#00e676', lvn: '#f23645', wPoc: '#ff5cb8', wVa: '#d1d4dc', text: '#9ca3af',
   };
 
   // ---- the row's buckets: coarse (30 min) then fine (1 min), one sorted list
   function decode(vp) {
     const t = [], e = [], lo = [], off = [], n = [], V = [];
-    [vp.c, vp.f].forEach(p => {
+    [vp.d, vp.c, vp.f].filter(Boolean).forEach(p => {   // per trading day, per 30 min, per minute
       let tt = p.t0, ll = p.b, k = 0, r = p.r;
       while (k < r.length) {
         tt += r[k] * 60; ll += r[k + 1]; const m = r[k + 2];
@@ -88,22 +86,41 @@
     }
     return { poc: (P.lo + poc) * 0.25, vah: (P.lo + hi) * 0.25, val: (P.lo + lo) * 0.25 };
   }
-  // high / low volume nodes: peaks and troughs of the profile smoothed over +-1 pt, at least 2 pt from a higher (lower) one
+  // high / low volume nodes, the quant method (kernel density + topographic prominence):
+  //   1. smooth the volume at price with a Gaussian kernel of S.bw points (a volume-weighted kernel density on the tick grid; the
+  //      raw per-tick histogram is too jagged for its own peaks to mean anything),
+  //   2. HVN = a peak of that curve whose prominence (how far it stands above the higher of the two lowest points between it and
+  //      a taller peak on each side, scipy.signal.find_peaks' definition) is >= S.prom % of the curve's maximum,
+  //   3. LVN = the lowest point of the curve between two neighbouring HVNs, when it lies >= S.prom % of the maximum below the
+  //      smaller of the two (the valley's own prominence).
+  function smooth(v, sd) {
+    const n = v.length, sm = new Float64Array(n), r = Math.ceil(3 * sd), w = [];
+    for (let d = -r; d <= r; d++) w.push(Math.exp(-0.5 * (d / sd) * (d / sd)));
+    for (let k = 0; k < n; k++) { let s = 0, ws = 0; for (let d = -r; d <= r; d++) { const j = k + d; if (j >= 0 && j < n) { s += v[j] * w[d + r]; ws += w[d + r]; } } sm[k] = s / ws; }
+    return sm;
+  }
   function nodes(P) {
-    const v = P.v, n = v.length, sm = new Float64Array(n), W = 4, R = 8;
-    for (let k = 0; k < n; k++) { let s = 0, w = 0; for (let d = -W; d <= W; d++) { const j = k + d; if (j >= 0 && j < n) { const ww = W + 1 - Math.abs(d); s += v[j] * ww; w += ww; } } sm[k] = s / w; }
-    const mx = Math.max.apply(null, sm), hv = [], lv = [];
+    const sm = smooth(P.v, S.bw / 0.25), n = sm.length;
+    let mx = 0;
+    for (let k = 0; k < n; k++) mx = Math.max(mx, sm[k]);
+    const min = mx * S.prom / 100, hv = [];
     for (let k = 0; k < n; k++) {
-      let isMax = true, isMin = true;
-      for (let d = -R; d <= R; d++) { const j = k + d; if (j < 0 || j >= n || d === 0) continue; if (sm[j] > sm[k]) isMax = false; if (sm[j] < sm[k]) isMin = false; }
-      if (isMax && sm[k] >= 0.3 * mx) hv.push(k);
-      else if (isMin && k > R && k < n - 1 - R) lv.push(k);
+      if (!(k > 0 && sm[k - 1] < sm[k])) continue;    // a peak (a flat top counts once, at its middle; never at the edges)
+      let j = k, e = k;
+      while (e + 1 < n && sm[e + 1] === sm[k]) e++;
+      if (!(e + 1 < n && sm[e + 1] < sm[k])) continue;
+      let lMin = sm[k], rMin = sm[k];
+      for (j = k - 1; j >= 0 && sm[j] <= sm[k]; j--) lMin = Math.min(lMin, sm[j]);
+      for (j = e + 1; j < n && sm[j] <= sm[k]; j++) rMin = Math.min(rMin, sm[j]);
+      if (sm[k] - Math.max(lMin, rMin) >= min) hv.push(Math.round((k + e) / 2));
     }
-    const lvn = lv.filter(k => {                     // a trough between two high nodes, under half the smaller of them
-      const a = hv.filter(h => h < k).pop(), b = hv.find(h => h > k);
-      return a != null && b != null && sm[k] <= 0.5 * Math.min(sm[a], sm[b]);
-    });
-    return { hvn: hv.map(k => (P.lo + k) * 0.25), lvn: lvn.map(k => (P.lo + k) * 0.25) };
+    const lv = [];
+    for (let q = 0; q + 1 < hv.length; q++) {
+      let b = hv[q];
+      for (let k = hv[q]; k <= hv[q + 1]; k++) if (sm[k] < sm[b]) b = k;
+      if (Math.min(sm[hv[q]], sm[hv[q + 1]]) - sm[b] >= min) lv.push(b);
+    }
+    return { hvn: hv.map(k => (P.lo + k) * 0.25), lvn: lv.map(k => (P.lo + k) * 0.25) };
   }
 
   // ---- trading days (15:00 PT the day before to 14:00 PT) and weeks (Sunday 15:00 PT to Friday 14:00 PT)
@@ -131,19 +148,17 @@
     const D = _rp(i).data, k = _lb(D.m1t, T) - 1;
     return k >= 0 ? D.m1[k].close : null;
   }
-  // the previous visit (render_cross_bar_trades.last_visit, H1 bars as they stood at T): [start, end) or null
-  function visit(i, T) {
-    const H = _barsAt(i, 'H1'), d0 = day0(T), k0 = _lb(H.map(c => c.time), d0);
-    if (k0 >= H.length || k0 === 0) return null;
-    const p = H[k0].open, inb = (c) => c.low <= p + 50 && c.high >= p - 50;
+  // the last visit of price px before today's session (H1 bars as they stood at T): the last H1 bar before the session that traded
+  // px, back through the H1 bars before it that traded within BAND of px, at most 5 trading days of them. { a: the visit's
+  // trading-day start, last: the bar that last traded px } or null (px never traded in the H1 history)
+  function visit(i, T, px) {
+    const H = _barsAt(i, 'H1'), k0 = _lb(H.map(c => c.time), day0(T));
     let k = k0 - 1;
-    while (k >= 0 && inb(H[k])) k--;
-    while (k >= 0 && !inb(H[k])) k--;
+    while (k >= 0 && !(H[k].low <= px && px <= H[k].high)) k--;
     if (k < 0) return null;
-    const kEnd = k;
-    while (k >= 0 && inb(H[k])) k--;
-    const start = Math.max(day0(H[k + 1].time), tradingDaysBack(day0(H[kEnd].time), 4));
-    return { a: start, b: H[kEnd].time + 3600, p };
+    const kLast = k;
+    while (k >= 0 && H[k].low <= px + BAND && H[k].high >= px - BAND) k--;
+    return { a: Math.max(day0(H[k + 1].time), tradingDaysBack(day0(H[kLast].time), 4)), last: H[kLast].time };
   }
 
   // ---- what one pane shows at T (cached; complete periods never change)
@@ -155,36 +170,26 @@
     const memo = st.vpMemo = st.vpMemo || {};
     const full = (a, b) => { const k = a + '-' + b; if (!(k in memo)) { const P = a >= B.first ? profile(B, a, b) : null; memo[k] = P ? { P, va: valueArea(P, S.va) } : null; } return memo[k]; };
     const out = { sessions: [], right: null, levels: [], bands: [] };
-    const s0 = day0(T), sub = _LEN[tf] < 14400;
-    if (S.day && sub) {
-      const P = profile(B, s0, T);
-      if (P) out.sessions.push({ P, va: valueArea(P, S.va), a: s0, b: s0 + 82800, live: true });
-      if (S.past) for (let s = prevDay(s0), c = 0; s >= B.first && c < 40; s = prevDay(s), c++) {
-        const f = full(s, s + 86400);
-        if (f) out.sessions.push({ P: f.P, va: f.va, a: s, b: s + 82800 });
+    // one profile per trading day on H4 and below, per week on D1 (a day is a single D1 candle there)
+    const s0 = day0(T), wk = tf === 'D1';
+    if (S.day) {
+      const a0 = wk ? weekStart(s0) : s0, span = wk ? 5 * 86400 + 7200 : 86400;   // + 2 h: a week that crosses a DST change
+      const P = profile(B, a0, T);
+      if (P) out.sessions.push({ P, va: valueArea(P, S.va), a: a0, b: a0 + span - 3600, live: true });
+      if (S.past) for (let s = wk ? weekStart(prevDay(a0)) : prevDay(a0), c = 0; s >= B.first && c < (wk ? 32 : 160); s = wk ? weekStart(prevDay(s)) : prevDay(s), c++) {
+        const f = full(s, s + span);
+        if (f) out.sessions.push({ P: f.P, va: f.va, a: s, b: s + span - 3600 });
       }
     }
     const px = lastPrice(i, T);
-    if (S.right !== 'none' && px != null) {
-      let a = null, b = T, name = '';
-      if (S.right === 'comp') {
-        if (S.look === 'visit') { const v = visit(i, T); a = v ? v.a : null; name = 'composite since last visit'; }
-        else { a = tradingDaysBack(s0, +S.look); name = 'composite ' + S.look + ' days'; }
-        name += ' ±' + S.band;
-      } else if (S.right === 'visit') {
-        const v = visit(i, T);
-        if (v) { a = v.a; b = v.b; name = 'last visit ' + dLabel(v.a) + (day0(v.b - 1) !== v.a ? '-' + dLabel(day0(v.b - 1)) : ''); }
-      } else {
-        const Z = ((st.data.vp.zz || {})[S.legTf.toLowerCase()] || []).filter(z => z[3] <= T);
-        const len = S.legTf === 'H1' ? 3600 : 300;
-        if (S.right === 'leg' && Z.length >= 2) { const p = Z[Z.length - 2], q = Z[Z.length - 1]; a = p[0]; b = q[0] + len; name = S.legTf + ' leg ' + p[1].toFixed(2) + ' → ' + q[1].toFixed(2); }
-        if (S.right === 'curleg' && Z.length) { const q = Z[Z.length - 1]; a = q[0]; name = S.legTf + ' current leg from ' + q[1].toFixed(2); }
+    if (S.vis && px != null) {
+      const v = visit(i, T, px);
+      if (!v) out.right = { name: 'last visit of ' + px.toFixed(2) + ': none in the history' };
+      else if (v.a < B.first) out.right = { name: 'last visit ' + dLabel(v.a) + ': before the volume data' };
+      else {
+        const P = clip(profile(B, v.a, T), Math.round((px - BAND) / 0.25), Math.round((px + BAND) / 0.25));
+        if (P && P.tot > 0) out.right = { P, va: valueArea(P, S.va), nodes: nodes(P), name: 'last visit ' + dLabel(v.a) + ' → now, ±' + BAND };
       }
-      if (a != null && a >= B.first) {
-        let P = profile(B, a, b);
-        if (P && S.right === 'comp') P = clip(P, Math.round((px - S.band) / 0.25), Math.round((px + S.band) / 0.25));
-        if (P && P.tot > 0) out.right = { P, va: valueArea(P, S.va), nodes: S.right === 'comp' ? nodes(P) : null, name };
-      } else if (S.right !== 'none') out.right = { name: (name || S.right) + ': not in the data' };
     }
     const lv = [];
     for (let s = prevDay(s0), c = 0; c < S.dN && s >= B.first; s = prevDay(s)) {
@@ -197,7 +202,7 @@
     for (let w0 = weekStart(s0), c = 0; c < S.wN; c++) {
       w0 = weekStart(prevDay(w0));
       if (w0 < B.first) break;
-      const f = full(w0, w0 + 5 * 86400);
+      const f = full(w0, w0 + 5 * 86400 + 7200);
       if (!f) continue;
       const lab = dLabel(w0);
       [['POC', f.va.poc], ['VAH', f.va.vah], ['VAL', f.va.val]].forEach(([k, p]) => lv.push({ k: 'w' + k, p, from: w0 + 5 * 86400, lab: 'w' + k + ' ' + lab, w: 2 }));
@@ -231,10 +236,11 @@
       else if (k >= n) lg = n - 1 + (t - times[n - 1]) / len;
       else if (k === 0) lg = -(times[0] - t) / len;
       else lg = Math.min(k, k - 1 + (t - times[k - 1]) / len);
-      return ts.logicalToCoordinate(lg);
+      const f = Math.floor(lg), x0 = ts.logicalToCoordinate(f);   // the library gives 0 for a fractional index: interpolate
+      return x0 == null ? null : x0 + (lg - f) * ts.options().barSpacing;
     };
     const y = (p) => series.priceToCoordinate(p);
-    const rowPx = Math.abs(y(100) - y(100.25)) || 1, bin = Math.max(1, Math.ceil(1.6 / rowPx));
+    const rowPx = Math.abs(y(100) - y(100.25)) || 1, bin = Math.max(1, Math.ceil(2.5 / rowPx));   // a drawn row is at least 2.5 px tall
     const font = '11px Courier New, monospace';
     ctx.font = font; ctx.textBaseline = 'middle';
     // one profile: bars from x0 growing by dir (+1 right, -1 left), widest bar = wMax px
@@ -254,7 +260,8 @@
         if (yT == null || yB == null) return;
         const w = x / mx * wMax, inVa = tHi * 0.25 >= va.val && tLo * 0.25 <= va.vah;
         ctx.fillStyle = g === pocG ? C.poc : inVa ? C.va : C.out;
-        ctx.fillRect(dir > 0 ? x0 : x0 - w, Math.min(yT, yB) + 0.5, w, Math.max(1, Math.abs(yB - yT) - 1));
+        const hh = Math.abs(yB - yT);                // rows touch when they are thin (a 1 px gap would leave only faint lines)
+        ctx.fillRect(dir > 0 ? x0 : x0 - w, Math.min(yT, yB) + (hh >= 4 ? 0.5 : 0), w, hh >= 4 ? hh - 1 : hh);
       });
     };
     const hline = (p, x0, x1, color, width, dash) => {
@@ -267,7 +274,7 @@
     R.sessions.forEach(s => {
       const xa = xOf(s.a), xb = xOf(s.b);
       if (xa == null || xb == null || xb < 0 || xa > W) return;
-      const wMax = Math.min((xb - xa) * 0.6, W * 0.3);
+      const wMax = Math.min((xb - xa) * (_LEN[tf] >= 14400 ? 0.9 : 0.6), W * 0.3);   // H4 / D1: a day / week is only a few candles
       if (wMax < 6) return;
       prof(s.P, s.va, xa, 1, wMax);
       const x1 = s.live ? Math.max(ts.logicalToCoordinate(n - 1) || 0, xa + wMax) : xb;   // today's lines run to the last candle
@@ -326,18 +333,17 @@
     const sel = (f, opts) => '<select data-f="' + f + '">' + opts.map(([v, t]) => '<option value="' + v + '"' + (String(S[f]) === String(v) ? ' selected' : '') + '>' + t + '</option>').join('') + '</select>';
     const chk = (f, t) => '<label><input type="checkbox" data-f="' + f + '"' + (S[f] ? ' checked' : '') + '> ' + t + '</label>';
     box.innerHTML = '<div class="vp-h">Volume profile (sample)</div>'
-      + '<div>' + chk('day', 'Day: today\'s developing profile') + '</div>'
-      + '<div>' + chk('past', '+ past days\' profiles') + '</div>'
-      + '<div>Right side ' + sel('right', [['none', 'none'], ['comp', 'composite ±band'], ['visit', 'last visit'], ['leg', 'last zigzag leg'], ['curleg', 'current zigzag leg']]) + '</div>'
-      + '<div>Composite lookback ' + sel('look', [['5', '5 days'], ['10', '10 days'], ['20', '20 days'], ['visit', 'since last visit']]) + ' band ±' + sel('band', [[25, 25], [50, 50], [100, 100]]) + '</div>'
-      + '<div>Zigzag ' + sel('legTf', [['M5', 'M5'], ['H1', 'H1']]) + '</div>'
+      + '<div>' + chk('day', 'Today\'s developing profile (this week\'s on D1)') + '</div>'
+      + '<div>' + chk('past', '+ past days\' profiles (weeks on D1)') + '</div>'
+      + '<div>' + chk('vis', 'Last visit → now, ±' + BAND + ' pt (right edge)') + '</div>'
+      + '<div>HVN / LVN: smoothing ' + sel('bw', [[1, '1 pt'], [2, '2 pt'], [4, '4 pt']]) + ' prominence ' + sel('prom', [[10, '10%'], [20, '20%'], [30, '30%']]) + '</div>'
       + '<div>Levels: last ' + sel('dN', [[0, 0], [1, 1], [3, 3], [5, 5], [10, 10]]) + ' days, ' + sel('wN', [[0, 0], [1, 1], [2, 2], [4, 4]]) + ' weeks</div>'
       + '<div>' + chk('naked', 'naked levels only') + ' confluence ±' + sel('tol', [[0.5, '0.5'], [1, '1'], [2, '2']]) + ' pt</div>'
       + '<div>Value area ' + sel('va', [[68, '68%'], [70, '70%']]) + '</div>';
     const r = btn.getBoundingClientRect();
-    document.body.appendChild(box);
-    box.style.left = (Math.max(8, Math.min(r.left, window.innerWidth - box.offsetWidth - 8)) + window.scrollX) + 'px';
-    box.style.top = (r.bottom + window.scrollY + 4) + 'px';
+    (document.fullscreenElement || document.body).appendChild(box);   // in full screen only that element's children show
+    box.style.left = Math.max(8, Math.min(r.left, window.innerWidth - box.offsetWidth - 8)) + 'px';
+    box.style.top = Math.max(4, Math.min(r.bottom + 4, window.innerHeight - box.offsetHeight - 8)) + 'px';
     box.addEventListener('change', (e) => {
       const f = e.target.dataset.f;
       if (!f) return;
@@ -350,7 +356,7 @@
     }, true), 0);
   }
   const css = document.createElement('style');
-  css.textContent = '.vp-pop{position:absolute;z-index:50;background:#131722;border:1px solid #363a45;border-radius:6px;padding:8px 10px;'
+  css.textContent = '.vp-pop{position:fixed;z-index:100001;background:#131722;border:1px solid #363a45;border-radius:6px;padding:8px 10px;'
     + 'font:12px Courier New,monospace;color:#d1d4dc;display:flex;flex-direction:column;gap:6px;box-shadow:0 4px 18px rgba(0,0,0,.5)}'
     + '.vp-pop select{background:#1b2330;color:#e5e7eb;border:1px solid #334155;border-radius:3px;font:12px Courier New,monospace}'
     + '.vp-pop .vp-h{font-weight:bold;color:#fff}';
@@ -380,6 +386,6 @@
       b.addEventListener('click', (e) => { e.stopPropagation(); popover(b); });
       bar.insertBefore(b, bar.querySelector('.fs-btn') || null);
     },
-    _test: { valueArea, profile, compute, visit },
+    _test: { valueArea, profile, compute, visit, panes },
   };
 })();

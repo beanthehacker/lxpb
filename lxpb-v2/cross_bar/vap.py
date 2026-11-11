@@ -66,7 +66,9 @@ def minutes(start, end):
             continue
         rec = np.asarray(mm[i:j])
         rec = rec[~np.isnan(rec["Close"]) & (rec["Volume"] > 0)]
-        t = (rec["Time"].astype(np.int64) - _SHIFT_US) // 60_000_000 * 60
+        if not len(rec):
+            continue
+        t =(rec["Time"].astype(np.int64) - _SHIFT_US) // 60_000_000 * 60
         tk = np.rint(rec["Close"].astype(np.float64) / TICK).astype(np.int64) + int(round(r.offset / TICK))
         t0, k0 = int(t.min()), int(tk.min())
         key = (t - t0) // 60 * 65536 + (tk - k0)
@@ -97,6 +99,32 @@ def buckets(start, end, sec=60):
         out.append(v[(v["t"] >= start.value // 10**9) & (v["t"] < end.value // 10**9)])   # range ends on bucket edges
         d = e
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame(columns=["t", "tick", "vol", "ask"])
+
+
+def trading_days(start, end):
+    """Volume at price per TRADING DAY (15:00 PT the day before to 15:00 PT; t = the day's start, unix s) for start <= t < end,
+    both trading-day starts. Read one UTC day at a time like `buckets`, each day's ticks summed per trading day it touches."""
+    start, end = pd.Timestamp(start).tz_convert("UTC"), pd.Timestamp(end).tz_convert("UTC")
+    out, d = [], start.normalize()
+    while d < end:
+        e = d + pd.Timedelta(days=1)
+        k = (d.value, "D")
+        if k not in _DAY_MEMO:
+            v = minutes(d, e)
+            if len(v):
+                ut = np.unique(v["t"].to_numpy())
+                loc = pd.to_datetime(ut, unit="s", utc=True).tz_convert("America/Los_Angeles").tz_localize(None)
+                day = ((loc - pd.Timedelta(hours=15)).normalize() + pd.Timedelta(hours=15)).tz_localize(
+                    "America/Los_Angeles", ambiguous=True, nonexistent="shift_forward")
+                tday = pd.Series(day.asi8 // 10**9, index=ut)
+                v = v.assign(t=v["t"].map(tday)).groupby(["t", "tick"], sort=True)[["vol", "ask"]].sum().reset_index()
+            _DAY_MEMO[k] = v
+        out.append(_DAY_MEMO[k])
+        d = e
+    if not out:
+        return pd.DataFrame(columns=["t", "tick", "vol", "ask"])
+    v = pd.concat(out, ignore_index=True).groupby(["t", "tick"], sort=True)[["vol", "ask"]].sum().reset_index()
+    return v[(v["t"] >= start.value // 10**9) & (v["t"] < end.value // 10**9)]
 
 
 def coarsen(v, sec):
