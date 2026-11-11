@@ -682,8 +682,9 @@ target, M1 fade managed bracket WITHOUT the RR floor (needs a target): thrust-P1
 "Levels: stop or 1R first" column judges every level on its own (no seat, no trail, no EOD flat, same second = stop).
 `h1_cross_bar_trades_2026` (115 bars) is gzipped into `public/reports/cross_bar/`, NOT public: 82 trades, 39% win, -4.7R;
 levels 118/234 1R first. `cross_bar/level_race_trail.py` = the same levels with a 1R target + trail: +15.6R, 53% win; 56 of 83
-cross bars with decided levels have at least one winner (49 in the plain race). Regen: `--all --since 2026-01-01 --label
-"2026 Jan 2 - Oct 26"`, then gzip.
+cross bars with decided levels have at least one winner (49 in the plain race). Regen: `--all --since 2026-01-01 --vp --label
+"2026 Jan 2 - Oct 26"`, then gzip the page and every `_data/*.js` (last regen 2026-11-11 PT with the volume profile, NQ chart and
+20-day swing window: 115 rows, 25 without NQ, data ~63 MB gzipped).
 
 Cross bar FORWARD REPLAY + manual trades (user, 2026-11-03), same report, which since then shows NO automated trade (user,
 2026-11-03: no automated entry / exit / R / race columns or boxes, no M5 trade / M2-LXPB panes; the functions stay for
