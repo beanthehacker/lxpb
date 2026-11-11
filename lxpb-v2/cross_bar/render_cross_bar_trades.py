@@ -42,8 +42,8 @@ stop or target ends it (a second reaching both = the stop; no end-of-day flat). 
 its own file next to the page (<page name>_data/<row key>.js), loaded when the row opens.
 
 NQ CHART (user, 2026-11-10): an NQ chart beside the ES one (side by side; one column on a narrow screen), same timeframes and candle building, from
-E:\data_source (nq_data.load_nq: NQ continuous, back-adjusted exactly as TradingView's NQ1!; its 1-minute bars have a hole from
-2025-05-09 14:00 PT to 2026-03-16 15:00 PT, no tick files for it, so the rows in it have no NQ chart). Each row's
+E:\data_source (nq_data.load_nq: NQ continuous, back-adjusted exactly as TradingView's NQ1!; a row whose stretch has no NQ 1-minute
+bars there shows a note instead). Each row's
 data file carries NQ H1 / M1 bars over the same stretches as ES. "NQ sync" (on by default, kept in the browser): on = NQ replays
 at the ES time and stepping either chart moves both; off = NQ keeps its own time (stepped from its own chart, or the replay bar /
 arrow keys after clicking it) and ES stays put; back on = NQ jumps to the ES time. NQ shows only where the ES cross bar is (its
@@ -486,7 +486,7 @@ function _renderTf(i, pane) {
   if (!el || !st.data) return;
   if (_isN(pane) && !st.data.nq) {
     const t = document.getElementById('t-n-' + i);
-    if (t) t.textContent = 'NQ  |  no NQ 1-minute bars for this row (data_source has none from 2025-05-09 to 2026-03-16 PT: no NQ tick files for it)';
+    if (t) t.textContent = 'NQ  |  no NQ 1-minute bars for this row in E:\\data_source';
     el.style.height = '0px';
     return;
   }
@@ -1071,8 +1071,7 @@ Manual columns show it as of the row's replay time (open = last price), and the 
 Manual R = (exit - fill) / (entry - stop), P&amp;L $ = R x the risk $ in the tool's settings (gear). Boxes, replay times
 and settings are kept in this browser.</p>
 <p class="lead">NQ CHART. Beside the ES chart ("&minus; NQ chart" hides it and ES takes the full width), with its own timeframe buttons, built the same way from the
-NQ continuous series in E:\data_source (back-adjusted exactly as TradingView's NQ1!; it has no NQ 1-minute bars from 2025-05-09 to
-2026-03-16, so the rows in that stretch have no NQ chart). "NQ sync on": NQ replays with ES, and stepping either chart moves both. "NQ sync off": NQ keeps its own replay time, so
+NQ continuous series in E:\data_source (back-adjusted exactly as TradingView's NQ1!). "NQ sync on": NQ replays with ES, and stepping either chart moves both. "NQ sync off": NQ keeps its own replay time, so
 stepping the NQ chart (its arrows, or the replay bar and arrow keys after clicking it) moves NQ only and ES stays put; turning sync
 back on brings NQ to the ES time. The position tool, drawings and volume profile are on the ES charts only.</p>
 <div class="summary">
