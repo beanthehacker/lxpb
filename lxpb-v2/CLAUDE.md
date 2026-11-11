@@ -694,7 +694,7 @@ that closes back above the swept swing low (below the swept high, bearish) at or
 so the cross bar is still forming and may not end up confirmed; ⏮ / back steps stop there. It steps one candle of its own timeframe (title
 arrows, replay bar, arrow keys, Play that pauses at the manual fill / exit); candles are built in the page as they stood at the replay
 time (last one forming) from the row's H1 bars before the cross bar's hour (history of H1 and up, 150 days) and M1 bars (6 trading days of history + the window; charts open with 400 candles in view and the right 20% blank). Both histories reach back at least to the last visit of the area (`last_visit`, user 2026-11-09): the trading day in which price last traded within 50 pt of the cross bar's trading-day open before it left that band; none found = the defaults. Replay window (`replay_window`): >= 1 trading day (1,380 M1 bars) past the close, on until
-every P0 price of the bar (M5 and M2 entry levels not touched before the close) is revisited + 60 bars, at most 5 trading days.
+every P0 price of the bar (M5 and M2 entry levels not touched before the close) is revisited + 60 bars, at most 5 trading days, AND (user 2026-11-11) on until the farthest swing price (swept + older swings: lowest for bullish, highest for bearish) is traded again + 60 bars, at most 20 trading days (`MAX_SWING_M1`).
 Position tool `public/js/position-tool.js` (TradingView-like, magnet to O/H/L/C): ONE box per row, kept in time + price, drawn on
 every pane. The ENTRY IS A PRICE: filled when price trades there again after the candle the box sits on (from the replay time when
 that candle is still forming); judged on the 1 s path (`s1_pack`: seconds not inside the previous kept second's range, per minute,
@@ -703,6 +703,12 @@ exact for first touches): first second reaching stop or target, same second both
 Per-row data (H1 + M1 + 1 s path) is a side file `<report>_data/<row key>.js` loaded by script tag; committed as `.js.gz` next to the
 report and inflated by `scripts/decompress-gz-reports.mjs`. Boxes, replay times and settings live in the browser's localStorage.
 Drawings (user, 2026-11-08, same file): TradingView-style horizontal rays (Alt+J) and rectangles (Alt+Shift+R), any number per row, shared by both panes, kept in time + price, magnet-snapped; hover shows points, drag points / line / inside, Delete, double-click = colour (7 swatches: blue, orange, red, bright green, dark green, white, pink) / width / style / prices.
+NQ chart (user, 2026-11-10, same file): an NQ chart BESIDE the ES one (own timeframe buttons, "- NQ chart" hides it and ES takes
+the full width), from `E:\data_source` (`nq_data.load_nq`, NQ back-adjusted exactly as TradingView's NQ1!; data_source is the single
+source of truth, never build NQ bars here). Its 1-minute bars have no data from 2025-05-09 14:00 PT to 2026-03-16 15:00 PT (no NQ
+tick files for ENQM25's tail, ENQU25, ENQZ25, ENQH26), so the Jan 9 - Mar 13 2026 rows have no NQ chart. "NQ sync" on = NQ replays
+with ES, stepping either moves both; off = NQ steps on its own, ES stays put; back on = NQ jumps to the ES time. Position tool /
+drawings / VP: ES only.
 
 # Trap variants (`trap_variants.py`)
 

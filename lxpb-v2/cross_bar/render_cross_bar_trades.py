@@ -34,12 +34,20 @@ the swept high for a bearish bar) after price traded below it (above it), the re
 forming then and may not end up confirmed. It steps forward one candle of its timeframe at a time, its candles as they stood at
 the replay time (the last one still forming), built in the page from the row's H1 bars before the cross bar's hour (history of
 H1 and up) and M1 bars (history of M30 and below, and everything from the cross bar's hour on). The replay window runs at least MIN_FUTURE_M1 M1 bars past the close, on until every P0 price of
-the cross bar (its M5 and M2 entry levels not touched before the close) has been revisited, at most MAX_FUTURE_M1 bars
-(replay_window). The long / short position tool (public/js/position-tool.js) keeps ONE manual trade per row, in time and price, so
+the cross bar (its M5 and M2 entry levels not touched before the close) has been revisited, at most MAX_FUTURE_M1 bars, and on
+until the farthest swing price (the swept swing and the older swings) is traded again, at most MAX_SWING_M1 bars (replay_window). The long / short position tool (public/js/position-tool.js) keeps ONE manual trade per row, in time and price, so
 it stays put through a timeframe switch. It is judged on the 1 s price path: entered when price trades at its entry price again
 after the candle it was drawn on (or from the replay time when that candle is still forming), then the first second reaching its
 stop or target ends it (a second reaching both = the stop; no end-of-day flat). The H1 / M1 bars and the path of each row are in
 its own file next to the page (<page name>_data/<row key>.js), loaded when the row opens.
+
+NQ CHART (user, 2026-11-10): an NQ chart beside the ES one (side by side; one column on a narrow screen), same timeframes and candle building, from
+E:\data_source (nq_data.load_nq: NQ continuous, back-adjusted exactly as TradingView's NQ1!; its 1-minute bars have a hole from
+2025-05-09 14:00 PT to 2026-03-16 15:00 PT, no tick files for it, so the rows in it have no NQ chart). Each row's
+data file carries NQ H1 / M1 bars over the same stretches as ES. "NQ sync" (on by default, kept in the browser): on = NQ replays
+at the ES time and stepping either chart moves both; off = NQ keeps its own time (stepped from its own chart, or the replay bar /
+arrow keys after clicking it) and ES stays put; back on = NQ jumps to the ES time. NQ shows only where the ES cross bar is (its
+swing prices are ES prices); the position tool, drawings and volume profile stay on the ES charts.
 
 Usage:
     python cross_bar/render_cross_bar_trades.py --last 5 --output <file>.html
@@ -56,6 +64,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 import render_cross_bar_report as CB              # noqa: E402  (sets up the import paths)
 from es_data import load_es                       # noqa: E402
+import vap                                        # noqa: E402  (volume at price from the .scid ticks, for the volume profiles)
+from nq_data import load_nq                       # noqa: E402  (E:\data_source: NQ continuous, for the NQ chart)
 
 PT = CB.PT
 TICK = 0.25
@@ -65,12 +75,16 @@ EOD_FLAT = pd.Timedelta(hours=12, minutes=45)
 EOD_LEAD = pd.Timedelta(minutes=1)
 REOPEN = pd.Timedelta(hours=15)
 MIN_FUTURE_M1 = 1380                  # replay window: at least this many M1 bars (one trading day, 23 h) past the cross bar ...
-MAX_FUTURE_M1 = 5 * 1380              # ... at most five trading days
+MAX_FUTURE_M1 = 5 * 1380              # ... at most five trading days for the P0 prices
+MAX_SWING_M1 = 20 * 1380              # ... and on until the farthest swept / older swing price is traded again, at most 20 (user 2026-11-11)
 H1_HISTORY = pd.Timedelta(days=150)   # H1 bars before the close in a row's data file (D1 / H4 / H1 history: ~100 D1 candles)
 M1_HISTORY = 6 * 1380                 # M1 bars before the close (M30 and below: ~270 M30 candles; user 2026-11-09: was 3 days)
 VISIT_BAND = 50.0                     # ... both reach back at least to the last visit of the day's open +- this many points
 S1_HISTORY = 100                      # the 1 s path starts this many M5 candles before the cross bar's hour
 REVISIT_PAD = 60                      # ... and this many M1 bars past the last P0 price's revisit
+VP_JS = os.path.join(CB._REPO_ROOT, "public", "js", "volume-profile.js")     # volume profiles (sample, --vp)
+VP_COARSE = 1800                      # volume at price per 30 minutes before the M1 history, per minute from there on
+VP_DAYS = 35                          # ... reaching back at least this many days (weekly levels, 20-day composite)
 POS_TOOL_JS = os.path.join(CB._REPO_ROOT, "public", "js", "position-tool.js")   # TradingView-style long / short position tool
 
 
@@ -290,7 +304,15 @@ MANUAL_CSS = """<style>
 .replay-bar button.on { background: #2962ff; color: #fff; }
 .replay-bar .rp-time { color: #e5e7eb; font-weight: bold; }
 .pos-btn.tf-btn { padding: 0 4px; }
-.pane-b.hidden { display: none; }
+.pane-b.hidden, .pane-n.hidden { display: none; }
+/* ES and NQ side by side (one column on a narrow screen, or when NQ is hidden) */
+.es-nq-row { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.es-nq-row.two { grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); }
+.es-nq-row > .chart-cell { min-width: 0; }
+/* the plot takes whatever height the title bar (one or two lines of buttons) and the notes strip leave, so the time axis
+   is never cut off */
+.chart-stack .chart-cell { display: flex; flex-direction: column; }
+.chart-stack .chart-cell > .chart-ph { flex: 1 1 0; min-height: 0; height: auto !important; }
 td.man-entry, td.man-exit { white-space: nowrap; }
 </style>"""
 
@@ -308,7 +330,8 @@ MANUAL_JS = r"""
 const _DATA_DIR = '__DATA_DIR__';
 const _TFS = ['D1', 'H4', 'H1', 'M30', 'M15', 'M5', 'M2', 'M1'];
 const _LEN = { D1: 86400, H4: 14400, H1: 3600, M30: 1800, M15: 900, M5: 300, M2: 120, M1: 60 };
-const _DEF_TF = { a: 'H1', b: 'M5' };
+const _DEF_TF = { a: 'H1', b: 'M5', n: 'H1' };
+let _SYNC = true;                                           // the NQ chart replays with ES (localStorage, below)
 const _NEAR = 400;                                          // candles in view when a chart opens or switches timeframe
 const _BLANK = 0.2;                                         // ... and the share of the chart left blank right of the last one
 const _RP = {};
@@ -319,12 +342,15 @@ const _lsSet = (k, v) => { try { localStorage.setItem('postool_v1_' + k, JSON.st
 function _rp(i) {
   if (!_RP[i]) {
     const cd = CHARTS[i];
-    _RP[i] = { start: cd.start, end: cd.end, T: Math.max(cd.start, Math.min(cd.end, _ls('cursor2_' + _FILE + '_' + _key(i), cd.start))),
+    const clampT = (t) => Math.max(cd.start, Math.min(cd.end, t));
+    _RP[i] = { start: cd.start, end: cd.end, T: clampT(_ls('cursor2_' + _FILE + '_' + _key(i), cd.start)),
                data: null, panes: {}, hist: {}, res: null, play: null,
-               tf: { a: _DEF_TF.a, b: _DEF_TF.b } };   // every row opens on H1 (2nd chart M5), whatever was picked before
+               tf: { a: _DEF_TF.a, b: _DEF_TF.b, n: _DEF_TF.n } };   // every row opens on H1 (2nd chart M5, NQ H1), whatever was picked before
+    _RP[i].Tn = _SYNC ? _RP[i].T : clampT(_ls('cursorN_' + _FILE + '_' + _key(i), _RP[i].T));   // the NQ chart's own time (sync off)
   }
   return _RP[i];
 }
+_SYNC = _ls('nq_sync_' + _FILE, true);
 const _lb = (a, t) => { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] < t) lo = m + 1; else hi = m; } return lo; };
 
 // ---- PT clock: D1 / H4 candles are anchored at 15:00 PT
@@ -362,8 +388,14 @@ function _decode(d) {
   const s = d.s1, n = s.r.length / 3, T = new Float64Array(n), L = new Float64Array(n), Hi = new Float64Array(n);
   let ts = s.t0, lo = s.b;
   for (let k = 0; k < n; k++) { ts += s.r[3 * k]; lo += s.r[3 * k + 1]; T[k] = ts; L[k] = lo * 0.25; Hi[k] = (lo + s.r[3 * k + 2]) * 0.25; }
-  return { m1: M, m1t: M.map(c => c.time), h1: H, h1t: H.map(c => c.time), s1: { n, t: T, lo: L, hi: Hi } };
+  const q = d.nq && d.nq.m1 ? { m1: _bars(d.nq.m1), h1: d.nq.h1 ? _bars(d.nq.h1) : [] } : null;
+  if (q) { q.m1t = q.m1.map(c => c.time); q.h1t = q.h1.map(c => c.time); }
+  return { m1: M, m1t: M.map(c => c.time), h1: H, h1t: H.map(c => c.time), s1: { n, t: T, lo: L, hi: Hi }, vp: d.vp, nq: q };
 }
+// the NQ chart (pane 'n') reads the row's NQ bars and, with sync off, its own replay time
+const _isN = (pane) => pane === 'n';
+const _src = (i, pane) => (_isN(pane) ? _rp(i).data.nq : _rp(i).data);
+const _Tof = (i, pane) => (_isN(pane) && !_SYNC ? _rp(i).Tn : _rp(i).T);
 window.__replayData = (key, d) => {
   document.querySelectorAll('tr.lvl-row').forEach(tr => {
     if (tr.dataset.key !== key) return;
@@ -396,28 +428,35 @@ function _agg(src, srcT, a, b, tf, out, own) {              // bars of src with 
     } else out.push({ time: bt, open: c.open, high: c.high, low: c.low, close: c.close });
   }
 }
-function _hist(i, tf) {                                     // the tf candles before the cross bar's hour (H1 bars for H1 and up, else M1)
-  const st = _rp(i), h0 = CHARTS[i].crossT;
-  if (!st.hist[tf]) {
-    const out = [], D = st.data;
-    if (_LEN[tf] >= 3600) _agg(D.h1, D.h1t, null, h0, tf, out, { from: 0 });
-    else _agg(D.m1, D.m1t, null, h0, tf, out, { from: 0 });
-    st.hist[tf] = out;
+function _hist(i, tf, pane) {                               // the tf candles before the cross bar's hour (H1 bars for H1 and up, else M1)
+  const st = _rp(i), h0 = CHARTS[i].crossT, k = (_isN(pane) ? 'n' : '') + tf;
+  if (!st.hist[k]) {
+    const out = [], D = _src(i, pane);
+    if (_LEN[tf] >= 3600 && D.h1.length) _agg(D.h1, D.h1t, null, h0, tf, out, { from: 0 });
+    else _agg(D.m1, D.m1t, null, h0, tf, out, { from: 0 });   // (NQ with no H1 history: its M1 bars)
+    st.hist[k] = out;
   }
-  return st.hist[tf];
+  return st.hist[k];
 }
-function _barsAt(i, tf) {
-  const st = _rp(i), h = _hist(i, tf), out = h.slice();
-  _agg(st.data.m1, st.data.m1t, CHARTS[i].crossT, st.T, tf, out, { from: h.length });   // a D1 / H4 candle open at the hour goes on
+function _barsAt(i, tf, pane) {                             // pane 'n' = NQ; anything else (or none) = ES
+  const D = _src(i, pane), h = _hist(i, tf, pane), out = h.slice();
+  _agg(D.m1, D.m1t, CHARTS[i].crossT, _Tof(i, pane), tf, out, { from: h.length });   // a D1 / H4 candle open at the hour goes on
   return out;
 }
 
 // ---- one chart: candles + the cross bar's marks for its timeframe
 function _paneCd(i, pane) {
-  const st = _rp(i), m = CHARTS[i], tf = st.tf[pane], bars = _barsAt(i, tf), len = _LEN[tf];
+  const st = _rp(i), m = CHARTS[i], tf = st.tf[pane], bars = _barsAt(i, tf, pane), len = _LEN[tf];
   const times = bars.map(c => c.time);
   const snap = (t) => times[Math.max(0, _lb(times, _bucket(t, tf) + 1) - 1)];
   const up = m.bull, side = up ? 'belowBar' : 'aboveBar';
+  if (_isN(pane)) {                                         // NQ: only where the ES cross bar is (its prices are ES prices)
+    const cdN = { title: 'NQ·' + tf, tfName: tf, barSec: len, candles: bars, priceLines: [], rays: [], notes: [], precision: 2, dateOnly: false,
+                  markers: len >= 3600 ? [{ time: snap(m.crossT), position: side, color: m.color, shape: up ? 'arrowUp' : 'arrowDown', text: 'ES cross bar', size: 2 }] : [],
+                  vlines: len < 3600 ? [{ time: snap(m.crossT), color: m.color, label: 'ES H1 cross bar ' + m.crossLabel }] : [] };
+    cdN.fit = (chart) => { const n = (cdN.live || cdN.candles).length; chart.timeScale().setVisibleLogicalRange({ from: n - _NEAR, to: n + _NEAR * _BLANK / (1 - _BLANK) }); };
+    return cdN;
+  }
   const markers = [];
   if (len >= 3600) markers.push({ time: snap(m.crossT), position: side, color: m.color, shape: up ? 'arrowUp' : 'arrowDown', text: 'cross bar', size: 2 });
   else markers.push({ time: snap(m.sweepT), position: side, color: m.color, shape: 'circle', text: 'swept' });   // first candle past the swing
@@ -445,6 +484,12 @@ function _renderTf(i, pane) {
   const st = _rp(i), old = st.panes[pane];
   let el = document.getElementById('c-' + pane + '-' + i);
   if (!el || !st.data) return;
+  if (_isN(pane) && !st.data.nq) {
+    const t = document.getElementById('t-n-' + i);
+    if (t) t.textContent = 'NQ  |  no NQ 1-minute bars for this row (data_source has none from 2025-05-09 to 2026-03-16 PT: no NQ tick files for it)';
+    el.style.height = '0px';
+    return;
+  }
   if (old) {                                                // a fresh plot element: the old chart's listeners go with it
     try { old.chart.remove(); } catch (e) { /* already gone */ }
     const fresh = el.cloneNode(false);
@@ -458,7 +503,7 @@ function _renderTf(i, pane) {
 function _apply(i) {
   const st = _rp(i);
   Object.keys(st.panes).forEach(pane => {
-    const p = st.panes[pane], bars = _barsAt(i, st.tf[pane]);
+    const p = st.panes[pane], bars = _barsAt(i, st.tf[pane], pane);
     const ts = p.chart.timeScale(), vr = ts.getVisibleLogicalRange(), n0 = (p.cd.live || p.cd.candles).length;
     p.cd.live = bars;
     p.series.setData(bars);
@@ -473,21 +518,27 @@ function _apply(i) {
   _fillRow(i);
   _manualStats();
 }
-function _setT(i, T) {
+function _setT(i, T, pane) {                                // pane 'n' with sync off moves the NQ chart only; anything else moves ES (and NQ when synced)
   const st = _rp(i);
-  st.T = Math.max(st.start, Math.min(st.end, T));
-  _lsSet('cursor2_' + _FILE + '_' + _key(i), st.T);
+  T = Math.max(st.start, Math.min(st.end, T));
+  if (_isN(pane) && !_SYNC) { st.Tn = T; _lsSet('cursorN_' + _FILE + '_' + _key(i), T); }
+  else {
+    st.T = T;
+    _lsSet('cursor2_' + _FILE + '_' + _key(i), T);
+    if (_SYNC) st.Tn = T;
+  }
   _apply(i);
 }
-function _stepTf(i, tf, dir) {
+function _stepTf(i, tf, dir, pane) {
   const st = _rp(i);
   if (!st.data) return;
-  let T = dir > 0 ? _bucket(st.T, tf) + _LEN[tf] : _bucket(st.T - 1, tf);
+  const D = _src(i, pane) || st.data, T0 = _Tof(i, pane);
+  let T = dir > 0 ? _bucket(T0, tf) + _LEN[tf] : _bucket(T0 - 1, tf);
   if (dir > 0) {                                  // no bars in that step (market closed): on to the end of the candle the next bar is in
-    const nx = st.data.m1[_lb(st.data.m1t, st.T)];
+    const nx = D.m1[_lb(D.m1t, T0)];
     if (nx && nx.time >= T) T = _bucket(nx.time, tf) + _LEN[tf];
   }
-  _setT(i, T);
+  _setT(i, T, pane);
 }
 function _setTf(i, pane, tf) {
   const st = _rp(i);
@@ -503,11 +554,31 @@ function _showB(i, on) {
   if (on && !_rp(i).panes.b) _renderTf(i, 'b');
   _syncBar(i);
 }
+function _showN(i, on) {
+  _lsSet('show_n_' + _FILE, on);
+  const w = document.getElementById('pn-' + i);
+  if (w) w.classList.toggle('hidden', !on);
+  const row = document.getElementById('enr-' + i);
+  const st = _rp(i);
+  if (row) row.classList.toggle('two', on && !!(st.data && st.data.nq));   // side by side; ES full width when NQ is hidden or has no data
+  if (on && !_rp(i).panes.n) _renderTf(i, 'n');
+  _syncBar(i);
+}
+function _setSync(on) {                                     // every row: sync on brings NQ to the ES time
+  _SYNC = on;
+  _lsSet('nq_sync_' + _FILE, on);
+  Object.keys(_RP).forEach(k => {
+    const st = _RP[k];
+    if (on) st.Tn = st.T;
+    if (st.data) _apply(+k); else _syncBar(+k);
+  });
+}
 function _openRow(i) {
   _syncBar(i);
   _load(i, () => {
     _renderTf(i, 'a');
     if (_ls('show_b_' + _FILE, false)) _showB(i, true);
+    if (_ls('show_n_' + _FILE, true)) _showN(i, true);
     _apply(i);
   });
 }
@@ -611,7 +682,9 @@ function _syncBar(i, msg) {
   const bar = document.querySelector('.replay-bar[data-idx="' + i + '"]');
   if (!bar) return;
   const st = _rp(i), r = st.res, tf = st.tf[_paneOf(i)];
-  bar.querySelector('.rp-time').textContent = msg || (st.data ? 'replay at ' + _ptTime(st.T) : 'loading the replay data ...');
+  const wn = document.getElementById('pn-' + i), nOn = !!(wn && !wn.classList.contains('hidden') && st.data && st.data.nq);
+  bar.querySelector('.rp-time').textContent = msg || (!st.data ? 'loading the replay data ...'
+    : !_SYNC && nOn ? 'ES at ' + _ptTime(st.T) + ' · NQ at ' + _ptTime(st.Tn) : 'replay at ' + _ptTime(st.T));
   bar.querySelector('.rp-end').textContent = 'runs to ' + _ptTime(st.end) + ' (' + CHARTS[i].endWhy + ')';
   bar.querySelector('.rp-trade').textContent = !PosTool.getBox(i) ? 'draw a Long / Short on the chart'
     : !r ? '' : r.state === 'waiting' ? 'manual trade: waiting for the entry'
@@ -623,6 +696,9 @@ function _syncBar(i, msg) {
   pb.textContent = st.play ? '❚❚ Pause' : '▶ Play'; pb.classList.toggle('on', !!st.play);
   const w = document.getElementById('pb-' + i), on = w && !w.classList.contains('hidden');
   bar.querySelector('[data-a="second"]').textContent = on ? '− 2nd chart' : '+ 2nd chart';
+  bar.querySelector('[data-a="nq"]').textContent = wn && !wn.classList.contains('hidden') ? '− NQ chart' : '+ NQ chart';
+  const sb = bar.querySelector('[data-a="sync"]');
+  sb.textContent = _SYNC ? 'NQ sync on' : 'NQ sync off'; sb.classList.toggle('on', _SYNC);
   Object.keys(st.panes).forEach(p => document.querySelectorAll('#t-' + p + '-' + i + ' .tf-btn')
     .forEach(b => b.classList.toggle('pos-on', b.dataset.tf === st.tf[p])));
 }
@@ -630,12 +706,12 @@ function _togglePlay(i) {
   const st = _rp(i);
   if (st.play) { clearInterval(st.play); st.play = null; _syncBar(i); return; }
   const bar = document.querySelector('.replay-bar[data-idx="' + i + '"]');
-  const tf = bar.querySelector('[data-a="tf"]').value, ms = +bar.querySelector('[data-a="speed"]').value;
+  const tf = bar.querySelector('[data-a="tf"]').value, ms = +bar.querySelector('[data-a="speed"]').value, pane = _paneOf(i);
   st.play = setInterval(() => {
     const was = st.res ? st.res.state : null;
-    _stepTf(i, tf, 1);
+    _stepTf(i, tf, 1, pane);                      // the chart last clicked (NQ alone when it is NQ and sync is off)
     // pause at the end, and when the manual trade fills or ends
-    if (st.T >= st.end || (st.res && st.res.state !== was && was != null)) { clearInterval(st.play); st.play = null; _syncBar(i); }
+    if (_Tof(i, pane) >= st.end || (st.res && st.res.state !== was && was != null)) { clearInterval(st.play); st.play = null; _syncBar(i); }
   }, ms);
   _syncBar(i);
 }
@@ -643,25 +719,27 @@ document.addEventListener('click', (e) => {
   const btn = e.target.closest('.replay-bar button');
   if (!btn) return;
   e.stopPropagation();
-  const i = +btn.closest('.replay-bar').dataset.idx, a = btn.dataset.a, st = _rp(i), tf = st.tf[_paneOf(i)];
-  if (a === 'fwd') _stepTf(i, tf, 1);
-  else if (a === 'back') _stepTf(i, tf, -1);
-  else if (a === 'start') _setT(i, st.start);
-  else if (a === 'end') _setT(i, st.end);
+  const i = +btn.closest('.replay-bar').dataset.idx, a = btn.dataset.a, st = _rp(i), pane = _paneOf(i), tf = st.tf[pane];
+  if (a === 'fwd') _stepTf(i, tf, 1, pane);
+  else if (a === 'back') _stepTf(i, tf, -1, pane);
+  else if (a === 'start') _setT(i, st.start, pane);
+  else if (a === 'end') _setT(i, st.end, pane);
   else if (a === 'play') _togglePlay(i);
   else if (a === 'second') { const w = document.getElementById('pb-' + i); _showB(i, w.classList.contains('hidden')); }
+  else if (a === 'nq') { const w = document.getElementById('pn-' + i); _showN(i, w.classList.contains('hidden')); }
+  else if (a === 'sync') _setSync(!_SYNC);
 });
 // arrow keys step the chart last clicked by its own candle; 1-8 switch its timeframe (D1 ... M1)
 document.addEventListener('keydown', (e) => {
   if (!_activePane || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName || '') || e.ctrlKey || e.metaKey || e.altKey) return;
   const { i, pane } = _activePane, st = _rp(i);
-  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { _stepTf(i, st.tf[pane], e.key === 'ArrowRight' ? 1 : -1); e.preventDefault(); }
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { _stepTf(i, st.tf[pane], e.key === 'ArrowRight' ? 1 : -1, pane); e.preventDefault(); }
   else if (/^[1-8]$/.test(e.key)) { _setTf(i, pane, _TFS[+e.key - 1]); e.preventDefault(); }
 });
 
 const Replay = {
   attach(chart, series, el, titleEl, cd) {
-    const m = /^c-(a|b)-(\d+)$/.exec(el.id || '');
+    const m = /^c-(a|b|n)-(\d+)$/.exec(el.id || '');
     if (!m) return;
     const pane = m[1], i = +m[2], st = _rp(i);
     st.panes[pane] = { chart, series, cd };
@@ -670,7 +748,13 @@ const Replay = {
       chart.applyOptions({ timeScale: { tickMarkFormatter: f }, localization: { timeFormatter: f } });
     }
     el.addEventListener('pointerdown', () => { _activePane = { i, pane }; _syncBar(i); }, true);
-    const bar = titleEl.querySelector('.pos-bar') || titleEl;
+    let bar = titleEl.querySelector('.pos-bar');
+    if (!bar) {                                     // a pane without the position tool (NQ): the same button cell, by the full-screen button
+      const f0 = titleEl.querySelector('.fs-btn');
+      bar = document.createElement('span'); bar.className = 'pos-bar';
+      titleEl.insertBefore(bar, f0);
+      if (f0) bar.appendChild(f0);
+    }
     const fs = bar.querySelector('.fs-btn');
     const mk = (txt, title, fn, cls) => {
       const b = document.createElement('button');
@@ -681,8 +765,8 @@ const Replay = {
       return b;
     };
     _TFS.forEach((tf, k) => { mk(tf, 'Show ' + tf + ' candles (key ' + (k + 1) + ')', () => _setTf(i, pane, tf), 'tf-btn').dataset.tf = tf; });
-    mk('◀', 'Replay back one candle of this chart (left arrow)', () => _stepTf(i, st.tf[pane], -1));
-    mk('▶', 'Replay forward one candle of this chart (right arrow)', () => _stepTf(i, st.tf[pane], 1));
+    mk('◀', 'Replay back one candle of this chart (left arrow)', () => _stepTf(i, st.tf[pane], -1, pane));
+    mk('▶', 'Replay forward one candle of this chart (right arrow)', () => _stepTf(i, st.tf[pane], 1, pane));
     _syncBar(i);
   },
 };
@@ -740,9 +824,31 @@ def replay_start(m2, row):
     return inside.index[k0], inside.index[k0 + hit[0]] + pd.Timedelta(minutes=2)
 
 
-def replay_window(m1, closed, levels):
+def replay_window(m1, closed, levels, swing_px=None, bull=True):
     """(last M1 bar of the replay, why): at least MIN_FUTURE_M1 bars past the cross bar's close, on until every level in
-    `levels` not already touched before the close has been revisited (+ REVISIT_PAD bars), at most MAX_FUTURE_M1 bars."""
+    `levels` not already touched before the close has been revisited (+ REVISIT_PAD bars), at most MAX_FUTURE_M1 bars; and
+    (user 2026-11-11) on until the farthest of the swing prices `swing_px` (the swept swing and the older swings: the lowest
+    for a bullish bar, the highest for a bearish one) is traded again after the close (+ REVISIT_PAD), at most MAX_SWING_M1."""
+    k_p0, why_p0 = _p0_window(m1, closed, levels)
+    if not swing_px:
+        return m1.index[k_p0], why_p0
+    c0 = int(m1.index.searchsorted(closed))
+    far = min(swing_px) if bull else max(swing_px)
+    after = m1.iloc[c0: c0 + MAX_SWING_M1]
+    hit = np.flatnonzero((after["low"] <= far).to_numpy() if bull else (after["high"] >= far).to_numpy())
+    if len(hit):
+        k_sw = c0 + int(hit[0]) + REVISIT_PAD
+        why_sw = f"the farthest swing price {far:.2f} traded again {CB._pt(after.index[hit[0]])}"
+    else:
+        k_sw = c0 + MAX_SWING_M1 - 1
+        why_sw = f"20 trading days: the farthest swing price {far:.2f} is not traded again by then"
+    if k_sw <= k_p0:
+        return m1.index[k_p0], why_p0
+    k = min(k_sw, len(m1) - 1)
+    return m1.index[k], why_sw + ("; cut at the data's end" if k == len(m1) - 1 else "")
+
+
+def _p0_window(m1, closed, levels):
     c0 = int(m1.index.searchsorted(closed))
     lo, hi = c0 + MIN_FUTURE_M1 - 1, c0 + MAX_FUTURE_M1 - 1
     live = levels[~(levels["retest_time"] < closed)]
@@ -760,7 +866,7 @@ def replay_window(m1, closed, levels):
     k = min(k, len(m1) - 1)
     if k == len(m1) - 1:
         why += "; cut at the data's end"
-    return m1.index[k], why
+    return k, why
 
 
 def s1_pack(s):
@@ -827,15 +933,20 @@ def _row_html(i, row):
       <select data-a="speed" title="Play speed"><option value="1000">1 / s</option><option value="400" selected>2.5 / s</option><option value="150">7 / s</option></select>
       <button type="button" data-a="end" title="Jump to the end of the replay window">\u23ed</button>
       <button type="button" data-a="second" title="A second chart under the first, with its own timeframe"></button>
+      <button type="button" data-a="nq" title="The NQ chart beside the ES chart"></button>
+      <button type="button" data-a="sync" title="On: the NQ chart replays with ES (stepping either one moves both). Off: it keeps its own replay time, so NQ can be stepped on its own"></button>
       <span class="rp-time"></span><span class="rp-trade"></span><span class="rp-end src-tag"></span>
     </div>
-    <div class="chart-cell chart-pane"><div class="chart-title" id="t-a-{i}"></div><div class="chart-ph" id="c-a-{i}"></div></div>
+    <div class="es-nq-row" id="enr-{i}">
+      <div class="chart-cell chart-pane"><div class="chart-title" id="t-a-{i}"></div><div class="chart-ph" id="c-a-{i}"></div></div>
+      <div class="chart-cell chart-pane pane-n hidden" id="pn-{i}"><div class="chart-title" id="t-n-{i}"></div><div class="chart-ph" id="c-n-{i}"></div></div>
+    </div>
     <div class="chart-cell chart-pane pane-b hidden" id="pb-{i}"><div class="chart-title" id="t-b-{i}"></div><div class="chart-ph" id="c-b-{i}"></div></div>
   </div></td>
 </tr>"""
 
 
-def render(rows, h1, output, label):
+def render(rows, h1, output, label, vp=False):
     data_dir = os.path.splitext(output)[0] + "_data"
     os.makedirs(data_dir, exist_ok=True)
     visits = {t: last_visit(h1, t) for t in rows.index}
@@ -846,12 +957,15 @@ def render(rows, h1, output, label):
     led2 = CB.ledger(m2)
     m1 = load_es("1m", start=min([lo] + [v for v in visits.values() if v is not None]), tz=PT)[["open", "high", "low", "close"]]
     h1b = h1[["open", "high", "low", "close"]]
+    nq_m1 = load_nq("1m", start=m1.index[0], tz=PT)[["open", "high", "low", "close"]]
+    nq_h1 = load_nq("1h", tz=PT)[["open", "high", "low", "close"]]
     charts, trs = [], []
     for i, row in enumerate(rows.itertuples()):
         older = CB.older_swings(h1, h1.index.get_loc(row.Index), row.swing_time, row.swing_price, row.bullish)
         t, bull = row.Index, row.bullish
         closed = t + pd.Timedelta(hours=1)
-        until, end_why = replay_window(m1, closed, pd.concat([candidates(led, row), candidates(led2, row)]))
+        until, end_why = replay_window(m1, closed, pd.concat([candidates(led, row), candidates(led2, row)]),
+                                       [float(row.swing_price)] + [op for _, op, _ in older], bool(row.bullish))
         gone_t, start_t = replay_start(m2, row)
         side = "low" if bull else "high"
         chart = {"crossT": int(t.timestamp()), "close": int(closed.timestamp()), "start": int(start_t.timestamp()),
@@ -878,16 +992,32 @@ def render(rows, h1, output, label):
         start = m5.index[max(0, p5 - S1_HISTORY)]
         stop = until + pd.Timedelta(minutes=1)
         key = _row_key(row)
+        payload = {"h1": m1_pack(h1b[(h1b.index >= h1_from) & (h1b.index < t)]),
+                   "m1": m1_pack(m1.iloc[max(0, m1_from): int(m1.index.searchsorted(until, side="right"))]),
+                   "s1": s1_pack(s1_between(start, stop))}
+        # NQ (the NQ chart): the same stretches of H1 and M1 bars, where the NQ ticks reach
+        a1 = m1.index[max(0, m1_from)]
+        nqm = nq_m1[(nq_m1.index >= a1) & (nq_m1.index <= until)]
+        nqh = nq_h1[(nq_h1.index >= h1_from) & (nq_h1.index < t)]
+        payload["nq"] = ({"h1": m1_pack(nqh) if len(nqh) else None, "m1": m1_pack(nqm)}
+                         if len(nqm) and nqm.index[0] <= t else None)
+        if vp:
+            fine = trading_day(m1.index[max(0, c1 - M1_HISTORY)])
+            coarse = trading_day(min([trading_day(t) - pd.Timedelta(days=VP_DAYS)] + ([visit] if visit is not None else []))
+                                 + pd.Timedelta(hours=2))
+            daily = trading_day(h1_from + pd.Timedelta(hours=2))   # one bucket per trading day over the rest of the H1 history
+            payload["vp"] = {
+                "d": vap.pack(vap.trading_days(daily, coarse), 86400) if daily < coarse else vap.pack(vap.buckets(coarse, coarse), 86400),
+                "c": vap.pack(vap.buckets(coarse, fine, VP_COARSE), VP_COARSE),
+                "f": vap.pack(vap.buckets(fine, stop, 60), 60)}
         with open(os.path.join(data_dir, key + ".js"), "w", encoding="utf-8") as f:
-            f.write("__replayData(" + json.dumps(key) + "," + json.dumps(
-                {"h1": m1_pack(h1b[(h1b.index >= h1_from) & (h1b.index < t)]),
-                 "m1": m1_pack(m1.iloc[max(0, m1_from): int(m1.index.searchsorted(until, side="right"))]),
-                 "s1": s1_pack(s1_between(start, stop))}, separators=(",", ":")) + ");\n")
+            f.write("__replayData(" + json.dumps(key) + "," + json.dumps(payload, separators=(",", ":")) + ");\n")
         chart["end"], chart["endWhy"] = int(stop.timestamp()), end_why
         charts.append(chart)
         trs.append(_row_html(i, row))
         print(f"{CB._pt(row.Index)} {'long ' if row.bullish else 'short'} replay {CB._pt(start_t)} to {CB._pt(until)}: {end_why}; "
-              f"history from {CB._pt(m1.index[max(0, m1_from)])}" + (" (last visit)" if visit is not None and m1_from < c1 - M1_HISTORY else ""))
+              f"history from {CB._pt(m1.index[max(0, m1_from)])}" + (" (last visit)" if visit is not None and m1_from < c1 - M1_HISTORY else "")
+              + ("; no NQ" if payload["nq"] is None else f"; NQ from {CB._pt(nqm.index[0])}" if nqm.index[0] > a1 + pd.Timedelta(days=3) else ""))
     title = "ES H1 cross bar trades" + (f" ({label})" if label else "")
     storage_key = "lxpb_cross_bar_trades_v1_" + "".join(c if c.isalnum() else "-" for c in label.lower()).strip("-")
     hook = "_touchPriceAxis(chart, el, series, rayInfo.map(r => r.series), queueThin);"
@@ -898,7 +1028,8 @@ def render(rows, h1, output, label):
     assert js.count(hook) == 1, "M1 report chart JS changed: re-check the position tool hook"
     js = "<script>\n" + pos_tool + "\n</script>\n" + js.replace(
         hook, hook + "\n  if (window.PosTool) PosTool.attach(chart, series, el, titleEl, cd);"
-                     + "\n  if (window.Replay) Replay.attach(chart, series, el, titleEl, cd);")
+                     + "\n  if (window.Replay) Replay.attach(chart, series, el, titleEl, cd);"
+                     + ("\n  if (window.VolProfile) VolProfile.attach(chart, series, el, titleEl, cd);" if vp else ""))
     old_stack = ("_renderChartPane(i, 'main', cd.main);\n  _renderChartPane(i, 'ctx', cd.ctx);\n"
                  "  _renderChartPane(i, 'l5', cd.l5);\n  _renderChartPane(i, 'l2', cd.l2);")
     assert js.count(old_stack) == 1, "cross bar report JS changed: re-check _renderStack"
@@ -907,7 +1038,10 @@ def render(rows, h1, output, label):
     assert js.count(fit) == 2, "M1 report chart JS changed: re-check the candle fit"
     js = js.replace(fit, "(cd.fit ? cd.fit(chart) : _fitBars(chart, cd.candles.length));")   # a replay chart: the last candles
     js = js + "<script>\n" + MANUAL_JS.replace("__DATA_DIR__", data_rel) + "\nwindow.Replay = Replay;\n</script>\n"
-    js = js.replace("l5: 'M5-LXPB'", "a: 'chart', b: '2nd chart', l5: 'M5-LXPB'")
+    if vp:
+        with open(VP_JS, encoding="utf-8") as f:
+            js += "<script>\n" + f.read() + "\n</script>\n"
+    js = js.replace("l5: 'M5-LXPB'", "a: 'chart', b: '2nd chart', n: 'NQ', l5: 'M5-LXPB'")
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -928,13 +1062,19 @@ keys 1-8; D1 and H4 as TradingView draws ES: a D1 candle is the session from 15:
 &#9654; buttons on it, the replay bar (the chart last clicked), the arrow keys, or Play (steps of the chosen timeframe; pauses when
 your trade fills or ends). Whatever the timeframe, the candles are the ones that stood at the replay time, the last one still
 forming. The window runs at least one trading day past the cross bar's close and on until every P0 price of the cross bar (its M5 and M2
-entry levels) has been revisited, at most five trading days. Draw your trade with Long / Short (one per row, kept in time and price,
+entry levels) has been revisited (at most five trading days), and on until the farthest swing price (the swept swing and the
+older swings: the lowest for a long, the highest for a short) is traded again, at most 20 trading days. Draw your trade with Long / Short (one per row, kept in time and price,
 so it stays put through a timeframe switch; a new one replaces the old). Its entry is a PRICE: entered when price trades there again
 after the candle you drew it on (from the replay time when that candle is still forming). Judged on the 1 s price path: the first
 second reaching the stop or the target after the fill ends it (a second reaching both counts as the stop; no end-of-day flat). The
 Manual columns show it as of the row's replay time (open = last price), and the manual boxes above count the trades closed so far.
 Manual R = (exit - fill) / (entry - stop), P&amp;L $ = R x the risk $ in the tool's settings (gear). Boxes, replay times
 and settings are kept in this browser.</p>
+<p class="lead">NQ CHART. Beside the ES chart ("&minus; NQ chart" hides it and ES takes the full width), with its own timeframe buttons, built the same way from the
+NQ continuous series in E:\data_source (back-adjusted exactly as TradingView's NQ1!; it has no NQ 1-minute bars from 2025-05-09 to
+2026-03-16, so the rows in that stretch have no NQ chart). "NQ sync on": NQ replays with ES, and stepping either chart moves both. "NQ sync off": NQ keeps its own replay time, so
+stepping the NQ chart (its arrows, or the replay bar and arrow keys after clicking it) moves NQ only and ES stays put; turning sync
+back on brings NQ to the ES time. The position tool, drawings and volume profile are on the ES charts only.</p>
 <div class="summary">
   <div class="box"><strong>{len(rows)}</strong>cross bars</div>
   <div class="box man-box"><strong id="man-n">0</strong>manual trades closed</div>
@@ -969,6 +1109,7 @@ def main():
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--label", default="")
     ap.add_argument("--output", required=True)
+    ap.add_argument("--vp", action="store_true", help="volume profiles (sample)")
     a = ap.parse_args()
     if not (a.all or a.last or a.at):
         ap.error("pass --all, --last N or --at")
@@ -981,7 +1122,7 @@ def main():
     elif a.last:
         rows = pd.concat([g.tail(a.last) for _, g in rows.groupby("bullish")]).sort_index()
     rows = rows.sort_index()                      # oldest first
-    render(rows, h1, a.output, a.label or "sample")
+    render(rows, h1, a.output, a.label or "sample", vp=a.vp)
 
 
 if __name__ == "__main__":

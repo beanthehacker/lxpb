@@ -563,7 +563,7 @@
       const box = document.createElement('div');
       box.className = 'pos-pop';
       box.style.left = Math.min(cx, window.innerWidth - 240) + 'px';
-      box.style.top = Math.min(cy + 4, window.innerHeight - 260) + 'px';
+      box.style.top = Math.max(4, Math.min(cy + 4, window.innerHeight - 270)) + 'px';
       const row = (l, inner) => '<label>' + l + inner + '</label>';
       const sel = (f, opts, v) => '<select data-f="' + f + '">' + opts.map(o => '<option' + (String(o) === String(v) ? ' selected' : '') + '>' + o + '</option>').join('') + '</select>';
       const numIn = (f, v) => '<input data-f="' + f + '" type="number" step="0.25" value="' + v + '">';
@@ -574,26 +574,31 @@
                                 + row('Opacity', '<input data-f="alpha" type="range" min="0" max="1" step="0.05" value="' + d.alpha + '">');
       h += row('Width', sel('width', [1, 2, 3, 4], d.width)) + row('Style', sel('dash', ['solid', 'dashed', 'dotted'], d.dash));
       h += d.type !== 'rect' ? row('Price', numIn('p', d.p)) : row('Price 1', numIn('p0', d.p0)) + row('Price 2', numIn('p1', d.p1));
-      box.innerHTML = h + '<div class="pos-pop-btns"><button data-a="del">Delete</button><button data-a="ok">Apply</button></div>';
-      document.body.appendChild(box);
+      box.innerHTML = h + '<div class="pos-pop-btns"><button data-a="del">Delete</button><button data-a="ok">Close</button></div>';
+      popHost().appendChild(box);
       const val = (f) => { const n = box.querySelector('[data-f="' + f + '"]'); return n.classList.contains('pos-sws') ? n.dataset.v : n.value; };
+      const apply = () => {                         // every change shows at once (no Apply step)
+        const cur = getDraws(this.row).find(o => o.id === id);
+        if (!cur) return;
+        const q = Object.assign({}, cur, { color: val('color'), width: +val('width'), dash: val('dash') });
+        if (cur.type === 'rect') Object.assign(q, { fill: val('fill'), alpha: +val('alpha') });
+        (cur.type !== 'rect' ? ['p'] : ['p0', 'p1']).forEach(f => { const v = parseFloat(val(f)); if (!isNaN(v)) q[f] = v; });
+        settings[cur.type + 'Style'] = cur.type !== 'rect' ? { color: q.color, width: q.width, dash: q.dash }   // the next one is drawn in this style
+                                                            : { color: q.color, fill: q.fill, alpha: q.alpha, width: q.width, dash: q.dash };
+        lsSet('settings', settings);
+        putDraw(this.row, q);
+      };
+      box.addEventListener('input', apply);
+      box.addEventListener('change', apply);
       box.addEventListener('click', (e) => {
         const a = e.target.dataset && e.target.dataset.a, sw = e.target.dataset && e.target.dataset.c;
-        if (sw) {                                   // a colour swatch: it becomes its row's colour
+        if (sw) {                                   // a colour swatch: it becomes its row's colour, applied at once
           const grp = e.target.parentNode;
           grp.dataset.v = sw;
           grp.querySelectorAll('.pos-sw').forEach(b => b.classList.toggle('on', b === e.target));
-        } else if (a === 'ok') {
-          const q = Object.assign({}, d, { color: val('color'), width: +val('width'), dash: val('dash') });
-          if (d.type === 'rect') Object.assign(q, { fill: val('fill'), alpha: +val('alpha') });
-          (d.type !== 'rect' ? ['p'] : ['p0', 'p1']).forEach(f => { const v = parseFloat(val(f)); if (!isNaN(v)) q[f] = v; });
-          const st = d.type + 'Style';                                // the next one is drawn in this style
-          settings[st] = d.type !== 'rect' ? { color: q.color, width: q.width, dash: q.dash }
-                                          : { color: q.color, fill: q.fill, alpha: q.alpha, width: q.width, dash: q.dash };
-          lsSet('settings', settings);
-          putDraw(this.row, q);
-          box.remove();
-        } else if (a === 'del') { this.selD = null; dropDraw(this.row, id); box.remove(); }
+          apply();
+        } else if (a === 'ok') box.remove();
+        else if (a === 'del') { this.selD = null; dropDraw(this.row, id); box.remove(); }
       });
     }
 
@@ -609,7 +614,7 @@
       if (p) fields.push(['entry', 'Entry', p.entry], ['tp', 'Target', p.tp], ['sl', 'Stop', p.sl]);
       box.innerHTML = fields.map(([n, l, v]) => '<label>' + l + '<input data-f="' + n + '" type="number" step="any" value="' + v + '"></label>').join('')
         + '<div class="pos-pop-btns">' + (p ? '<button data-a="del">Delete</button>' : '') + '<button data-a="ok">Apply</button></div>';
-      document.body.appendChild(box);
+      popHost().appendChild(box);
       const val = (n) => parseFloat(box.querySelector('[data-f="' + n + '"]').value);
       box.addEventListener('click', (e) => {
         const a = e.target.dataset && e.target.dataset.a;
@@ -626,6 +631,7 @@
     }
   }
 
+  const popHost = () => document.fullscreenElement || document.body;   // in full screen only that element's children show
   document.addEventListener('keydown', (e) => {
     if (/INPUT|TEXTAREA|SELECT/.test((e.target.tagName || ''))) return;
     const to = under && !under.dead ? under : active;
@@ -653,7 +659,7 @@
     + '.pos-btn{background:#1b2330;color:#e5e7eb;border:1px solid #334155;border-radius:4px;padding:0 7px;'
     + 'font:12px/1.9 Courier New,monospace;cursor:pointer;white-space:nowrap}.pos-btn:hover{background:#273449}'
     + '.pos-btn.pos-on{background:#2962ff!important;color:#fff!important}.pos-btn:disabled{opacity:.4;cursor:default}'
-    + '.pos-pop{position:fixed;z-index:10000;background:#1e222d;border:1px solid #363a45;border-radius:4px;padding:8px 10px;'
+    + '.pos-pop{position:fixed;z-index:100001;background:#1e222d;border:1px solid #363a45;border-radius:4px;padding:8px 10px;'
     + 'font:12px Courier New,monospace;color:#d1d4dc;display:flex;flex-direction:column;gap:5px;width:220px}'
     + '.pos-pop label{display:flex;justify-content:space-between;gap:8px;align-items:center}'
     + '.pos-pop input,.pos-pop select{width:100px;background:#131722;color:#d1d4dc;border:1px solid #363a45;padding:2px 4px;box-sizing:border-box}'
