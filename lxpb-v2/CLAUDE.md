@@ -684,7 +684,7 @@ target, M1 fade managed bracket WITHOUT the RR floor (needs a target): thrust-P1
 levels 118/234 1R first. `cross_bar/level_race_trail.py` = the same levels with a 1R target + trail: +15.6R, 53% win; 56 of 83
 cross bars with decided levels have at least one winner (49 in the plain race). Regen: `--all --since 2026-01-01 --vp --label
 "2026 Jan 2 - Oct 26"`, then gzip the page and every `_data/*.js` (last regen 2026-11-11 PT with the volume profile, NQ chart and
-20-day swing window: 115 rows, 25 without NQ, data ~63 MB gzipped).
+20-day swing window: 115 rows, all with NQ, data ~67 MB gzipped).
 
 Cross bar FORWARD REPLAY + manual trades (user, 2026-11-03), same report, which since then shows NO automated trade (user,
 2026-11-03: no automated entry / exit / R / race columns or boxes, no M5 trade / M2-LXPB panes; the functions stay for
@@ -706,8 +706,8 @@ report and inflated by `scripts/decompress-gz-reports.mjs`. Boxes, replay times 
 Drawings (user, 2026-11-08, same file): TradingView-style horizontal rays (Alt+J) and rectangles (Alt+Shift+R), any number per row, shared by both panes, kept in time + price, magnet-snapped; hover shows points, drag points / line / inside, Delete, double-click = colour (7 swatches: blue, orange, red, bright green, dark green, white, pink) / width / style / prices.
 NQ chart (user, 2026-11-10, same file): an NQ chart BESIDE the ES one (own timeframe buttons, "- NQ chart" hides it and ES takes
 the full width), from `E:\data_source` (`nq_data.load_nq`, NQ back-adjusted exactly as TradingView's NQ1!; data_source is the single
-source of truth, never build NQ bars here). Its 1-minute bars have no data from 2025-05-09 14:00 PT to 2026-03-16 15:00 PT (no NQ
-tick files for ENQM25's tail, ENQU25, ENQZ25, ENQH26), so the Jan 9 - Mar 13 2026 rows have no NQ chart. "NQ sync" on = NQ replays
+source of truth, never build NQ bars here). Since 2026-11-11 its 1-minute bars run without a break from Jun 2020 (the missing
+ENQM25 tail / ENQU25 / ENQZ25 / ENQH26 ticks were downloaded in Sierra), so every 2026 row has an NQ chart. "NQ sync" on = NQ replays
 with ES, stepping either moves both; off = NQ steps on its own, ES stays put; back on = NQ jumps to the ES time. Position tool /
 drawings / VP: ES only.
 
