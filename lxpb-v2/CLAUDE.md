@@ -709,8 +709,16 @@ the full width), from `E:\data_source` (`nq_data.load_nq`, NQ back-adjusted exac
 source of truth, never build NQ bars here). Since 2026-11-11 its 1-minute bars run without a break from Jun 2020 (the missing
 ENQM25 tail / ENQU25 / ENQZ25 / ENQH26 ticks were downloaded in Sierra), so every 2026 row has an NQ chart. "NQ sync" on = NQ replays
 with ES, stepping either moves both, and the ES chart + NQ share their timeframe (2nd chart keeps its own; user, 2026-11-11); off = NQ
-steps and picks timeframes on its own, ES stays put; back on = NQ jumps to the ES time and timeframe. Position tool /
-drawings / VP: ES only.
+steps and picks timeframes on its own, ES stays put; back on = NQ jumps to the ES time and timeframe. Position tool: ES only.
+NQ drawings + VP (user, 2026-11-11): NQ has its own lines / rays / rectangles (`position-tool.js` `config.drawOnly` + `config.group`:
+stored apart as `draw_<file>_<row>_nq`, never shared with ES) and its own volume profile from the NQ `.scid` ticks (`vap.py`
+`sym="NQ"`: `E:\data_source
+q
+olls.csv` offsets; per-minute volume / high / low equal `load_nq("1m")`), same VP settings, with
+the point sizes (last-visit band 50, smoothing, confluence) times NQ / ES at the cross bar's hour; NQ volume in 1-point rows
+(`vap.to_rows(v, 4)`, `q` = 1 in the packed data; user, 2026-11-11: a quarter of the size of tick rows).
+Last visit -> now (user, 2026-11-11): when the last visit was the PREVIOUS trading day, the profile starts at the earlier of the
+visit before it and 5 trading days before today (label "last 2 visits" / "last 5 days"); otherwise unchanged.
 VP defaults (user, 2026-11-11, `public/js/volume-profile.js`): only the last visit -> now profile is on; day, past days and the
 day / week levels (0 / 0) are off until ticked in the VP popover (settings key bumped to `vp_settings4` so old saved settings don't hold).
 Free movement (user, 2026-11-11, same file): the first mouse press on a chart turns its price axis's auto-fit off (range on screen

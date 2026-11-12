@@ -8,10 +8,15 @@
 //   Last visit   one profile on the chart's right edge (in its blank 20%; user 2026-11-09): every trade from the start of the last
 //                visit of the current price up to T, today included, rows within +-50 pt of the last price. The last visit: the
 //                last H1 bar before today's session that traded the last price, back through the H1 bars before it that traded
-//                within 50 pt of it, at most 5 trading days of them. HVN / LVN marked (see `nodes`).
+//                within 50 pt of it, at most 5 trading days of them. When that last visit was the previous trading day (user,
+//                2026-11-11), the profile reaches back to the earlier of the start of the visit before it and 5 trading days
+//                before today ("last 2 visits" / "last 5 days" in its label). HVN / LVN marked (see `nodes`).
 //   Levels       VAH / VAL / POC of the last N complete days and weeks, as lines from the period's end to the right edge;
 //                solid = naked (price has not traded there since, up to T), dotted = traded since. Prices of different
 //                periods within the confluence tolerance are joined into one band, labelled with how many lines it holds.
+//
+// NQ chart (user, 2026-11-11): the same, from the NQ ticks (the row's data nq.vp), at NQ's own replay time; the point sizes
+// (last-visit band, smoothing, confluence tolerance) times NQ / ES at the cross bar's hour.
 //
 // Value area (CBOT / Market Profile convention): the POC is the price with the most volume (a tie goes to the one nearest the
 // profile's middle); from it the value area grows by comparing the volume of the next TWO prices above with the next two below and
@@ -42,13 +47,22 @@
         k += 3 + m;
       }
     });
-    return { t, e, lo, off, n, V, first: t.length ? t[0] : Infinity };
+    const q = (vp.f || vp.c || vp.d).q || 0.25;          // a row's price step: ES a tick, NQ a point
+    return { t, e, lo, off, n, V, q, first: t.length ? t[0] : Infinity };
   }
-  function buckets(i) {
+  function buckets(i, pane) {                         // pane 'n' = the NQ chart: the NQ ticks' volume
+    const st = _rp(i), src = st.data && _src(i, pane), k = 'vpB' + (pane === 'n' ? 'n' : '');
+    if (!src || !src.vp) return null;
+    if (!st[k]) st[k] = decode(src.vp);
+    return st[k];
+  }
+  // NQ (user, 2026-11-11): the point sizes below (last-visit band, node smoothing, confluence tolerance) are ES points; the NQ
+  // chart uses them times NQ / ES at the cross bar's hour, so its profile covers the same share of price
+  function scale(i, pane) {
+    if (pane !== 'n') return 1;
     const st = _rp(i);
-    if (!st.data || !st.data.vp) return null;
-    if (!st.vpB) st.vpB = decode(st.data.vp);
-    return st.vpB;
+    if (!st.vpSc) { const t = CHARTS[i].crossT, e = lastPrice(i, t, 'a'), q = lastPrice(i, t, 'n'); st.vpSc = e && q ? q / e : 1; }
+    return st.vpSc;
   }
   // volume at price of every bucket with a <= start and end <= b
   function profile(B, a, b) {
@@ -63,14 +77,14 @@
       const o = B.off[k], d = B.lo[k] - mn;
       for (let q = 0; q < B.n[k]; q++) { v[d + q] += B.V[o + q]; tot += B.V[o + q]; }
     }
-    return { lo: mn, v, tot, a, b };
+    return { lo: mn, v, tot, a, b, q: B.q };
   }
-  function clip(P, cLo, cHi) {                       // rows cLo..cHi (ticks) only
+  function clip(P, cLo, cHi) {                       // rows cLo..cHi only
     if (!P) return null;
     const a = Math.max(P.lo, cLo), b = Math.min(P.lo + P.v.length - 1, cHi);
     if (b < a) return null;
     const v = P.v.slice(a - P.lo, b - P.lo + 1);
-    return { lo: a, v, tot: v.reduce((s, x) => s + x, 0), a: P.a, b: P.b };
+    return { lo: a, v, tot: v.reduce((s, x) => s + x, 0), a: P.a, b: P.b, q: P.q };
   }
   function valueArea(P, pct) {
     const v = P.v, n = v.length, mid = (n - 1) / 2;
@@ -85,7 +99,7 @@
       if (goUp) for (let s = 0; s < 2 && hi < n - 1; s++) acc += v[++hi];
       if (goDn) for (let s = 0; s < 2 && lo > 0; s++) acc += v[--lo];
     }
-    return { poc: (P.lo + poc) * 0.25, vah: (P.lo + hi) * 0.25, val: (P.lo + lo) * 0.25 };
+    return { poc: (P.lo + poc) * P.q, vah: (P.lo + hi) * P.q, val: (P.lo + lo) * P.q };
   }
   // high / low volume nodes, the quant method (kernel density + topographic prominence):
   //   1. smooth the volume at price with a Gaussian kernel of S.bw points (a volume-weighted kernel density on the tick grid; the
@@ -100,8 +114,8 @@
     for (let k = 0; k < n; k++) { let s = 0, ws = 0; for (let d = -r; d <= r; d++) { const j = k + d; if (j >= 0 && j < n) { s += v[j] * w[d + r]; ws += w[d + r]; } } sm[k] = s / ws; }
     return sm;
   }
-  function nodes(P) {
-    const sm = smooth(P.v, S.bw / 0.25), n = sm.length;
+  function nodes(P, sc) {
+    const sm = smooth(P.v, S.bw * (sc || 1) / P.q), n = sm.length;
     let mx = 0;
     for (let k = 0; k < n; k++) mx = Math.max(mx, sm[k]);
     const min = mx * S.prom / 100, hv = [];
@@ -121,7 +135,7 @@
       for (let k = hv[q]; k <= hv[q + 1]; k++) if (sm[k] < sm[b]) b = k;
       if (Math.min(sm[hv[q]], sm[hv[q + 1]]) - sm[b] >= min) lv.push(b);
     }
-    return { hvn: hv.map(k => (P.lo + k) * 0.25), lvn: lv.map(k => (P.lo + k) * 0.25) };
+    return { hvn: hv.map(k => (P.lo + k) * P.q), lvn: lv.map(k => (P.lo + k) * P.q) };
   }
 
   // ---- trading days (15:00 PT the day before to 14:00 PT) and weeks (Sunday 15:00 PT to Friday 14:00 PT)
@@ -137,38 +151,50 @@
   const weekStart = (s) => day0(s - ((weekday(s) + 6) % 7) * 86400 + 7200);   // Monday's session (a weekend bucket: that week's)
 
   // has price traded at px from a to b? M1 bars where the row has them, H1 bars before that
-  function traded(i, px, a, b) {
-    const D = _rp(i).data, m0 = D.m1t[0];
+  function traded(i, px, a, b, pane) {
+    const D = _src(i, pane), m0 = D.m1t[0];
     if (a < m0) {
       for (let k = _lb(D.h1t, a); k < D.h1.length && D.h1[k].time < Math.min(b, m0); k++) if (D.h1[k].low <= px && px <= D.h1[k].high) return true;
     }
     for (let k = _lb(D.m1t, Math.max(a, m0)); k < D.m1.length && D.m1[k].time + 60 <= b; k++) if (D.m1[k].low <= px && px <= D.m1[k].high) return true;
     return false;
   }
-  function lastPrice(i, T) {
-    const D = _rp(i).data, k = _lb(D.m1t, T) - 1;
+  function lastPrice(i, T, pane) {
+    const D = _src(i, pane), k = _lb(D.m1t, T) - 1;
     return k >= 0 ? D.m1[k].close : null;
   }
   // the last visit of price px before today's session (H1 bars as they stood at T): the last H1 bar before the session that traded
-  // px, back through the H1 bars before it that traded within BAND of px, at most 5 trading days of them. { a: the visit's
-  // trading-day start, last: the bar that last traded px } or null (px never traded in the H1 history)
-  function visit(i, T, px) {
-    const H = _barsAt(i, 'H1'), k0 = _lb(H.map(c => c.time), day0(T));
-    let k = k0 - 1;
-    while (k >= 0 && !(H[k].low <= px && px <= H[k].high)) k--;
-    if (k < 0) return null;
-    const kLast = k;
-    while (k >= 0 && H[k].low <= px + BAND && H[k].high >= px - BAND) k--;
-    return { a: Math.max(day0(H[k + 1].time), tradingDaysBack(day0(H[kLast].time), 4)), last: H[kLast].time };
+  // px, back through the H1 bars before it that traded within BAND of px, at most 5 trading days of them. When that visit was
+  // the PREVIOUS trading day (user, 2026-11-11), the profile starts at the earlier of: the start of the visit before it (found
+  // the same way, among the H1 bars before the last visit's run inside the band) and the start of the session 5 trading days
+  // before today's (5 whole days + today). { a: the profile's start (a trading-day start), last: the bar that last traded px,
+  // name } or null (px never traded in the H1 history)
+  function visit(i, T, px, pane, band) {
+    const H = _barsAt(i, 'H1', pane), s0 = day0(T), k0 = _lb(H.map(c => c.time), s0);
+    const one = (k) => {                              // the visit whose last bar traded px at or before bar k
+      while (k >= 0 && !(H[k].low <= px && px <= H[k].high)) k--;
+      if (k < 0) return null;
+      const kLast = k;
+      while (k >= 0 && H[k].low <= px + band && H[k].high >= px - band) k--;
+      return { a: Math.max(day0(H[k + 1].time), tradingDaysBack(day0(H[kLast].time), 4)), last: H[kLast].time, before: k };
+    };
+    const v = one(k0 - 1);
+    if (!v) return null;
+    if (day0(v.last) !== tradingDaysBack(s0, 1)) return { a: v.a, last: v.last, name: 'last visit ' + dLabel(v.a) };
+    const p = one(v.before), d5 = tradingDaysBack(s0, 5);
+    if (p && p.a <= Math.min(d5, v.a)) return { a: p.a, last: v.last, name: 'last 2 visits ' + dLabel(p.a) };
+    if (d5 < v.a) return { a: d5, last: v.last, name: 'last 5 days ' + dLabel(d5) };
+    return { a: v.a, last: v.last, name: 'last visit ' + dLabel(v.a) };
   }
 
   // ---- what one pane shows at T (cached; complete periods never change)
-  function compute(i, tf) {
-    const st = _rp(i), B = buckets(i), T = st.T;
+  function compute(i, tf, pane) {
+    const st = _rp(i), B = buckets(i, pane), T = _Tof(i, pane), n = pane === 'n' ? 'n' : '';
     if (!B) return null;
+    const sc = scale(i, pane), band = Math.round(BAND * sc / 5) * 5;
     const ck = T + '|' + tf + '|' + JSON.stringify(S);
-    if (st.vpC && st.vpC.k === ck) return st.vpC.v;
-    const memo = st.vpMemo = st.vpMemo || {};
+    if (st['vpC' + n] && st['vpC' + n].k === ck) return st['vpC' + n].v;
+    const memo = st['vpMemo' + n] = st['vpMemo' + n] || {};
     const full = (a, b) => { const k = a + '-' + b; if (!(k in memo)) { const P = a >= B.first ? profile(B, a, b) : null; memo[k] = P ? { P, va: valueArea(P, S.va) } : null; } return memo[k]; };
     const out = { sessions: [], right: null, levels: [], bands: [] };
     // one profile per trading day on H4 and below, per week on D1 (a day is a single D1 candle there)
@@ -182,14 +208,14 @@
         if (f) out.sessions.push({ P: f.P, va: f.va, a: s, b: s + span - 3600 });
       }
     }
-    const px = lastPrice(i, T);
+    const px = lastPrice(i, T, pane);
     if (S.vis && px != null) {
-      const v = visit(i, T, px);
+      const v = visit(i, T, px, pane, band);
       if (!v) out.right = { name: 'last visit of ' + px.toFixed(2) + ': none in the history' };
-      else if (v.a < B.first) out.right = { name: 'last visit ' + dLabel(v.a) + ': before the volume data' };
+      else if (v.a < B.first) out.right = { name: v.name + ': before the volume data' };
       else {
-        const P = clip(profile(B, v.a, T), Math.round((px - BAND) / 0.25), Math.round((px + BAND) / 0.25));
-        if (P && P.tot > 0) out.right = { P, va: valueArea(P, S.va), nodes: nodes(P), name: 'last visit ' + dLabel(v.a) + ' → now, ±' + BAND };
+        const P = clip(profile(B, v.a, T), Math.round((px - band) / B.q), Math.round((px + band) / B.q));
+        if (P && P.tot > 0) out.right = { P, va: valueArea(P, S.va), nodes: nodes(P, sc), name: v.name + ' → now, ±' + band };
       }
     }
     const lv = [];
@@ -208,17 +234,17 @@
       const lab = dLabel(w0);
       [['POC', f.va.poc], ['VAH', f.va.vah], ['VAL', f.va.val]].forEach(([k, p]) => lv.push({ k: 'w' + k, p, from: w0 + 5 * 86400, lab: 'w' + k + ' ' + lab, w: 2 }));
     }
-    lv.forEach(l => { l.naked = !traded(i, l.p, l.from, T); });
+    lv.forEach(l => { l.naked = !traded(i, l.p, l.from, T, pane); });
     out.levels = lv.filter(l => l.naked || !S.naked);
     const srt = out.levels.slice().sort((x, y) => x.p - y.p);    // confluence: lines of different periods within the tolerance
     for (let k = 0; k < srt.length;) {
       let j = k;
-      while (j + 1 < srt.length && srt[j + 1].p - srt[j].p <= S.tol) j++;
+      while (j + 1 < srt.length && srt[j + 1].p - srt[j].p <= S.tol * sc) j++;
       const g = srt.slice(k, j + 1), per = new Set(g.map(l => l.lab.split(' ')[1] + l.k[0]));
       if (per.size >= 2) out.bands.push({ lo: g[0].p, hi: g[g.length - 1].p, n: g.length, labs: g.map(l => l.lab) });
       k = j + 1;
     }
-    st.vpC = { k: ck, v: out };
+    st['vpC' + n] = { k: ck, v: out };
     return out;
   }
 
@@ -226,7 +252,7 @@
   function draw(pv, ctx) {
     const st = _rp(pv.i);
     if (!st.data) return;
-    const tf = st.tf[pv.pane], cd = pv.cd, R = compute(pv.i, tf);
+    const tf = st.tf[pv.pane], cd = pv.cd, R = compute(pv.i, tf, pv.pane);
     if (!R) return;
     const chart = pv.chart, series = pv.series, ts = chart.timeScale();
     const W = ts.width(), H = pv.el.clientHeight - 28;
@@ -241,12 +267,12 @@
       return x0 == null ? null : x0 + (lg - f) * ts.options().barSpacing;
     };
     const y = (p) => series.priceToCoordinate(p);
-    const rowPx = Math.abs(y(100) - y(100.25)) || 1, bin = Math.max(1, Math.ceil(2.5 / rowPx));   // a drawn row is at least 2.5 px tall
     const font = '11px Courier New, monospace';
     ctx.font = font; ctx.textBaseline = 'middle';
     // one profile: bars from x0 growing by dir (+1 right, -1 left), widest bar = wMax px
     const prof = (P, va, x0, dir, wMax) => {
-      const v = P.v, groups = [];
+      const v = P.v, groups = [], q = P.q;
+      const rowPx = Math.abs(y(100) - y(100 + q)) || 1, bin = Math.max(1, Math.ceil(2.5 / rowPx));   // a drawn row is at least 2.5 px tall
       let mx = 0;
       const g0 = Math.floor(P.lo / bin);
       for (let k = 0; k < v.length; k++) {
@@ -254,12 +280,12 @@
         groups[g] = (groups[g] || 0) + v[k];
       }
       groups.forEach(x => { mx = Math.max(mx, x || 0); });
-      const pocG = Math.floor(va.poc / 0.25 / bin) - g0;
+      const pocG = Math.floor(Math.round(va.poc / q) / bin) - g0;
       groups.forEach((x, g) => {
         if (!x) return;
-        const tLo = (g + g0) * bin, tHi = tLo + bin - 1, yT = y((tHi + 0.5) * 0.25), yB = y((tLo - 0.5) * 0.25);
+        const tLo = (g + g0) * bin, tHi = tLo + bin - 1, yT = y((tHi + 0.5) * q), yB = y((tLo - 0.5) * q);
         if (yT == null || yB == null) return;
-        const w = x / mx * wMax, inVa = tHi * 0.25 >= va.val && tLo * 0.25 <= va.vah;
+        const w = x / mx * wMax, inVa = tHi * q >= va.val && tLo * q <= va.vah;
         ctx.fillStyle = g === pocG ? C.poc : inVa ? C.va : C.out;
         const hh = Math.abs(yB - yT);                // rows touch when they are thin (a 1 px gap would leave only faint lines)
         ctx.fillRect(dir > 0 ? x0 : x0 - w, Math.min(yT, yB) + (hh >= 4 ? 0.5 : 0), w, hh >= 4 ? hh - 1 : hh);
@@ -340,7 +366,8 @@
       + '<div>HVN / LVN: smoothing ' + sel('bw', [[1, '1 pt'], [2, '2 pt'], [4, '4 pt']]) + ' prominence ' + sel('prom', [[10, '10%'], [20, '20%'], [30, '30%']]) + '</div>'
       + '<div>Levels: last ' + sel('dN', [[0, 0], [1, 1], [3, 3], [5, 5], [10, 10]]) + ' days, ' + sel('wN', [[0, 0], [1, 1], [2, 2], [4, 4]]) + ' weeks</div>'
       + '<div>' + chk('naked', 'naked levels only') + ' confluence ±' + sel('tol', [[0.5, '0.5'], [1, '1'], [2, '2']]) + ' pt</div>'
-      + '<div>Value area ' + sel('va', [[68, '68%'], [70, '70%']]) + '</div>';
+      + '<div>Value area ' + sel('va', [[68, '68%'], [70, '70%']]) + '</div>'
+      + '<div style="color:#9ca3af">NQ: the point sizes x NQ / ES price</div>';
     const r = btn.getBoundingClientRect();
     (document.fullscreenElement || document.body).appendChild(box);   // in full screen only that element's children show
     box.style.left = Math.max(8, Math.min(r.left, window.innerWidth - box.offsetWidth - 8)) + 'px';
@@ -367,7 +394,7 @@
     settings: S,
     refresh: () => panes.forEach(p => p.update && p.update()),
     attach(chart, series, el, titleEl, cd) {
-      const m = /^c-(a|b)-(\d+)$/.exec(el.id || '');
+      const m = /^c-(a|b|n)-(\d+)$/.exec(el.id || '');
       if (!m) return;
       const pv = { chart, series, el, cd, pane: m[1], i: +m[2], update: null };
       for (let k = panes.length - 1; k >= 0; k--) if (panes[k].el.id === el.id) panes.splice(k, 1);
