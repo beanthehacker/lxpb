@@ -48,7 +48,11 @@ data file carries NQ H1 / M1 bars over the same stretches as ES. "NQ sync" (on b
 at the ES time and stepping either chart moves both, and the ES chart (not the 2nd chart) and NQ share their timeframe: picking
 H1 / M5 ... on either switches both (user, 2026-11-11); off = NQ keeps its own time and timeframe (stepped from its own chart, or
 the replay bar / arrow keys after clicking it) and ES stays put; back on = NQ jumps to the ES time and timeframe. NQ shows only where the ES cross bar is (its
-swing prices are ES prices); the position tool, drawings and volume profile stay on the ES charts.
+swing prices are ES prices); the position tool stays on the ES charts. NQ has drawings of its own (user, 2026-11-11: kept apart
+from the ES ones, NQ prices) and its own volume profile from the NQ ticks (vap.py sym="NQ"), with the VP's point sizes (last-visit
+band, smoothing, confluence) times NQ / ES at the cross bar's hour, its volume in 1-point rows (a quarter of the data).
+LAST VISIT -> NOW (user, 2026-11-11): when the last visit was the previous trading day, the profile starts at the earlier of the
+visit before it and 5 trading days before today.
 FREE MOVEMENT (user, 2026-11-11): every chart pans freely in both directions with the mouse. The first press on a chart takes
 its price axis off auto-fit (the range on screen is kept), as dragging both axes used to; double-click the price axis to auto-fit
 again. A finger keeps the touch rules (a vertical drag scrolls the page, the axis strip stretches).
@@ -394,7 +398,7 @@ function _decode(d) {
   const s = d.s1, n = s.r.length / 3, T = new Float64Array(n), L = new Float64Array(n), Hi = new Float64Array(n);
   let ts = s.t0, lo = s.b;
   for (let k = 0; k < n; k++) { ts += s.r[3 * k]; lo += s.r[3 * k + 1]; T[k] = ts; L[k] = lo * 0.25; Hi[k] = (lo + s.r[3 * k + 2]) * 0.25; }
-  const q = d.nq && d.nq.m1 ? { m1: _bars(d.nq.m1), h1: d.nq.h1 ? _bars(d.nq.h1) : [] } : null;
+  const q = d.nq && d.nq.m1 ? { m1: _bars(d.nq.m1), h1: d.nq.h1 ? _bars(d.nq.h1) : [], vp: d.nq.vp } : null;
   if (q) { q.m1t = q.m1.map(c => c.time); q.h1t = q.h1.map(c => c.time); }
   return { m1: M, m1t: M.map(c => c.time), h1: H, h1t: H.map(c => c.time), s1: { n, t: T, lo: L, hi: Hi }, vp: d.vp, nq: q };
 }
@@ -785,7 +789,7 @@ const Replay = {
       _xhBusy = false;
     });
     let bar = titleEl.querySelector('.pos-bar');
-    if (!bar) {                                     // a pane without the position tool (NQ): the same button cell, by the full-screen button
+    if (!bar) {                                     // a pane without the position tool: the same button cell, by the full-screen button
       const f0 = titleEl.querySelector('.fs-btn');
       bar = document.createElement('span'); bar.className = 'pos-bar';
       titleEl.insertBefore(bar, f0);
@@ -808,6 +812,8 @@ const Replay = {
 };
 
 PosTool.config.shared = ['a', 'b'];
+PosTool.config.drawOnly = ['n'];                            // NQ: lines / rays / rectangles of its own (user, 2026-11-11), no position box
+PosTool.config.group = { n: 'nq' };
 PosTool.config.cursor = (i) => _rp(i).T;
 PosTool.config.result = (i) => _rp(i).res;
 PosTool.config.onChange = (i) => {
@@ -1042,10 +1048,15 @@ def render(rows, h1, output, label, vp=False):
             coarse = trading_day(min([trading_day(t) - pd.Timedelta(days=VP_DAYS)] + ([visit] if visit is not None else []))
                                  + pd.Timedelta(hours=2))
             daily = trading_day(h1_from + pd.Timedelta(hours=2))   # one bucket per trading day over the rest of the H1 history
-            payload["vp"] = {
-                "d": vap.pack(vap.trading_days(daily, coarse), 86400) if daily < coarse else vap.pack(vap.buckets(coarse, coarse), 86400),
-                "c": vap.pack(vap.buckets(coarse, fine, VP_COARSE), VP_COARSE),
-                "f": vap.pack(vap.buckets(fine, stop, 60), 60)}
+            def vp_of(sym, k=1):                   # k ticks per price row
+                pk = lambda v, dur: vap.pack(vap.to_rows(v, k) if k > 1 else v, dur, vap.TICK * k)
+                return {"d": (pk(vap.trading_days(daily, coarse, sym), 86400) if daily < coarse
+                              else pk(vap.buckets(coarse, coarse, sym=sym), 86400)),
+                        "c": pk(vap.buckets(coarse, fine, VP_COARSE, sym), VP_COARSE),
+                        "f": pk(vap.buckets(fine, stop, 60, sym), 60)}
+            payload["vp"] = vp_of("ES")
+            if payload["nq"] is not None:          # the NQ chart's own profile, from the NQ ticks over the same stretches,
+                payload["nq"]["vp"] = vp_of("NQ", 4)   # in 1-point rows (user, 2026-11-11: a quarter of the data of tick rows)
         with open(os.path.join(data_dir, key + ".js"), "w", encoding="utf-8") as f:
             f.write("__replayData(" + json.dumps(key) + "," + json.dumps(payload, separators=(",", ":")) + ");\n")
         chart["end"], chart["endWhy"] = int(stop.timestamp()), end_why
@@ -1110,7 +1121,11 @@ and settings are kept in this browser.</p>
 NQ continuous series in E:\data_source (back-adjusted exactly as TradingView's NQ1!). "NQ sync on": NQ replays with ES, stepping either chart moves both, and picking a timeframe on the ES chart or NQ switches both
 (the 2nd ES chart keeps its own). "NQ sync off": NQ keeps its own replay time and timeframe, so
 stepping the NQ chart (its arrows, or the replay bar and arrow keys after clicking it) moves NQ only and ES stays put; turning sync
-back on brings NQ to the ES time and timeframe. The position tool, drawings and volume profile are on the ES charts only.</p>
+back on brings NQ to the ES time and timeframe. The position tool is on the ES charts only; NQ has its own drawings (lines, rays,
+rectangles, kept apart from the ES ones) and its own volume profile from the NQ trades, with the same settings and its point sizes
+(the &plusmn;50 pt last-visit band, smoothing, confluence) scaled by NQ / ES price, in 1-point rows. The last visit &rarr; now
+profile: when the last visit was the previous trading day, it reaches back to the earlier of the visit before that and 5 trading
+days before today (its label says "last 2 visits" or "last 5 days").</p>
 <p class="lead">MOVING A CHART. Drag a chart to move it any way, up and down as well as sideways (the price axis stops auto-fitting
 from the first press); double-click the price axis to fit the candles again. The crosshair is shared between the ES chart and NQ:
 hovering one shows the same time on the other.</p>

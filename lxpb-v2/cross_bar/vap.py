@@ -6,6 +6,9 @@ the prices match load_es and the charts. A bucket holds the trades with bucket s
 09:30:00.700 is in the 09:30 minute), the same stamping as the 1-minute bars; per-minute totals equal load_es("1m")'s
 volume (checked by `check`).
 
+NQ the same way (sym="NQ": E:\\data_source nq/rolls.csv and its F.US.ENQ*.scid files), so the prices match load_nq
+and the NQ chart.
+
 Read straight from the memory-mapped .scid (fixed 40-byte records in time order): a window is found by binary search on the
 record times, never np.searchsorted on the mapped column (that copies the whole column).
 """
@@ -16,7 +19,8 @@ import pandas as pd
 
 TICK = 0.25
 SCID_DIR = os.environ.get("ES_SCID_DIR", r"D:\SierraChart-daytrading\Data")
-ROLLS = os.environ.get("ES_ROLLS", r"E:\data_source\es\rolls.csv")
+ROLLS = {"ES": os.environ.get("ES_ROLLS", r"E:\data_source\es\rolls.csv"),
+         "NQ": os.environ.get("NQ_ROLLS", r"E:\data_source\nq\rolls.csv")}
 _HEADER = 56
 _SHIFT_US = 2209161600000000                # Sierra epoch (1899-12-30) -> unix, microseconds
 _REC = np.dtype([("Time", "<u8"), ("Open", "<f4"), ("High", "<f4"), ("Low", "<f4"), ("Close", "<f4"),
@@ -24,8 +28,8 @@ _REC = np.dtype([("Time", "<u8"), ("Open", "<f4"), ("High", "<f4"), ("Low", "<f4
 _MM = {}
 
 
-def _rolls():
-    r = pd.read_csv(ROLLS)
+def _rolls(sym="ES"):
+    r = pd.read_csv(ROLLS[sym])
     r["a"] = pd.to_datetime(r["front_start_utc"]).dt.tz_localize("UTC")
     r["b"] = pd.to_datetime(r["front_end_utc"]).dt.tz_localize("UTC")
     return r
@@ -48,12 +52,12 @@ def _first_at_or_after(tm, raw_us):
     return lo
 
 
-def minutes(start, end):
+def minutes(start, end, sym="ES"):
     """Volume at price per minute for start <= t < end: DataFrame [t (minute start, unix s), tick (adjusted price / 0.25),
     vol, ask (volume lifting the ask)], sorted by t then tick."""
     start, end = pd.Timestamp(start).tz_convert("UTC"), pd.Timestamp(end).tz_convert("UTC")
     out = []
-    for r in _rolls().itertuples():
+    for r in _rolls(sym).itertuples():
         a = max(start, r.a)
         b = min(end, r.b) if pd.notna(r.b) else end
         if a >= b:
@@ -84,16 +88,16 @@ def minutes(start, end):
 _DAY_MEMO = {}
 
 
-def buckets(start, end, sec=60):
+def buckets(start, end, sec=60, sym="ES"):
     """`minutes` in buckets of `sec` seconds, read one UTC day at a time (a long range never holds all its ticks at once);
     whole days are memoised in this process, so rows sharing days read them once."""
     start, end = pd.Timestamp(start).tz_convert("UTC"), pd.Timestamp(end).tz_convert("UTC")
     out, d = [], start.normalize()
     while d < end:
         e = d + pd.Timedelta(days=1)
-        k = (d.value, sec)
+        k = (sym, d.value, sec)
         if k not in _DAY_MEMO:
-            v = minutes(d, e)
+            v = minutes(d, e, sym)
             _DAY_MEMO[k] = v if sec == 60 else coarsen(v, sec)
         v = _DAY_MEMO[k]
         out.append(v[(v["t"] >= start.value // 10**9) & (v["t"] < end.value // 10**9)])   # range ends on bucket edges
@@ -101,16 +105,16 @@ def buckets(start, end, sec=60):
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame(columns=["t", "tick", "vol", "ask"])
 
 
-def trading_days(start, end):
+def trading_days(start, end, sym="ES"):
     """Volume at price per TRADING DAY (15:00 PT the day before to 15:00 PT; t = the day's start, unix s) for start <= t < end,
     both trading-day starts. Read one UTC day at a time like `buckets`, each day's ticks summed per trading day it touches."""
     start, end = pd.Timestamp(start).tz_convert("UTC"), pd.Timestamp(end).tz_convert("UTC")
     out, d = [], start.normalize()
     while d < end:
         e = d + pd.Timedelta(days=1)
-        k = (d.value, "D")
+        k = (sym, d.value, "D")
         if k not in _DAY_MEMO:
-            v = minutes(d, e)
+            v = minutes(d, e, sym)
             if len(v):
                 ut = np.unique(v["t"].to_numpy())
                 loc = pd.to_datetime(ut, unit="s", utc=True).tz_convert("America/Los_Angeles").tz_localize(None)
@@ -133,9 +137,18 @@ def coarsen(v, sec):
     return g
 
 
-def pack(v, dur):
-    """Buckets for the page: flat [start step (minutes since the previous bucket), low tick step (since the previous bucket's
-    low), row count n, then n volumes from the low tick up, one per tick (0 where nothing traded)]. `dur` = bucket seconds."""
+def to_rows(v, k):
+    """The same volume in price rows of k ticks (NQ: k = 4, whole points, user 2026-11-11): row = the tick rounded to the nearest
+    multiple of k, divided by k (a trade at 29000.25 is in row 29000, 29000.50 in 29001)."""
+    if not len(v):
+        return v
+    return v.assign(tick=(v["tick"] + k // 2) // k).groupby(["t", "tick"], sort=True)[["vol", "ask"]].sum().reset_index()
+
+
+def pack(v, dur, q=TICK):
+    """Buckets for the page: flat [start step (minutes since the previous bucket), low row step (since the previous bucket's
+    low), row count n, then n volumes from the low row up, one per row (0 where nothing traded)]. `dur` = bucket seconds,
+    `q` = a row's price step (a tick, or k ticks after to_rows); a row's price = row x q."""
     rows, pt, pl = [], None, None
     v = v.astype({"t": np.int64, "tick": np.int64, "vol": np.int64})
     if len(v):
@@ -150,8 +163,8 @@ def pack(v, dur):
             if pt is None:
                 t0, b0 = tt, lo
             pt, pl = tt, lo
-        return {"t0": t0, "b": b0, "dur": dur, "r": rows}
-    return {"t0": 0, "b": 0, "dur": dur, "r": []}
+        return {"t0": t0, "b": b0, "dur": dur, "q": q, "r": rows}
+    return {"t0": 0, "b": 0, "dur": dur, "q": q, "r": []}
 
 
 def check(start, end):

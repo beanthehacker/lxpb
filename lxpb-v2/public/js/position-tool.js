@@ -2,7 +2,7 @@
 //
 // PosTool.attach(chart, series, el, titleEl, cd) puts the tool on one pane (el.id = c-<pane>-<row>). Each table row has ONE box
 // (its manual trade), shared by every pane of the row named in config.shared: it is drawn on all of them and can be moved on any
-// of them; panes named in config.mirror only draw it. The box is kept in time and price, not candle positions, so an H1, an M5
+// of them; panes named in config.mirror only draw it, panes named in config.drawOnly get the drawings but no box. The box is kept in time and price, not candle positions, so an H1, an M5
 // and an M2 pane show it at the same moment: { side, t0, t1 (left / right edge, epoch s), entry, sl, tp, from, pane }.
 //
 // Click Long / Short, then a candle: the box is placed with its entry on that candle (target 2R, stop 1.5 x the average bar
@@ -46,7 +46,7 @@
                    ['dark green', '#1b8a3c'], ['white', '#ffffff'], ['pink', '#ff5cb8']];
   const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return 'rgba(' + (n >> 16 & 255) + ',' + (n >> 8 & 255) + ',' + (n & 255) + ',' + a + ')'; };
   const tools = [];
-  const config = { shared: [], mirror: [], cursor: () => null, result: () => null, onChange: null };
+  const config = { shared: [], mirror: [], drawOnly: [], group: {}, cursor: () => null, result: () => null, onChange: null };
   let active = null;                       // the tool last clicked: Delete / Esc go to it
   let under = null;                        // the tool under the mouse: drawing shortcuts (Alt+H / J / Shift+R) go to it
   const roundTick = (p) => Math.round(p / TICK) * TICK;
@@ -64,13 +64,15 @@
   }
   // the row's drawings (lines, rays, rectangles): [{ id, type 'hline' / 'ray', t, p, color, width, dash }
   //                                          | { id, type 'rect', t0, p0, t1, p1, color, fill, alpha, width, dash }]
-  const drawKey = (i) => 'draw_' + FILE + '_' + rowKey(i);
+  // a pane in config.group keeps its own drawings (key '<row>:<group>', stored as draw_<file>_<row key>_<group>): another
+  // instrument's prices are not the row's
+  const drawKey = (i) => { const s = String(i).split(':'); return 'draw_' + FILE + '_' + rowKey(s[0]) + (s[1] ? '_' + s[1] : ''); };
   const draws = {};
   const getDraws = (i) => (i in draws ? draws[i] : (draws[i] = lsGet(drawKey(i), [])));
   function setDraws(i, list) {
     draws[i] = list;
     lsSet(drawKey(i), list);
-    tools.forEach(t => { if (t.row === i && t.requestUpdate) t.requestUpdate(); });
+    tools.forEach(t => { if (t.dk === i && t.requestUpdate) t.requestUpdate(); });
   }
   const putDraw = (i, d) => setDraws(i, getDraws(i).map(o => (o.id === d.id ? d : o)));
   const dropDraw = (i, id) => setDraws(i, getDraws(i).filter(o => o.id !== id));
@@ -97,7 +99,9 @@
       this.chart = chart; this.series = series; this.el = el; this.cd = cd;
       const m = /^c-(\w+)-(\d+)$/.exec(el.id || '');
       this.row = m ? +m[2] : el.id; this.pane = m ? m[1] : '';
-      this.edit = config.shared.indexOf(this.pane) >= 0;
+      this.drawOnly = config.drawOnly.indexOf(this.pane) >= 0;    // drawings only: no position box, no Long / Short
+      this.edit = this.drawOnly || config.shared.indexOf(this.pane) >= 0;
+      this.dk = config.group[this.pane] ? this.row + ':' + config.group[this.pane] : this.row;   // whose drawings it shows
       this.show = this.edit || config.mirror.indexOf(this.pane) >= 0;
       let bs = Infinity;                                   // bar length in seconds: the pane's own, else the smallest step between candles
       for (let k = 1; k < Math.min(cd.candles.length, 40); k++) bs = Math.min(bs, cd.candles[k].time - cd.candles[k - 1].time);
@@ -118,14 +122,14 @@
         },
         // entry / target / stop prices as tags on the right-hand price axis, like TradingView's
         priceAxisViews() {
-          const p = getBox(tool.row), out = [];
+          const p = tool.bx(), out = [];
           const tag = (v, bg) => {
             const y = tool.y(v);
             if (y != null) out.push({ coordinate: () => y, text: () => v.toFixed(2), textColor: () => '#ffffff', backColor: () => bg,
                                       visible: () => true, tickVisible: () => true });
           };
           if (p) [[p.tp, '#26a69a'], [p.entry, '#787b86'], [p.sl, '#ef5350']].forEach(([v, bg]) => tag(v, bg));
-          getDraws(tool.row).forEach(d => {          // a ray's price always; a rectangle's two prices while it is selected / hovered
+          getDraws(tool.dk).forEach(d => {          // a ray's price always; a rectangle's two prices while it is selected / hovered
             if (d.type !== 'rect') tag(d.p, d.color);
             else if (tool.focus(d)) { tag(d.p0, d.color); tag(d.p1, d.color); }
           });
@@ -149,6 +153,7 @@
       if (this.edit) { this.buttons(titleEl); this.events(); }
       tools.push(this);
     }
+    bx() { return this.drawOnly ? null : getBox(this.row); }     // the row's position box, if this pane shows it
     get candles() { return this.cd.live || this.cd.candles; }   // a replay swaps in the candles up to its time
     y(p) { return this.series.priceToCoordinate(p); }
     // time <-> logical position: inside a candle by the fraction of its length, past the last candle extrapolated
@@ -193,8 +198,8 @@
         bar.insertBefore(b, fs || null);
         return b;
       };
-      this.bLong = mk('▲ Long', 'Long position: click, then a candle (one per row: replaces the one drawn)', () => this.armFor('long'));
-      this.bShort = mk('▼ Short', 'Short position: click, then a candle (one per row: replaces the one drawn)', () => this.armFor('short'));
+      if (!this.drawOnly) this.bLong = mk('▲ Long', 'Long position: click, then a candle (one per row: replaces the one drawn)', () => this.armFor('long'));
+      if (!this.drawOnly) this.bShort = mk('▼ Short', 'Short position: click, then a candle (one per row: replaces the one drawn)', () => this.armFor('short'));
       this.bMag = mk('', 'Magnet: strong (always snaps to O/H/L/C) / weak (within 12 px) / off. Hold Ctrl to drag freely', () => {
         settings.magnet = { strong: 'weak', weak: 'off', off: 'strong' }[settings.magnet];
         lsSet('settings', settings);
@@ -209,14 +214,13 @@
     syncButtons() {
       if (!this.bMag) return;
       this.bMag.textContent = '⌖ magnet: ' + settings.magnet;
-      this.bLong.classList.toggle('pos-on', this.arm === 'long');
-      this.bShort.classList.toggle('pos-on', this.arm === 'short');
+      if (this.bLong) { this.bLong.classList.toggle('pos-on', this.arm === 'long'); this.bShort.classList.toggle('pos-on', this.arm === 'short'); }
       this.bHline.classList.toggle('pos-on', this.arm === 'hline');
       this.bRay.classList.toggle('pos-on', this.arm === 'ray');
       this.bRect.classList.toggle('pos-on', this.arm === 'rect');
     }
     armFor(side) { this.cancelCreate(); this.arm = this.arm === side ? null : side; active = this; this.syncButtons(); }
-    cancelCreate() { if (this.creating) { dropDraw(this.row, this.creating.id); this.creating = null; this.selD = null; } }
+    cancelCreate() { if (this.creating) { dropDraw(this.dk, this.creating.id); this.creating = null; this.selD = null; } }
 
     plotPoint(ev) {
       const r = this.el.getBoundingClientRect(), ts = this.chart.timeScale();
@@ -259,7 +263,7 @@
       return [x0, x1, ye, yt, ys].some(v => v == null) ? null : { x0, x1, ye, yt, ys };
     }
     hit(x, y) {
-      const p = getBox(this.row), g = p && this.geom(p);
+      const p = this.bx(), g = p && this.geom(p);
       if (!g || x < g.x0 - HANDLE_PX || x > g.x1 + HANDLE_PX) return null;
       const top = Math.min(g.yt, g.ys), bot = Math.max(g.yt, g.ys);
       if (Math.hypot(x - g.x0, y - g.ye) <= 2 * HANDLE_PX) return 'start';   // the start point: its time and the entry price
@@ -280,7 +284,7 @@
     focus(d) { return this.selD === d.id || this.hoverD === d.id; }
     focused() {
       const id = this.selD || this.hoverD;
-      return id ? getDraws(this.row).find(d => d.id === id) || null : null;
+      return id ? getDraws(this.dk).find(d => d.id === id) || null : null;
     }
     dGeom(d) {
       if (d.type !== 'rect') { const x = this.x(d.t), y = this.y(d.p); return x == null || y == null ? null : { x, y }; }
@@ -304,7 +308,7 @@
     // what is under the cursor: the selected drawing's points, then drawings' points and lines / borders (newest first), then
     // the box, then the inside of rectangles
     hitAll(x, y) {
-      const ds = getDraws(this.row);
+      const ds = getDraws(this.dk);
       const sd = this.selD && ds.find(d => d.id === this.selD), sg = sd && this.dGeom(sd);
       if (sg) for (const [part, hx, hy] of this.dHandles(sd, sg)) if (Math.hypot(x - hx, y - hy) <= HANDLE_PX + 2) return { d: sd, part };
       for (let k = ds.length - 1; k >= 0; k--) {
@@ -335,7 +339,7 @@
       const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       const d = type !== 'rect' ? Object.assign({ id, type, t: q.t, p: q.p }, settings[type + 'Style'])
                                : Object.assign({ id, type, t0: q.t, p0: q.p, t1: q.t, p1: q.p }, settings.rectStyle);
-      setDraws(this.row, getDraws(this.row).concat([d]));
+      setDraws(this.dk, getDraws(this.dk).concat([d]));
       this.selD = id; this.sel = false;
       return d;
     }
@@ -354,7 +358,7 @@
     drawDraws(ctx) {
       const W = this.chart.timeScale().width();
       const crisp = (v, w) => (w % 2 ? Math.round(v) + 0.5 : Math.round(v));
-      getDraws(this.row).forEach(d => {
+      getDraws(this.dk).forEach(d => {
         const g = this.dGeom(d);
         if (!g) return;
         ctx.lineWidth = d.width || 1; ctx.strokeStyle = d.color; ctx.setLineDash(DASH[d.dash] || []);
@@ -376,7 +380,7 @@
 
     draw(ctx) {
       this.drawDraws(ctx);
-      const p = getBox(this.row), g = p && this.geom(p);
+      const p = this.bx(), g = p && this.geom(p);
       if (!g) return;
       const riskPts = Math.abs(p.entry - p.sl), rewPts = Math.abs(p.tp - p.entry);
       const riskUsd = settings.account * settings.riskPct / 100;
@@ -425,9 +429,9 @@
         if (!pt) return;
         active = this;
         if (this.creating) {                       // a rectangle's second corner
-          const c = this.creating, d = getDraws(this.row).find(o => o.id === c.id);
+          const c = this.creating, d = getDraws(this.dk).find(o => o.id === c.id);
           this.creating = null;
-          if (d && d.t0 === d.t1 && d.p0 === d.p1) { dropDraw(this.row, c.id); this.selD = null; }
+          if (d && d.t0 === d.t1 && d.p0 === d.p1) { dropDraw(this.dk, c.id); this.selD = null; }
           this.blockMouse = true; block(e); return;
         }
         if (this.arm === 'hline' || this.arm === 'ray' || this.arm === 'rect') {
@@ -456,7 +460,7 @@
         }
         const h = hh.box;
         this.sel = true; this.selD = null;
-        const p = getBox(this.row);
+        const p = this.bx();
         this.drag = { part: h, p0: Object.assign({}, p), l0: this.chart.timeScale().coordinateToLogical(pt.x),
                       dy: pt.y - this.y(p.entry) };
         this.blockMouse = true;
@@ -469,11 +473,11 @@
         if (this.dead) return;
         const r = el.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
         if (this.creating) {                       // the rectangle being drawn follows the cursor
-          const c = this.creating, d = getDraws(this.row).find(o => o.id === c.id);
+          const c = this.creating, d = getDraws(this.dk).find(o => o.id === c.id);
           if (!d) { this.creating = null; return; }
           const t = this.tAt(x), p = this.snap(x, y, e.ctrlKey);
           if (Math.hypot(x - c.x, y - c.y) > 4) c.moved = true;
-          if (t != null && p != null) putDraw(this.row, Object.assign({}, d, { t1: t, p1: p }));
+          if (t != null && p != null) putDraw(this.dk, Object.assign({}, d, { t1: t, p1: p }));
           el.querySelectorAll('canvas').forEach(cv => { cv.style.cursor = 'crosshair'; });
           return;
         }
@@ -488,7 +492,7 @@
           return;
         }
         if (this.drag.draw) { this.dragDraw(x, y, e.ctrlKey); return; }
-        const d = this.drag, p = Object.assign({}, getBox(this.row)), s = d.p0.side === 'long' ? 1 : -1;
+        const d = this.drag, p = Object.assign({}, this.bx()), s = d.p0.side === 'long' ? 1 : -1;
         const minGap = TICK;
         if (d.part === 'right') {
           const i = this.idxAt(x);
@@ -537,7 +541,7 @@
       }, true);
     }
     dragDraw(x, y, free) {
-      const d = this.drag, cur = getDraws(this.row).find(o => o.id === d.draw);
+      const d = this.drag, cur = getDraws(this.dk).find(o => o.id === d.draw);
       if (!cur) return;
       const q = Object.assign({}, cur), d0 = d.d0;
       if (d.part === 'move') {                    // the whole drawing: whole candles in time, its anchor price by the magnet
@@ -554,11 +558,11 @@
         else if (k[1] === 't') { if (t != null) q['t' + k[2]] = t; }
         else if (p != null) q['p' + k[2]] = p;
       }
-      putDraw(this.row, q);
+      putDraw(this.dk, q);
     }
     drawPopover(id, cx, cy) {                     // a drawing's colours, width, style and prices
       document.querySelectorAll('.pos-pop').forEach(n => n.remove());
-      const d = getDraws(this.row).find(o => o.id === id);
+      const d = getDraws(this.dk).find(o => o.id === id);
       if (!d) return;
       const box = document.createElement('div');
       box.className = 'pos-pop';
@@ -578,7 +582,7 @@
       popHost().appendChild(box);
       const val = (f) => { const n = box.querySelector('[data-f="' + f + '"]'); return n.classList.contains('pos-sws') ? n.dataset.v : n.value; };
       const apply = () => {                         // every change shows at once (no Apply step)
-        const cur = getDraws(this.row).find(o => o.id === id);
+        const cur = getDraws(this.dk).find(o => o.id === id);
         if (!cur) return;
         const q = Object.assign({}, cur, { color: val('color'), width: +val('width'), dash: val('dash') });
         if (cur.type === 'rect') Object.assign(q, { fill: val('fill'), alpha: +val('alpha') });
@@ -586,7 +590,7 @@
         settings[cur.type + 'Style'] = cur.type !== 'rect' ? { color: q.color, width: q.width, dash: q.dash }   // the next one is drawn in this style
                                                             : { color: q.color, fill: q.fill, alpha: q.alpha, width: q.width, dash: q.dash };
         lsSet('settings', settings);
-        putDraw(this.row, q);
+        putDraw(this.dk, q);
       };
       box.addEventListener('input', apply);
       box.addEventListener('change', apply);
@@ -598,7 +602,7 @@
           grp.querySelectorAll('.pos-sw').forEach(b => b.classList.toggle('on', b === e.target));
           apply();
         } else if (a === 'ok') box.remove();
-        else if (a === 'del') { this.selD = null; dropDraw(this.row, id); box.remove(); }
+        else if (a === 'del') { this.selD = null; dropDraw(this.dk, id); box.remove(); }
       });
     }
 
@@ -610,7 +614,7 @@
       box.style.left = Math.min(r.left, window.innerWidth - 240) + 'px';
       box.style.top = (r.bottom + 4) + 'px';
       const fields = [['account', 'Account size $', settings.account], ['riskPct', 'Risk %', settings.riskPct]];
-      const p = withBox ? getBox(this.row) : null;
+      const p = withBox ? this.bx() : null;
       if (p) fields.push(['entry', 'Entry', p.entry], ['tp', 'Target', p.tp], ['sl', 'Stop', p.sl]);
       box.innerHTML = fields.map(([n, l, v]) => '<label>' + l + '<input data-f="' + n + '" type="number" step="any" value="' + v + '"></label>').join('')
         + '<div class="pos-pop-btns">' + (p ? '<button data-a="del">Delete</button>' : '') + '<button data-a="ok">Apply</button></div>';
@@ -640,7 +644,7 @@
     }
     if (!active) return;
     if ((e.key === 'Delete' || e.key === 'Backspace') && active.selD) {
-      dropDraw(active.row, active.selD); active.selD = null; active.hoverD = null; e.preventDefault();
+      dropDraw(active.dk, active.selD); active.selD = null; active.hoverD = null; e.preventDefault();
     } else if ((e.key === 'Delete' || e.key === 'Backspace') && active.sel) {
       active.sel = false; setBox(active.row, null); e.preventDefault();
     } else if (e.key === 'Escape') {
