@@ -45,9 +45,15 @@ NQ CHART (user, 2026-11-10): an NQ chart beside the ES one (side by side; one co
 E:\data_source (nq_data.load_nq: NQ continuous, back-adjusted exactly as TradingView's NQ1!; a row whose stretch has no NQ 1-minute
 bars there shows a note instead). Each row's
 data file carries NQ H1 / M1 bars over the same stretches as ES. "NQ sync" (on by default, kept in the browser): on = NQ replays
-at the ES time and stepping either chart moves both; off = NQ keeps its own time (stepped from its own chart, or the replay bar /
-arrow keys after clicking it) and ES stays put; back on = NQ jumps to the ES time. NQ shows only where the ES cross bar is (its
+at the ES time and stepping either chart moves both, and the ES chart (not the 2nd chart) and NQ share their timeframe: picking
+H1 / M5 ... on either switches both (user, 2026-11-11); off = NQ keeps its own time and timeframe (stepped from its own chart, or
+the replay bar / arrow keys after clicking it) and ES stays put; back on = NQ jumps to the ES time and timeframe. NQ shows only where the ES cross bar is (its
 swing prices are ES prices); the position tool, drawings and volume profile stay on the ES charts.
+FREE MOVEMENT (user, 2026-11-11): every chart pans freely in both directions with the mouse. The first press on a chart takes
+its price axis off auto-fit (the range on screen is kept), as dragging both axes used to; double-click the price axis to auto-fit
+again. A finger keeps the touch rules (a vertical drag scrolls the page, the axis strip stretches).
+CROSSHAIR SYNC (user, 2026-11-11): hovering the ES chart puts NQ's crosshair on the candle holding the same time, at the same
+height, and the other way round (none past the other chart's last candle). The 2nd ES chart is not linked.
 
 Usage:
     python cross_bar/render_cross_bar_trades.py --last 5 --output <file>.html
@@ -540,11 +546,13 @@ function _stepTf(i, tf, dir, pane) {
   }
   _setT(i, T, pane);
 }
-function _setTf(i, pane, tf) {
+function _setTf(i, pane, tf) {                             // with NQ sync on, the ES chart and NQ share their timeframe (the 2nd chart keeps its own)
   const st = _rp(i);
   if (st.tf[pane] === tf) return;
   st.tf[pane] = tf;
   _renderTf(i, pane);
+  const mate = !_SYNC ? null : pane === 'a' ? 'n' : pane === 'n' ? 'a' : null;
+  if (mate && st.tf[mate] !== tf) { st.tf[mate] = tf; if (st.panes[mate]) _renderTf(i, mate); }
   _syncBar(i);
 }
 function _showB(i, on) {
@@ -569,8 +577,9 @@ function _setSync(on) {                                     // every row: sync o
   _lsSet('nq_sync_' + _FILE, on);
   Object.keys(_RP).forEach(k => {
     const st = _RP[k];
-    if (on) st.Tn = st.T;
-    if (st.data) _apply(+k); else _syncBar(+k);
+    const n = on && st.tf.n !== st.tf.a;
+    if (on) { st.Tn = st.T; st.tf.n = st.tf.a; }          // ... and takes the ES chart's timeframe
+    if (st.data) { if (n && st.panes.n) _renderTf(+k, 'n'); _apply(+k); } else _syncBar(+k);
   });
 }
 function _openRow(i) {
@@ -676,6 +685,7 @@ function _manualStats() {
   set('man-total', n ? _sgn(tot, 2) : '-');
   set('man-usd', n ? _usd(tot * _riskUsd()) : '-');
 }
+let _xhBusy = false;                                        // a crosshair being copied to the other chart (no echo back)
 let _activePane = null;                                     // { i, pane }: the chart the arrow / number keys and the bar's arrows act on
 function _paneOf(i) { return _activePane && _activePane.i === i ? _activePane.pane : 'a'; }
 function _syncBar(i, msg) {
@@ -747,7 +757,33 @@ const Replay = {
       const f = (t) => timeFmtD.format(new Date((t + 9 * 3600) * 1000));
       chart.applyOptions({ timeScale: { tickMarkFormatter: f }, localization: { timeFormatter: f } });
     }
-    el.addEventListener('pointerdown', () => { _activePane = { i, pane }; _syncBar(i); }, true);
+    el.addEventListener('pointerdown', (e) => {
+      _activePane = { i, pane }; _syncBar(i);
+      // free movement (user, 2026-11-11): the first mouse press takes the price axis off auto-fit, keeping the range on screen,
+      // so a drag moves the chart up / down as well as sideways (what dragging both axes used to unlock). Double-click the
+      // price axis to auto-fit again. Not for a finger: there a vertical drag scrolls the page and the axis strip stretches.
+      if (e.pointerType !== 'touch') chart.priceScale('right').applyOptions({ autoScale: false });
+    }, true);
+    // crosshair sync (user, 2026-11-11): hovering the ES chart puts NQ's crosshair on the candle holding the same time, at the
+    // same height, and the other way round (NQ's own timeframe and replay time when sync is off; past the other's last candle = none)
+    chart.subscribeCrosshairMove((p) => {
+      const mate = pane === 'a' ? 'n' : pane === 'n' ? 'a' : null, M = mate && st.panes[mate];
+      if (_xhBusy || !M) return;
+      _xhBusy = true;
+      try {
+        const c = M.cd.live || M.cd.candles, t = p.time;
+        let lo = 0, hi = c.length;                  // the last candle starting at or before t
+        while (lo < hi) { const k = (lo + hi) >> 1; if (c[k].time <= t) lo = k + 1; else hi = k; }
+        const bar = c[lo - 1], px = p.point ? M.series.coordinateToPrice(p.point.y) : null;
+        const oh = document.querySelector('#t-' + mate + '-' + i + ' .ct-ohlc');   // its title shows that candle's OHLC
+        if (t == null || !bar || px == null || t >= bar.time + M.cd.barSec) { M.chart.clearCrosshairPosition(); if (oh) oh.textContent = ''; }
+        else {
+          M.chart.setCrosshairPosition(px, bar.time, M.series);
+          if (oh) oh.textContent = 'O ' + bar.open.toFixed(2) + '  H ' + bar.high.toFixed(2) + '  L ' + bar.low.toFixed(2) + '  C ' + bar.close.toFixed(2);
+        }
+      } catch (e) { /* that chart is being rebuilt */ }
+      _xhBusy = false;
+    });
     let bar = titleEl.querySelector('.pos-bar');
     if (!bar) {                                     // a pane without the position tool (NQ): the same button cell, by the full-screen button
       const f0 = titleEl.querySelector('.fs-btn');
@@ -1071,9 +1107,13 @@ Manual columns show it as of the row's replay time (open = last price), and the 
 Manual R = (exit - fill) / (entry - stop), P&amp;L $ = R x the risk $ in the tool's settings (gear). Boxes, replay times
 and settings are kept in this browser.</p>
 <p class="lead">NQ CHART. Beside the ES chart ("&minus; NQ chart" hides it and ES takes the full width), with its own timeframe buttons, built the same way from the
-NQ continuous series in E:\data_source (back-adjusted exactly as TradingView's NQ1!). "NQ sync on": NQ replays with ES, and stepping either chart moves both. "NQ sync off": NQ keeps its own replay time, so
+NQ continuous series in E:\data_source (back-adjusted exactly as TradingView's NQ1!). "NQ sync on": NQ replays with ES, stepping either chart moves both, and picking a timeframe on the ES chart or NQ switches both
+(the 2nd ES chart keeps its own). "NQ sync off": NQ keeps its own replay time and timeframe, so
 stepping the NQ chart (its arrows, or the replay bar and arrow keys after clicking it) moves NQ only and ES stays put; turning sync
-back on brings NQ to the ES time. The position tool, drawings and volume profile are on the ES charts only.</p>
+back on brings NQ to the ES time and timeframe. The position tool, drawings and volume profile are on the ES charts only.</p>
+<p class="lead">MOVING A CHART. Drag a chart to move it any way, up and down as well as sideways (the price axis stops auto-fitting
+from the first press); double-click the price axis to fit the candles again. The crosshair is shared between the ES chart and NQ:
+hovering one shows the same time on the other.</p>
 <div class="summary">
   <div class="box"><strong>{len(rows)}</strong>cross bars</div>
   <div class="box man-box"><strong id="man-n">0</strong>manual trades closed</div>

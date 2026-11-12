@@ -708,8 +708,15 @@ NQ chart (user, 2026-11-10, same file): an NQ chart BESIDE the ES one (own timef
 the full width), from `E:\data_source` (`nq_data.load_nq`, NQ back-adjusted exactly as TradingView's NQ1!; data_source is the single
 source of truth, never build NQ bars here). Since 2026-11-11 its 1-minute bars run without a break from Jun 2020 (the missing
 ENQM25 tail / ENQU25 / ENQZ25 / ENQH26 ticks were downloaded in Sierra), so every 2026 row has an NQ chart. "NQ sync" on = NQ replays
-with ES, stepping either moves both; off = NQ steps on its own, ES stays put; back on = NQ jumps to the ES time. Position tool /
+with ES, stepping either moves both, and the ES chart + NQ share their timeframe (2nd chart keeps its own; user, 2026-11-11); off = NQ
+steps and picks timeframes on its own, ES stays put; back on = NQ jumps to the ES time and timeframe. Position tool /
 drawings / VP: ES only.
+VP defaults (user, 2026-11-11, `public/js/volume-profile.js`): only the last visit -> now profile is on; day, past days and the
+day / week levels (0 / 0) are off until ticked in the VP popover (settings key bumped to `vp_settings4` so old saved settings don't hold).
+Free movement (user, 2026-11-11, same file): the first mouse press on a chart turns its price axis's auto-fit off (range on screen
+kept), so dragging pans up / down too; double-click the price axis = auto-fit again. Touch keeps `_touchPriceAxis` (no change).
+Crosshair sync (user, 2026-11-11, same file): ES chart <-> NQ, the other chart's candle holding the hovered time at the same
+height (`setCrosshairPosition`, LWC 4.1+); none past its last candle; the 2nd ES chart is not linked.
 
 # Trap variants (`trap_variants.py`)
 
