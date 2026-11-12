@@ -17,9 +17,10 @@
 // profile's middle); from it the value area grows by comparing the volume of the next TWO prices above with the next two below and
 // adding the larger pair (both on a tie), until it holds >= the value-area percentage (70%) of the profile's volume.
 (function () {
-  const KEY = 'postool_v1_vp_settings3';
+  const KEY = 'postool_v1_vp_settings4';                   // 4: new defaults (user, 2026-11-11), so settings saved under the old ones don't hold
   const BAND = 50;
-  const DEF = { day: true, past: true, vis: true, dN: 3, wN: 2, naked: false, tol: 1, va: 70, bw: 2, prom: 20 };
+  // on by default: only the last visit -> now profile (user, 2026-11-11); day / past days / levels are off until ticked in the popover
+  const DEF = { day: false, past: false, vis: true, dN: 0, wN: 0, naked: false, tol: 1, va: 70, bw: 2, prom: 20 };
   let S = Object.assign({}, DEF);
   try { Object.assign(S, JSON.parse(localStorage.getItem(KEY) || '{}')); } catch (e) { /* private window */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* private window */ } };
