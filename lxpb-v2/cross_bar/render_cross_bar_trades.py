@@ -342,7 +342,7 @@ const _TFS = ['D1', 'H4', 'H1', 'M30', 'M15', 'M5', 'M2', 'M1'];
 const _LEN = { D1: 86400, H4: 14400, H1: 3600, M30: 1800, M15: 900, M5: 300, M2: 120, M1: 60 };
 const _DEF_TF = { a: 'H1', b: 'M5', n: 'H1' };
 let _SYNC = true;                                           // the NQ chart replays with ES (localStorage, below)
-const _NEAR = 400;                                          // candles in view when a chart opens or switches timeframe
+const _NEAR = 200;                                         // candles in view when a chart opens or switches timeframe
 const _BLANK = 0.2;                                         // ... and the share of the chart left blank right of the last one
 const _RP = {};
 const _FILE = location.pathname.split('/').pop();
@@ -988,8 +988,9 @@ def _row_html(i, row):
 </tr>"""
 
 
-def render(rows, h1, output, label, vp=False):
-    data_dir = os.path.splitext(output)[0] + "_data"
+def prepare(rows, h1, data_dir, vp=False, until_min=None):
+    """The page's chart list (one dict per row) and each row's data file in `data_dir`. `until_min` ({cross bar time: time}):
+    a row's replay window runs at least to that time (other reports built on this page: swept_extreme/report.py)."""
     os.makedirs(data_dir, exist_ok=True)
     visits = {t: last_visit(h1, t) for t in rows.index}
     lo = rows.index.min() - pd.Timedelta(days=30)
@@ -1001,13 +1002,16 @@ def render(rows, h1, output, label, vp=False):
     h1b = h1[["open", "high", "low", "close"]]
     nq_m1 = load_nq("1m", start=m1.index[0], tz=PT)[["open", "high", "low", "close"]]
     nq_h1 = load_nq("1h", tz=PT)[["open", "high", "low", "close"]]
-    charts, trs = [], []
+    charts = []
     for i, row in enumerate(rows.itertuples()):
         older = CB.older_swings(h1, h1.index.get_loc(row.Index), row.swing_time, row.swing_price, row.bullish)
         t, bull = row.Index, row.bullish
         closed = t + pd.Timedelta(hours=1)
         until, end_why = replay_window(m1, closed, pd.concat([candidates(led, row), candidates(led2, row)]),
                                        [float(row.swing_price)] + [op for _, op, _ in older], bool(row.bullish))
+        more = until_min.get(t) if until_min else None
+        if more is not None and min(more, m1.index[-1]) > until:
+            until, end_why = min(more, m1.index[-1]), end_why + "; on to the end of this report's trade"
         gone_t, start_t = replay_start(m2, row)
         side = "low" if bull else "high"
         chart = {"crossT": int(t.timestamp()), "close": int(closed.timestamp()), "start": int(start_t.timestamp()),
@@ -1061,14 +1065,16 @@ def render(rows, h1, output, label, vp=False):
             f.write("__replayData(" + json.dumps(key) + "," + json.dumps(payload, separators=(",", ":")) + ");\n")
         chart["end"], chart["endWhy"] = int(stop.timestamp()), end_why
         charts.append(chart)
-        trs.append(_row_html(i, row))
         print(f"{CB._pt(row.Index)} {'long ' if row.bullish else 'short'} replay {CB._pt(start_t)} to {CB._pt(until)}: {end_why}; "
               f"history from {CB._pt(m1.index[max(0, m1_from)])}" + (" (last visit)" if visit is not None and m1_from < c1 - M1_HISTORY else "")
               + ("; no NQ" if payload["nq"] is None else f"; NQ from {CB._pt(nqm.index[0])}" if nqm.index[0] > a1 + pd.Timedelta(days=3) else ""))
-    title = "ES H1 cross bar trades" + (f" ({label})" if label else "")
-    storage_key = "lxpb_cross_bar_trades_v1_" + "".join(c if c.isalnum() else "-" for c in label.lower()).strip("-")
+    return charts
+
+
+def page_js(charts, storage_key, data_rel, vp=False, extra_js=""):
+    """The page's scripts: the cross bar report's chart code and review store, the position tool, the replay (MANUAL_JS, then
+    `extra_js` in the same script) and the volume profile."""
     hook = "_touchPriceAxis(chart, el, series, rayInfo.map(r => r.series), queueThin);"
-    data_rel = os.path.basename(data_dir)
     with open(POS_TOOL_JS, encoding="utf-8") as f:
         pos_tool = f.read()
     js = CB._js(charts, storage_key)
@@ -1084,11 +1090,20 @@ def render(rows, h1, output, label, vp=False):
     fit = "_fitBars(chart, cd.candles.length);"
     assert js.count(fit) == 2, "M1 report chart JS changed: re-check the candle fit"
     js = js.replace(fit, "(cd.fit ? cd.fit(chart) : _fitBars(chart, cd.candles.length));")   # a replay chart: the last candles
-    js = js + "<script>\n" + MANUAL_JS.replace("__DATA_DIR__", data_rel) + "\nwindow.Replay = Replay;\n</script>\n"
+    js = js + "<script>\n" + MANUAL_JS.replace("__DATA_DIR__", data_rel) + extra_js + "\nwindow.Replay = Replay;\n</script>\n"
     if vp:
         with open(VP_JS, encoding="utf-8") as f:
             js += "<script>\n" + f.read() + "\n</script>\n"
-    js = js.replace("l5: 'M5-LXPB'", "a: 'chart', b: '2nd chart', n: 'NQ', l5: 'M5-LXPB'")
+    return js.replace("l5: 'M5-LXPB'", "a: 'chart', b: '2nd chart', n: 'NQ', l5: 'M5-LXPB'")
+
+
+def render(rows, h1, output, label, vp=False):
+    data_dir = os.path.splitext(output)[0] + "_data"
+    charts = prepare(rows, h1, data_dir, vp)
+    trs = [_row_html(i, row) for i, row in enumerate(rows.itertuples())]
+    title = "ES H1 cross bar trades" + (f" ({label})" if label else "")
+    storage_key = "lxpb_cross_bar_trades_v1_" + "".join(c if c.isalnum() else "-" for c in label.lower()).strip("-")
+    js = page_js(charts, storage_key, os.path.basename(data_dir), vp)
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
