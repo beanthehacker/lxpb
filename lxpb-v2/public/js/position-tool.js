@@ -1,11 +1,13 @@
 // Long / short position tool for the report charts (lightweight-charts 4.1.3), modelled on TradingView's.
 //
-// PosTool.attach(chart, series, el, titleEl, cd) puts the tool on one pane (el.id = c-<pane>-<row>). Each table row has ONE box
-// (its manual trade), shared by every pane of the row named in config.shared: it is drawn on all of them and can be moved on any
-// of them; panes named in config.mirror only draw it, panes named in config.drawOnly get the drawings but no box. The box is kept in time and price, not candle positions, so an H1, an M5
-// and an M2 pane show it at the same moment: { side, t0, t1 (left / right edge, epoch s), entry, sl, tp, from, pane }.
+// PosTool.attach(chart, series, el, titleEl, cd) puts the tool on one pane (el.id = c-<pane>-<row>). Each table row has any
+// number of boxes (its manual trades, user 2026-11-12: long + long + short ..., numbered trade 1, 2, 3 ... in the order drawn),
+// shared by every pane of the row named in config.shared: drawn on all of them and movable on any of them; panes named in
+// config.mirror only draw them, panes named in config.drawOnly get the drawings but no boxes. A box is kept in time and price, not
+// candle positions, so an H1, an M5 and an M2 pane show it at the same moment:
+// { id, side, t0, t1 (left / right edge, epoch s), entry, sl, tp, from, pane }.
 //
-// Click Long / Short, then a candle: the box is placed with its entry on that candle (target 2R, stop 1.5 x the average bar
+// Click Long / Short, then a candle: a new box is placed with its entry on that candle (target 2R, stop 1.5 x the average bar
 // range away, 20 candles wide). Drag the target / stop / entry lines to move them, the start point (left end of the entry line)
 // to move the start in time and price, the left / right edge to move that edge in time, inside the box to move the whole box. While dragging, prices stick to the nearest open / high / low / close of the candle under the cursor
 // ("strong" magnet: always; "weak": within 12 px; hold Ctrl to drag freely); time edges stick to candles. Click a box to select
@@ -13,13 +15,14 @@
 // timeframe) gets a fresh tool, and cd.barSec gives the candle length when the candles alone cannot. Boxes are drawn by a series primitive (the library's plugin hook), so
 // they pan / zoom with the chart, and are kept in this browser's localStorage.
 //
-// The entry is a PRICE, not a time: the trade is entered when price trades at it again from `from` on = the end of the candle
-// the box sits on, or the replay time when that candle is still forming (config.cursor). How the trade went is the page's job
-// (config.result(row, pane) = { state 'waiting' / 'open' / 'closed', fillT, fillPx, exitT, exitPx, lastT, lastPx }); the box
+// The entry is a PRICE, not a time, watched from `from` on = the end of the candle the box sits on, or the replay time when that
+// candle is still forming (config.cursor). Each box is a LIMIT (default) or a STOP-ENTRY order (`type` 'limit' / 'stop', user
+// 2026-11-12: the Order switch in its double-click popup; a box without one is a limit). How the trade went is the page's job
+// (config.result(row, pane, box id) = { state 'waiting' / 'open' / 'closed', fillT, fillPx, exitT, exitPx, lastT, lastPx }); the box
 // shades the stretch from the fill to the exit (or to the last price).
 //
 // The box itself carries no text (user, 2026-11-03): its numbers show in one small panel beside it (right of the box, left when
-// there is no room) while the box is hovered or dragged: target / stop = points and ticks, and $ at the risk $ of the settings
+// there is no room) while the box is hovered or dragged, headed by its trade number and side: target / stop = points and ticks, and $ at the risk $ of the settings
 // (Qty = risk $ / (stop points x $50), ES: 0.25 tick, $50 a point), and the risk / reward ratio.
 //
 // DRAWINGS (user, 2026-11-08), like TradingView's: a horizontal line (Alt+H or "─ Line", then click a point: a line across the
@@ -55,13 +58,25 @@
   const rowKey = (i) => { const r = document.querySelector('tr.lvl-row[data-idx="' + i + '"]'); return r && r.dataset.key ? r.dataset.key : String(i); };
   const boxKey = (i) => 'box_' + FILE + '_' + rowKey(i);
   const boxes = {};
-  const getBox = (i) => (i in boxes ? boxes[i] : (boxes[i] = lsGet(boxKey(i), null)));
-  function setBox(i, b) {
-    boxes[i] = b;
-    lsSet(boxKey(i), b);
+  const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  // the row's positions, in the order drawn (trade 1, 2, 3 ...): [{ id, side, t0, t1, entry, sl, tp, from, pane }]; a row kept
+  // from before 2026-11-12 (one box, no id) reads as one position with id '1'
+  function getBoxes(i) {
+    if (!(i in boxes)) {
+      const v = lsGet(boxKey(i), null);
+      boxes[i] = Array.isArray(v) ? v : v ? [Object.assign({ id: '1' }, v)] : [];
+    }
+    return boxes[i];
+  }
+  function setBoxes(i, list) {
+    boxes[i] = list;
+    lsSet(boxKey(i), list.length ? list : null);
     tools.forEach(t => { if (t.row === i && t.requestUpdate) t.requestUpdate(); });
     if (config.onChange) config.onChange(i);
   }
+  const putBox = (i, b) => setBoxes(i, getBoxes(i).map(o => (o.id === b.id ? b : o)));
+  const dropBox = (i, id) => setBoxes(i, getBoxes(i).filter(o => o.id !== id));
+  const tradeNo = (i, id) => getBoxes(i).findIndex(o => o.id === id) + 1;
   // the row's drawings (lines, rays, rectangles): [{ id, type 'hline' / 'ray', t, p, color, width, dash }
   //                                          | { id, type 'rect', t0, p0, t1, p1, color, fill, alpha, width, dash }]
   // a pane in config.group keeps its own drawings (key '<row>:<group>', stored as draw_<file>_<row key>_<group>): another
@@ -108,7 +123,7 @@
       this.barSec = cd.barSec || (isFinite(bs) && bs > 0 ? bs : 60);
       // a pane drawn again (another timeframe) replaces its old tool
       tools.filter(t => t.el.id === el.id).forEach(t => { t.dead = true; tools.splice(tools.indexOf(t), 1); });
-      this.sel = false; this.hover = false; this.arm = null; this.drag = null; this.requestUpdate = null;
+      this.selB = null; this.hoverB = null; this.arm = null; this.drag = null; this.requestUpdate = null;   // selected / hovered position id
       this.selD = null; this.hoverD = null; this.creating = null;   // selected / hovered drawing id, the rectangle being drawn
       if (!this.show) return;
       const tool = this;
@@ -122,13 +137,13 @@
         },
         // entry / target / stop prices as tags on the right-hand price axis, like TradingView's
         priceAxisViews() {
-          const p = tool.bx(), out = [];
+          const out = [];
           const tag = (v, bg) => {
             const y = tool.y(v);
             if (y != null) out.push({ coordinate: () => y, text: () => v.toFixed(2), textColor: () => '#ffffff', backColor: () => bg,
                                       visible: () => true, tickVisible: () => true });
           };
-          if (p) [[p.tp, '#26a69a'], [p.entry, '#787b86'], [p.sl, '#ef5350']].forEach(([v, bg]) => tag(v, bg));
+          tool.bxs().forEach(p => [[p.tp, '#26a69a'], [p.entry, '#787b86'], [p.sl, '#ef5350']].forEach(([v, bg]) => tag(v, bg)));
           getDraws(tool.dk).forEach(d => {          // a ray's price always; a rectangle's two prices while it is selected / hovered
             if (d.type !== 'rect') tag(d.p, d.color);
             else if (tool.focus(d)) { tag(d.p0, d.color); tag(d.p1, d.color); }
@@ -153,7 +168,8 @@
       if (this.edit) { this.buttons(titleEl); this.events(); }
       tools.push(this);
     }
-    bx() { return this.drawOnly ? null : getBox(this.row); }     // the row's position box, if this pane shows it
+    bxs() { return this.drawOnly ? [] : getBoxes(this.row); }   // the row's positions, if this pane shows them
+    bx(id) { return id == null ? null : this.bxs().find(o => o.id === id) || null; }
     get candles() { return this.cd.live || this.cd.candles; }   // a replay swaps in the candles up to its time
     y(p) { return this.series.priceToCoordinate(p); }
     // time <-> logical position: inside a candle by the fraction of its length, past the last candle extrapolated
@@ -198,8 +214,8 @@
         bar.insertBefore(b, fs || null);
         return b;
       };
-      if (!this.drawOnly) this.bLong = mk('▲ Long', 'Long position: click, then a candle (one per row: replaces the one drawn)', () => this.armFor('long'));
-      if (!this.drawOnly) this.bShort = mk('▼ Short', 'Short position: click, then a candle (one per row: replaces the one drawn)', () => this.armFor('short'));
+      if (!this.drawOnly) this.bLong = mk('▲ Long', 'Long position: click, then a candle (adds a trade: any number per row, numbered 1, 2, 3 ... in the order drawn)', () => this.armFor('long'));
+      if (!this.drawOnly) this.bShort = mk('▼ Short', 'Short position: click, then a candle (adds a trade: any number per row, numbered 1, 2, 3 ... in the order drawn)', () => this.armFor('short'));
       this.bMag = mk('', 'Magnet: strong (always snaps to O/H/L/C) / weak (within 12 px) / off. Hold Ctrl to drag freely', () => {
         settings.magnet = { strong: 'weak', weak: 'off', off: 'strong' }[settings.magnet];
         lsSet('settings', settings);
@@ -250,11 +266,11 @@
       const near = c.slice(Math.max(0, i - 20), i + 1);
       const avg = near.reduce((s, b) => s + b.high - b.low, 0) / Math.max(1, near.length);
       const d = Math.max(1, roundTick(avg * 1.5)), sign = this.arm === 'long' ? 1 : -1;
-      const t0 = c[i].time;
-      setBox(this.row, { side: this.arm, t0, t1: this.timeOf(i + 20), entry, sl: entry - sign * d, tp: entry + sign * 2 * d,
-                         from: this.fromFor(t0), pane: this.cd.tfName || this.pane });
-      this.sel = true;
+      const t0 = c[i].time, id = uid(), side = this.arm;
+      this.selB = id; this.selD = null;
       this.arm = null;
+      setBoxes(this.row, getBoxes(this.row).concat([{ id, side, type: 'limit', t0, t1: this.timeOf(i + 20), entry, sl: entry - sign * d,
+                                                      tp: entry + sign * 2 * d, from: this.fromFor(t0), pane: this.cd.tfName || this.pane }]));
       this.syncButtons();
     }
 
@@ -262,8 +278,14 @@
       const x0 = this.x(p.t0), x1 = this.x(p.t1), ye = this.y(p.entry), yt = this.y(p.tp), ys = this.y(p.sl);
       return [x0, x1, ye, yt, ys].some(v => v == null) ? null : { x0, x1, ye, yt, ys };
     }
-    hit(x, y) {
-      const p = this.bx(), g = p && this.geom(p);
+    hit(x, y) {                                   // { id, part } of the position under the cursor: the selected one first, then the newest
+      const list = this.bxs().slice().reverse(), s = list.findIndex(o => o.id === this.selB);
+      if (s > 0) list.unshift(list.splice(s, 1)[0]);
+      for (const p of list) { const part = this.hitOne(p, x, y); if (part) return { id: p.id, part }; }
+      return null;
+    }
+    hitOne(p, x, y) {
+      const g = this.geom(p);
       if (!g || x < g.x0 - HANDLE_PX || x > g.x1 + HANDLE_PX) return null;
       const top = Math.min(g.yt, g.ys), bot = Math.max(g.yt, g.ys);
       if (Math.hypot(x - g.x0, y - g.ye) <= 2 * HANDLE_PX) return 'start';   // the start point: its time and the entry price
@@ -318,7 +340,7 @@
         if (this.onLine(d, g, x, y)) return { d, part: 'move' };
       }
       const b = this.hit(x, y);
-      if (b) return { box: b };
+      if (b) return { box: b.part, id: b.id };
       for (let k = ds.length - 1; k >= 0; k--) {
         const d = ds[k], g = d.type === 'rect' && this.dGeom(d);
         if (g && x > Math.min(g.x0, g.x1) && x < Math.max(g.x0, g.x1) && y > Math.min(g.y0, g.y1) && y < Math.max(g.y0, g.y1)) return { d, part: 'move' };
@@ -340,7 +362,7 @@
       const d = type !== 'rect' ? Object.assign({ id, type, t: q.t, p: q.p }, settings[type + 'Style'])
                                : Object.assign({ id, type, t0: q.t, p0: q.p, t1: q.t, p1: q.p }, settings.rectStyle);
       setDraws(this.dk, getDraws(this.dk).concat([d]));
-      this.selD = id; this.sel = false;
+      this.selD = id; this.selB = null;
       return d;
     }
     axisBand(which) {
@@ -380,17 +402,31 @@
 
     draw(ctx) {
       this.drawDraws(ctx);
-      const p = this.bx(), g = p && this.geom(p);
+      const list = this.bxs();
+      list.forEach(p => this.drawBox(ctx, p));
+      // the numbers of the position hovered / dragged, on top of every box
+      const id = this.drag && this.drag.box ? this.drag.box : this.hoverB, k = list.findIndex(o => o.id === id);
+      const p = k >= 0 ? list[k] : null, g = p && this.geom(p);
       if (!g) return;
       const riskPts = Math.abs(p.entry - p.sl), rewPts = Math.abs(p.tp - p.entry);
       const riskUsd = settings.account * settings.riskPct / 100;
       const qty = riskPts > 0 ? riskUsd / (riskPts * PT_VALUE) : 0;
+      const usd = (v) => '$' + num(Math.round(v), 0);
+      const head = ['trade ' + (k + 1) + '  ' + p.side + ' ' + (p.type === 'stop' ? 'stop-entry' : 'limit'), p.side === 'long' ? '#4ade80' : '#f87171'];
+      const tgt = ['target ' + num(rewPts, 2) + ' pt  ' + num(rewPts / TICK, 0) + ' t  +' + usd(qty * rewPts * PT_VALUE), '#26a69a'];
+      const stp = ['stop   ' + num(riskPts, 2) + ' pt  ' + num(riskPts / TICK, 0) + ' t  -' + usd(riskUsd), '#ef5350'];
+      const rr = ['R:R    ' + num(riskPts > 0 ? rewPts / riskPts : 0, 2) + '  qty ' + num(qty, 2), '#d1d4dc'];
+      panel(ctx, [head].concat(g.yt < g.ys ? [tgt, rr, stp] : [stp, rr, tgt]), g.x0, g.x1, g.ye, this.chart.timeScale().width());
+    }
+    drawBox(ctx, p) {
+      const g = this.geom(p);
+      if (!g) return;
       const w = g.x1 - g.x0;
       ctx.fillStyle = 'rgba(38, 166, 154, 0.22)';
       ctx.fillRect(g.x0, Math.min(g.ye, g.yt), w, Math.abs(g.yt - g.ye));
       ctx.fillStyle = 'rgba(239, 83, 80, 0.22)';
       ctx.fillRect(g.x0, Math.min(g.ye, g.ys), w, Math.abs(g.ys - g.ye));
-      const r = config.result(this.row, this.pane);
+      const r = config.result(this.row, this.pane, p.id);
       if (r && r.fillT != null) {                      // the stretch the trade has run: shaded, dashed fill -> exit / last price
         const endT = r.state === 'closed' ? r.exitT : r.lastT, endPx = r.state === 'closed' ? r.exitPx : r.lastPx;
         const xf = this.x(r.fillT), xe = this.x(endT), yf = this.y(r.fillPx), yx = this.y(endPx);
@@ -406,14 +442,7 @@
       }
       ctx.strokeStyle = '#9ca3af'; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(g.x0, g.ye); ctx.lineTo(g.x1, g.ye); ctx.stroke();
-      if (this.hover || this.drag) {
-        const usd = (v) => '$' + num(Math.round(v), 0);
-        const tgt = ['target ' + num(rewPts, 2) + ' pt  ' + num(rewPts / TICK, 0) + ' t  +' + usd(qty * rewPts * PT_VALUE), '#26a69a'];
-        const stp = ['stop   ' + num(riskPts, 2) + ' pt  ' + num(riskPts / TICK, 0) + ' t  -' + usd(riskUsd), '#ef5350'];
-        const rr = ['R:R    ' + num(riskPts > 0 ? rewPts / riskPts : 0, 2) + '  qty ' + num(qty, 2), '#d1d4dc'];
-        panel(ctx, g.yt < g.ys ? [tgt, rr, stp] : [stp, rr, tgt], g.x0, g.x1, g.ye, this.chart.timeScale().width());
-      }
-      if (this.sel && this.edit) {
+      if (this.selB === p.id && this.edit) {
         [[g.x0, g.yt], [g.x0, g.ys], [g.x0, g.ye], [g.x1, g.ye]].forEach(([hx, hy]) => {
           ctx.fillStyle = '#131722'; ctx.strokeStyle = '#2962ff'; ctx.lineWidth = 2;
           ctx.beginPath(); ctx.arc(hx, hy, 5, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
@@ -446,12 +475,12 @@
         if (this.arm) { this.place(pt, e.ctrlKey); this.blockMouse = true; block(e); return; }
         const hh = this.hitAll(pt.x, pt.y);
         if (!hh) {
-          if (this.sel || this.selD) { this.sel = false; this.selD = null; if (this.requestUpdate) this.requestUpdate(); }
+          if (this.selB || this.selD) { this.selB = null; this.selD = null; if (this.requestUpdate) this.requestUpdate(); }
           return;
         }
         if (hh.d) {                                // a drawing: select it, drag a point or the whole of it
           const d0 = Object.assign({}, hh.d);
-          this.selD = d0.id; this.sel = false;
+          this.selD = d0.id; this.selB = null;
           this.drag = { draw: d0.id, part: hh.part, d0, l0: this.chart.timeScale().coordinateToLogical(pt.x),
                         dy: pt.y - this.y(d0.type === 'rect' ? d0.p0 : d0.p) };
           this.blockMouse = true; block(e);
@@ -459,9 +488,9 @@
           return;
         }
         const h = hh.box;
-        this.sel = true; this.selD = null;
-        const p = this.bx();
-        this.drag = { part: h, p0: Object.assign({}, p), l0: this.chart.timeScale().coordinateToLogical(pt.x),
+        this.selB = hh.id; this.selD = null;
+        const p = this.bx(hh.id);
+        this.drag = { box: hh.id, part: h, p0: Object.assign({}, p), l0: this.chart.timeScale().coordinateToLogical(pt.x),
                       dy: pt.y - this.y(p.entry) };
         this.blockMouse = true;
         block(e);
@@ -487,12 +516,14 @@
           const h = pt && this.hitAll(pt.x, pt.y);
           const cur = this.arm && pt ? 'crosshair' : this.handleCursor(h);
           el.querySelectorAll('canvas').forEach(c => { c.style.cursor = cur; });
-          const hb = !!(h && h.box), hd = h && h.d ? h.d.id : null;
-          if (hb !== this.hover || hd !== this.hoverD) { this.hover = hb; this.hoverD = hd; if (this.requestUpdate) this.requestUpdate(); }
+          const hb = h && h.box ? h.id : null, hd = h && h.d ? h.d.id : null;
+          if (hb !== this.hoverB || hd !== this.hoverD) { this.hoverB = hb; this.hoverD = hd; if (this.requestUpdate) this.requestUpdate(); }
           return;
         }
         if (this.drag.draw) { this.dragDraw(x, y, e.ctrlKey); return; }
-        const d = this.drag, p = Object.assign({}, this.bx()), s = d.p0.side === 'long' ? 1 : -1;
+        const d = this.drag, cur = this.bx(d.box);
+        if (!cur) return;
+        const p = Object.assign({}, cur), s = d.p0.side === 'long' ? 1 : -1;
         const minGap = TICK;
         if (d.part === 'right') {
           const i = this.idxAt(x);
@@ -526,7 +557,7 @@
             }
           }
         }
-        setBox(this.row, p);
+        putBox(this.row, p);
       });
       window.addEventListener('pointerup', () => {
         if (this.creating && this.creating.moved) this.creating = null;   // press, drag, release: done
@@ -537,7 +568,7 @@
         if (!h) return;
         block(e);
         if (h.d) this.drawPopover(h.d.id, e.clientX, e.clientY);
-        else this.popover(null, true, e.clientX, e.clientY);
+        else this.popover(null, h.id, e.clientX, e.clientY);
       }, true);
     }
     dragDraw(x, y, free) {
@@ -606,7 +637,7 @@
       });
     }
 
-    popover(btn, withBox, cx, cy) {
+    popover(btn, boxId, cx, cy) {                 // the settings, and with boxId that position's prices
       document.querySelectorAll('.pos-pop').forEach(n => n.remove());
       const box = document.createElement('div');
       box.className = 'pos-pop';
@@ -614,9 +645,12 @@
       box.style.left = Math.min(r.left, window.innerWidth - 240) + 'px';
       box.style.top = (r.bottom + 4) + 'px';
       const fields = [['account', 'Account size $', settings.account], ['riskPct', 'Risk %', settings.riskPct]];
-      const p = withBox ? this.bx() : null;
+      const p = this.bx(boxId);
       if (p) fields.push(['entry', 'Entry', p.entry], ['tp', 'Target', p.tp], ['sl', 'Stop', p.sl]);
-      box.innerHTML = fields.map(([n, l, v]) => '<label>' + l + '<input data-f="' + n + '" type="number" step="any" value="' + v + '"></label>').join('')
+      box.innerHTML = (p ? '<div style="color:' + (p.side === 'long' ? '#4ade80' : '#f87171') + '">trade ' + tradeNo(this.row, p.id) + '  ' + p.side + '</div>'
+                           + '<label>Order<select data-f="type"><option value="limit"' + (p.type !== 'stop' ? ' selected' : '') + '>limit</option>'
+                           + '<option value="stop"' + (p.type === 'stop' ? ' selected' : '') + '>stop-entry</option></select></label>' : '')
+        + fields.map(([n, l, v]) => '<label>' + l + '<input data-f="' + n + '" type="number" step="any" value="' + v + '"></label>').join('')
         + '<div class="pos-pop-btns">' + (p ? '<button data-a="del">Delete</button>' : '') + '<button data-a="ok">Apply</button></div>';
       popHost().appendChild(box);
       const val = (n) => parseFloat(box.querySelector('[data-f="' + n + '"]').value);
@@ -626,11 +660,16 @@
           if (val('account') > 0) settings.account = val('account');
           if (val('riskPct') > 0) settings.riskPct = val('riskPct');
           lsSet('settings', settings);
-          if (p) { const q = Object.assign({}, p); ['entry', 'tp', 'sl'].forEach(f => { if (!isNaN(val(f))) q[f] = val(f); }); setBox(this.row, q); }
+          const cur = this.bx(boxId);
+          if (cur) {
+            const q = Object.assign({}, cur, { type: box.querySelector('[data-f="type"]').value });
+            ['entry', 'tp', 'sl'].forEach(f => { if (!isNaN(val(f))) q[f] = val(f); });
+            putBox(this.row, q);
+          }
           tools.forEach(t => { if (t.requestUpdate) t.requestUpdate(); });
           if (config.onChange) config.onChange(null);       // account / risk: every row's $ changes
           box.remove();
-        } else if (a === 'del') { this.sel = false; setBox(this.row, null); box.remove(); }
+        } else if (a === 'del') { if (this.selB === boxId) this.selB = null; dropBox(this.row, boxId); box.remove(); }
       });
     }
   }
@@ -645,8 +684,9 @@
     if (!active) return;
     if ((e.key === 'Delete' || e.key === 'Backspace') && active.selD) {
       dropDraw(active.dk, active.selD); active.selD = null; active.hoverD = null; e.preventDefault();
-    } else if ((e.key === 'Delete' || e.key === 'Backspace') && active.sel) {
-      active.sel = false; setBox(active.row, null); e.preventDefault();
+    } else if ((e.key === 'Delete' || e.key === 'Backspace') && active.selB) {
+      const id = active.selB;
+      active.selB = null; active.hoverB = null; dropBox(active.row, id); e.preventDefault();
     } else if (e.key === 'Escape') {
       active.cancelCreate();
       active.arm = null; active.syncButtons();
@@ -675,7 +715,7 @@
   document.head.appendChild(css);
 
   window.PosTool = {
-    tools, config, settings, getBox, getDraws,
+    tools, config, settings, getBoxes, getDraws,
     refresh: (i) => tools.filter(t => i == null || t.row === i).forEach(t => { if (t.requestUpdate) t.requestUpdate(); }),
     attach: (chart, series, el, titleEl, cd) => new Tool(chart, series, el, titleEl, cd),
   };

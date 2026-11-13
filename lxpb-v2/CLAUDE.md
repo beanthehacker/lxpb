@@ -696,9 +696,15 @@ so the cross bar is still forming and may not end up confirmed; ⏮ / back steps
 arrows, replay bar, arrow keys, Play that pauses at the manual fill / exit); candles are built in the page as they stood at the replay
 time (last one forming) from the row's H1 bars before the cross bar's hour (history of H1 and up, 150 days) and M1 bars (6 trading days of history + the window; charts open with 400 candles in view and the right 20% blank). Both histories reach back at least to the last visit of the area (`last_visit`, user 2026-11-09): the trading day in which price last traded within 50 pt of the cross bar's trading-day open before it left that band; none found = the defaults. Replay window (`replay_window`): >= 1 trading day (1,380 M1 bars) past the close, on until
 every P0 price of the bar (M5 and M2 entry levels not touched before the close) is revisited + 60 bars, at most 5 trading days, AND (user 2026-11-11) on until the farthest swing price (swept + older swings: lowest for bullish, highest for bearish) is traded again + 60 bars, at most 20 trading days (`MAX_SWING_M1`).
-Position tool `public/js/position-tool.js` (TradingView-like, magnet to O/H/L/C): ONE box per row, kept in time + price, drawn on
-every pane. The ENTRY IS A PRICE: filled when price trades there again after the candle the box sits on (from the replay time when
-that candle is still forming); judged on the 1 s path (`s1_pack`: seconds not inside the previous kept second's range, per minute,
+Position tool `public/js/position-tool.js` (TradingView-like, magnet to O/H/L/C): any number of boxes per row (user 2026-11-12:
+long + long + short ..., trade 1, 2, 3 in the order drawn; a box stored before then reads as trade 1), each kept in time + price,
+drawn on every pane. The row's Manual cells show the total (count, states, summed R / $), one `tr.man-sub` line per trade under
+the row (hidden with the row by a filter); summary boxes count trades. The ENTRY IS A PRICE; each box is a LIMIT (default) or STOP-ENTRY (user 2026-11-12, Order switch in its
+double-click popup, `type`). Stop-entry: first touch after the candle the box sits on (from the replay time when that candle is
+still forming). Limit: lxpb.py's state machine on the drawing timeframe, box candle = P0, entry = level (long LHPB, short LLPB):
+P1 = first closed candle closing / gapping past the entry (poke past + close back = failed breakout = no trade, exact tag =
+nothing), fill at the entry on P2 = first touch after the P1 candle closed, next candle allowed (NO one-candle gap); a touch
+before the 1 s path starts (M1 bars) = no trade (`_fillAt`). Exits judged on the 1 s path (`s1_pack`: seconds not inside the previous kept second's range, per minute,
 exact for first touches): first second reaching stop or target, same second both = stop, no EOD flat. Manual columns (entry / stop
 & target / exit / R / P&L $ = R x tool risk $) show the trade as of the row's replay time; summary boxes count closed manual trades.
 Per-row data (H1 + M1 + 1 s path) is a side file `<report>_data/<row key>.js` loaded by script tag; committed as `.js.gz` next to the
