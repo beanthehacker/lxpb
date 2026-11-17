@@ -351,7 +351,7 @@ MANUAL_JS = r"""
 const _DATA_DIR = '__DATA_DIR__';
 const _TFS = ['D1', 'H4', 'H1', 'M30', 'M15', 'M5', 'M2', 'M1'];
 const _LEN = { D1: 86400, H4: 14400, H1: 3600, M30: 1800, M15: 900, M5: 300, M2: 120, M1: 60 };
-const _DEF_TF = { a: 'H1', b: 'M5', n: 'H1' };
+const _DEF_TF = { a: 'H1', b: 'M5', n: 'H1' };              // the timeframes a row opens on until changed with "Chart timeframes" (top)
 let _SYNC = true;                                           // the NQ chart replays with ES (localStorage, below)
 const _NEAR = 200;                                         // candles in view when a chart opens or switches timeframe
 const _BLANK = 0.2;                                         // ... and the share of the chart left blank right of the last one
@@ -366,7 +366,7 @@ function _rp(i) {
     const clampT = (t) => Math.max(cd.start, Math.min(cd.end, t));
     _RP[i] = { start: cd.start, end: cd.end, T: clampT(_ls('cursor2_' + _FILE + '_' + _key(i), cd.start)),
                data: null, panes: {}, hist: {}, res: null, play: null,
-               tf: { a: _DEF_TF.a, b: _DEF_TF.b, n: _DEF_TF.n } };   // every row opens on H1 (2nd chart M5, NQ H1), whatever was picked before
+               tf: { a: _DEF_TF.a, b: _DEF_TF.b, n: _DEF_TF.n } };   // replaced by the chosen opening timeframes when the row opens (_openRow)
     _RP[i].Tn = _SYNC ? _RP[i].T : clampT(_ls('cursorN_' + _FILE + '_' + _key(i), _RP[i].T));   // the NQ chart's own time (sync off)
   }
   return _RP[i];
@@ -589,6 +589,7 @@ function _showN(i, on) {
 }
 function _setSync(on) {                                     // every row: sync on brings NQ to the ES time
   _SYNC = on;
+  { const b = document.getElementById('tf-def-btn'); if (b) b.textContent = _tfBtnText(); }
   _lsSet('nq_sync_' + _FILE, on);
   Object.keys(_RP).forEach(k => {
     const st = _RP[k];
@@ -597,7 +598,47 @@ function _setSync(on) {                                     // every row: sync o
     if (st.data) { if (n && st.panes.n) _renderTf(+k, 'n'); _apply(+k); } else _syncBar(+k);
   });
 }
+// "Chart timeframes" (user, 2026-11-17): the button above the table picks the timeframes a row's charts open on (chart, 2nd chart,
+// NQ), kept in this browser; with NQ sync on, NQ opens on the chart's timeframe (they share it). Applies to every row opened after.
+const _defTf = () => Object.assign({}, _DEF_TF, _ls('def_tf_' + _FILE, {}));
+function _tfDefaultsPop(btn) {
+  document.querySelectorAll('.pos-pop').forEach(n => n.remove());
+  const d = _defTf(), r = btn.getBoundingClientRect(), box = document.createElement('div');
+  box.className = 'pos-pop';
+  box.style.left = Math.max(4, Math.min(r.left, window.innerWidth - 240)) + 'px';
+  box.style.top = (r.bottom + 4) + 'px';
+  const sel = (k, label) => '<label>' + label + '<select data-k="' + k + '">'
+    + _TFS.map(t => '<option' + (t === d[k] ? ' selected' : '') + '>' + t + '</option>').join('') + '</select></label>';
+  box.innerHTML = '<div>Open a row\'s charts on</div>' + sel('a', 'Chart') + sel('b', '2nd chart') + sel('n', 'NQ')
+    + '<div class="src-tag" data-note style="white-space:normal"></div>'
+    + '<div class="pos-pop-btns"><button data-a="reset">H1 / M5 / H1</button><button data-a="ok">Close</button></div>';
+  const note = () => {
+    box.querySelector('[data-note]').textContent = _SYNC ? 'NQ sync is on: NQ opens on the chart\'s timeframe' : '';
+    box.querySelector('[data-k="n"]').disabled = _SYNC;
+  };
+  const save = () => {
+    const v = {};
+    box.querySelectorAll('select').forEach(x => { v[x.dataset.k] = x.value; });
+    _lsSet('def_tf_' + _FILE, v);
+    btn.textContent = _tfBtnText();
+  };
+  box.addEventListener('change', save);
+  box.addEventListener('click', (e) => {
+    const a = e.target.dataset && e.target.dataset.a;
+    if (a === 'ok') box.remove();
+    else if (a === 'reset') { box.querySelectorAll('select').forEach(x => { x.value = _DEF_TF[x.dataset.k]; }); save(); }
+  });
+  document.body.appendChild(box);
+  note();
+}
+const _tfBtnText = () => { const d = _defTf(); return '\u29c9 Chart timeframes: ' + d.a + ' / ' + d.b + ' / ' + (_SYNC ? d.a : d.n); };
+window.addEventListener('DOMContentLoaded', () => {
+  const b = document.getElementById('tf-def-btn');
+  if (b) { b.textContent = _tfBtnText(); b.addEventListener('click', (e) => { e.stopPropagation(); _tfDefaultsPop(b); }); }
+});
 function _openRow(i) {
+  const st = _rp(i), d = _defTf();
+  st.tf = { a: d.a, b: d.b, n: _SYNC ? d.a : d.n };      // the chosen opening timeframes (NQ shares the chart's with sync on)
   _syncBar(i);
   _load(i, () => {
     _renderTf(i, 'a');
@@ -1061,6 +1102,9 @@ def s1_pack(s):
 
 
 # ---------------------------------------------------------------- page
+TF_BTN = ('\n    <button class="btn" id="tf-def-btn" type="button" title="The timeframes a row\'s charts open on (chart / 2nd chart / '
+          'NQ), kept in this browser">Chart timeframes</button>')
+assert '<div class="toolbar">' in CB.TOOLBAR_HTML, "cross bar toolbar changed: re-check TF_BTN"
 HEAD_HTML = (
     "<th class=\"left\">#</th><th class=\"left\">Cross bar (H1 start)</th><th class=\"left\">Side</th>"
     "<th class=\"left\">Confirmed by</th><th>Swept</th>"
@@ -1246,7 +1290,8 @@ engulfing bar), oldest first, for MANUAL trades: long after a bullish bar, short
 its replay starts INSIDE the cross bar's hour, at the close of the first M2 candle that closed back above the swept swing low
 (below the swept high, bearish) after price traded below (above) it, so the cross bar is still forming and may not end up confirmed
 (amber = the swept swing). Times are PT.</p>
-<p class="lead">FORWARD REPLAY. The chart opens on H1; switch it with D1 / H4 / H1 / M30 / M15 / M5 / M2 / M1 in its title bar (or
+<p class="lead">FORWARD REPLAY. The chart opens on H1 (2nd chart M5, NQ H1; change these with "Chart timeframes"
+above the table); switch it with D1 / H4 / H1 / M30 / M15 / M5 / M2 / M1 in its title bar (or
 keys 1-8; D1 and H4 as TradingView draws ES: a D1 candle is the session from 15:00 PT to 14:00 PT, H4 candles start at 15:00 PT).
 "+ 2nd chart" adds a second one under it with its own timeframe. Step forward one candle of a chart's timeframe with the &#9664;
 &#9654; buttons on it, the replay bar (the chart last clicked), the arrow keys, or Play (steps of the chosen timeframe; pauses when
@@ -1288,7 +1333,7 @@ hovering one shows the same time on the other.</p>
   <div class="box man-box"><strong id="man-usd">-</strong>manual P&amp;L $</div>
   <div class="box"><strong id="sum-shown">{len(rows)}</strong>shown</div>
   <div class="box"><strong id="sum-reviewed">0</strong>reviewed</div>
-  <div class="box"><strong id="sum-valid">0</strong>valid</div>{CB.TOOLBAR_HTML}
+  <div class="box"><strong id="sum-valid">0</strong>valid</div>{CB.TOOLBAR_HTML.replace('<div class="toolbar">', '<div class="toolbar">' + TF_BTN, 1)}
 </div>
 {CB.FILTERS_HTML}
 <div class="table-wrap"><table id="lvl-table">
