@@ -34,6 +34,13 @@
 // the whole drawing; Delete removes, Esc cancels, double-click opens its colours (7 swatches, user 2026-11-09: blue, orange, red,
 // bright green, dark green, white, pink; no colour picker), width, style and prices. The last style used becomes the default for
 // the next one.
+//
+// IN-PLAY MANAGEMENT (user, 2026-11-18), for a trade that is open at the replay time (config.cursor): FLATTEN closes it at the
+// last price at the replay time (`flat: { t }`; the "✕ Flatten" button = the selected trade, or every open trade of the row; also
+// in the double-click popup); MOVE STOP records a new stop from the replay time on (`stops: [{ t, sl }]`, oldest first, the plan's
+// `sl` stays the 1R the trade is measured in): drag the stop line of an open trade, or type it in the popup. The stop in force is
+// drawn orange from the time it was moved, and the panel shows the R still at risk (fill to that stop, in R of the plan's stop).
+// Stepping the replay back before a flatten / a move undoes it on screen; doing it again at an earlier time replaces the later ones.
 (function () {
   const PT_VALUE = 50, TICK = 0.25, MAGNET_PX = 12, HANDLE_PX = 6;
   const LS = 'postool_v1_';
@@ -77,6 +84,25 @@
   const putBox = (i, b) => setBoxes(i, getBoxes(i).map(o => (o.id === b.id ? b : o)));
   const dropBox = (i, id) => setBoxes(i, getBoxes(i).filter(o => o.id !== id));
   const tradeNo = (i, id) => getBoxes(i).findIndex(o => o.id === id) + 1;
+  // the stop in force at time T: the last move at or before T, else the plan's stop
+  const stopAt = (p, T) => { let v = p.sl; (p.stops || []).forEach(s => { if (T == null || s.t <= T) v = s.sl; }); return v; };
+  const isOpen = (i, id) => { const r = config.result(i, '', id); return !!(r && r.state === 'open'); };
+  // a new stop from the replay time on (later moves, made before a step back, are dropped); back at the plan's stop = no move
+  function moveStop(i, p, v) {
+    const T = config.cursor(i), keep = (p.stops || []).filter(s => s.t < T);
+    const prev = keep.length ? keep[keep.length - 1].sl : p.sl;
+    const stops = v === prev ? keep : keep.concat([{ t: T, sl: v }]);
+    const q = Object.assign({}, p);
+    if (stops.length) q.stops = stops; else delete q.stops;
+    putBox(i, q);
+  }
+  function flatten(i, p) { if (isOpen(i, p.id)) putBox(i, Object.assign({}, p, { flat: { t: config.cursor(i) } })); }
+  // a moved stop may not pass the last price (it would have stopped the trade already)
+  function clampStop(i, p, v) {
+    const r = config.result(i, '', p.id), last = r && r.lastPx;
+    if (last == null) return v;
+    return p.side === 'long' ? Math.min(v, last - TICK) : Math.max(v, last + TICK);
+  }
   // the row's drawings (lines, rays, rectangles): [{ id, type 'hline' / 'ray', t, p, color, width, dash }
   //                                          | { id, type 'rect', t0, p0, t1, p1, color, fill, alpha, width, dash }]
   // a pane in config.group keeps its own drawings (key '<row>:<group>', stored as draw_<file>_<row key>_<group>): another
@@ -143,7 +169,11 @@
             if (y != null) out.push({ coordinate: () => y, text: () => v.toFixed(2), textColor: () => '#ffffff', backColor: () => bg,
                                       visible: () => true, tickVisible: () => true });
           };
-          tool.bxs().forEach(p => [[p.tp, '#26a69a'], [p.entry, '#787b86'], [p.sl, '#ef5350']].forEach(([v, bg]) => tag(v, bg)));
+          tool.bxs().forEach(p => {
+            [[p.tp, '#26a69a'], [p.entry, '#787b86'], [p.sl, '#ef5350']].forEach(([v, bg]) => tag(v, bg));
+            const ms = tool.movedStop(p);
+            if (ms != null) tag(ms, '#ff9800');
+          });
           getDraws(tool.dk).forEach(d => {          // a ray's price always; a rectangle's two prices while it is selected / hovered
             if (d.type !== 'rect') tag(d.p, d.color);
             else if (tool.focus(d)) { tag(d.p0, d.color); tag(d.p1, d.color); }
@@ -170,6 +200,10 @@
     }
     bxs() { return this.drawOnly ? [] : getBoxes(this.row); }   // the row's positions, if this pane shows them
     bx(id) { return id == null ? null : this.bxs().find(o => o.id === id) || null; }
+    movedStop(p) {                                // the moved stop in force at the replay time, null when none
+      const v = stopAt(p, config.cursor(this.row));
+      return v !== p.sl ? v : null;
+    }
     get candles() { return this.cd.live || this.cd.candles; }   // a replay swaps in the candles up to its time
     y(p) { return this.series.priceToCoordinate(p); }
     // time <-> logical position: inside a candle by the fraction of its length, past the last candle extrapolated
@@ -224,6 +258,11 @@
       this.bHline = mk('─ Line', 'Horizontal line (Alt+H): click a point', () => this.armFor('hline'));
       this.bRay = mk('→ Ray', 'Horizontal ray (Alt+J): click a point', () => this.armFor('ray'));
       this.bRect = mk('▭ Rect', 'Rectangle (Alt+Shift+R): click two corners, or press, drag and release', () => this.armFor('rect'));
+      if (!this.drawOnly) mk('✕ Flatten', 'Flatten at the replay time, at the last price: the selected trade, or every open trade of this row '
+                                          + '(its R goes to the Manual R column). Step the replay back before it to undo', () => {
+        const sel = this.bx(this.selB), list = sel && isOpen(this.row, sel.id) ? [sel] : this.bxs().filter(p => isOpen(this.row, p.id));
+        list.forEach(p => flatten(this.row, this.bx(p.id)));
+      });
       mk('⚙', 'Account size and risk', (b) => this.popover(b, false));
       this.syncButtons();
     }
@@ -286,7 +325,11 @@
     }
     hitOne(p, x, y) {
       const g = this.geom(p);
-      if (!g || x < g.x0 - HANDLE_PX || x > g.x1 + HANDLE_PX) return null;
+      if (!g) return null;
+      const ms = this.movedStop(p), yms = ms == null ? null : this.y(ms);   // the moved stop's line runs on to the replay time
+      if (yms != null && Math.abs(y - yms) <= HANDLE_PX && isOpen(this.row, p.id) && x >= g.x0 - HANDLE_PX
+          && x <= Math.max(g.x1, this.x(config.cursor(this.row)) || g.x1) + HANDLE_PX) return 'msl';
+      if (x < g.x0 - HANDLE_PX || x > g.x1 + HANDLE_PX) return null;
       const top = Math.min(g.yt, g.ys), bot = Math.max(g.yt, g.ys);
       if (Math.hypot(x - g.x0, y - g.ye) <= 2 * HANDLE_PX) return 'start';   // the start point: its time and the entry price
       if (Math.abs(x - g.x1) <= HANDLE_PX && y >= top && y <= bot) return 'right';
@@ -416,7 +459,12 @@
       const tgt = ['target ' + num(rewPts, 2) + ' pt  ' + num(rewPts / TICK, 0) + ' t  +' + usd(qty * rewPts * PT_VALUE), '#26a69a'];
       const stp = ['stop   ' + num(riskPts, 2) + ' pt  ' + num(riskPts / TICK, 0) + ' t  -' + usd(riskUsd), '#ef5350'];
       const rr = ['R:R    ' + num(riskPts > 0 ? rewPts / riskPts : 0, 2) + '  qty ' + num(qty, 2), '#d1d4dc'];
-      panel(ctx, [head].concat(g.yt < g.ys ? [tgt, rr, stp] : [stp, rr, tgt]), g.x0, g.x1, g.ye, this.chart.timeScale().width());
+      const rows = [head].concat(g.yt < g.ys ? [tgt, rr, stp] : [stp, rr, tgt]);
+      const r = config.result(this.row, this.pane, p.id);
+      if (r && r.stopNow != null && r.stopNow !== p.sl && (r.state === 'open' || r.hit === 'moved stop'))
+        rows.push(['moved  ' + num(r.stopNow, 2) + '  ' + (r.atRisk > 0 ? num(r.atRisk, 2) + 'R at risk' : r.atRisk < 0 ? '+' + num(-r.atRisk, 2) + 'R locked' : 'risk 0R'), '#ff9800']);
+      if (r && r.hit === 'flatten') rows.push(['flat   ' + num(r.exitPx, 2) + '  ' + (r.r >= 0 ? '+' : '') + num(r.r, 2) + 'R', '#d1d4dc']);
+      panel(ctx, rows, g.x0, g.x1, g.ye, this.chart.timeScale().width());
     }
     drawBox(ctx, p) {
       const g = this.geom(p);
@@ -440,6 +488,15 @@
           ctx.beginPath(); ctx.arc(xf, yf, 3, 0, 2 * Math.PI); ctx.fill();
         }
       }
+      // the moved stops up to the replay time: orange, each from the time it was moved to the next move / the exit / the box's end
+      const T = config.cursor(this.row), ms = (p.stops || []).filter(s => T == null || s.t <= T);
+      ms.forEach((s, k) => {
+        const tEnd = k + 1 < ms.length ? ms[k + 1].t : r && r.state === 'closed' ? r.exitT : Math.max(p.t1, T || p.t1);
+        const xa = this.x(s.t), xb = this.x(tEnd), ys = this.y(s.sl);
+        if (xa == null || xb == null || ys == null) return;
+        ctx.strokeStyle = '#ff9800'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(xa, ys); ctx.lineTo(Math.max(xa + 1, xb), ys); ctx.stroke();
+      });
       ctx.strokeStyle = '#9ca3af'; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(g.x0, g.ye); ctx.lineTo(g.x1, g.ye); ctx.stroke();
       if (this.selB === p.id && this.edit) {
@@ -491,7 +548,7 @@
         this.selB = hh.id; this.selD = null;
         const p = this.bx(hh.id);
         this.drag = { box: hh.id, part: h, p0: Object.assign({}, p), l0: this.chart.timeScale().coordinateToLogical(pt.x),
-                      dy: pt.y - this.y(p.entry) };
+                      dy: pt.y - this.y(p.entry), open: isOpen(this.row, hh.id) };
         this.blockMouse = true;
         block(e);
         if (this.requestUpdate) this.requestUpdate();
@@ -547,6 +604,10 @@
             Object.assign(p, { t0, t1: this.timeOf(this.logicalOf(d.p0.t1) + di), from: this.fromFor(t0), pane: this.cd.tfName || this.pane,
                                entry: d.p0.entry + dp, tp: d.p0.tp + dp, sl: d.p0.sl + dp });
           }
+        } else if (d.part === 'msl' || (d.part === 'sl' && d.open)) {   // an open trade: the stop is MOVED from the replay time on
+          const v = this.snap(x, y, e.ctrlKey);
+          if (v != null) moveStop(this.row, cur, clampStop(this.row, cur, v));
+          return;
         } else {
           const v = this.snap(x, y, e.ctrlKey);
           if (v != null) {
@@ -646,17 +707,32 @@
       box.style.top = (r.bottom + 4) + 'px';
       const fields = [['account', 'Account size $', settings.account], ['riskPct', 'Risk %', settings.riskPct]];
       const p = this.bx(boxId);
-      if (p) fields.push(['entry', 'Entry', p.entry], ['tp', 'Target', p.tp], ['sl', 'Stop', p.sl]);
+      if (p) fields.push(['entry', 'Entry', p.entry], ['tp', 'Target', p.tp], ['sl', p.stops ? 'Stop (plan, 1R)' : 'Stop', p.sl]);
+      // an open trade (at the replay time): flatten it, or move its stop from now on
+      const open = p && isOpen(this.row, p.id), res = p && config.result(this.row, '', p.id);
+      let mg = '';
+      if (open) mg = '<div class="pos-pop-sep">in play at the replay time, last ' + (res.lastPx != null ? res.lastPx.toFixed(2) : '-')
+        + ', ' + (res.r >= 0 ? '+' : '') + res.r.toFixed(2) + 'R</div>'
+        + '<label>Stop now<input data-f="mstop" type="number" step="0.25" value="' + stopAt(p, config.cursor(this.row)) + '"></label>'
+        + '<div class="pos-pop-btns"><button data-a="mstop">Move stop</button><button data-a="flat">Flatten</button></div>';
+      if (p && (p.flat || p.stops)) mg += '<div class="pos-pop-btns">' + (p.flat ? '<button data-a="unflat">Undo flatten</button>' : '')
+        + (p.stops ? '<button data-a="unstops">Clear stop moves</button>' : '') + '</div>';
       box.innerHTML = (p ? '<div style="color:' + (p.side === 'long' ? '#4ade80' : '#f87171') + '">trade ' + tradeNo(this.row, p.id) + '  ' + p.side + '</div>'
                            + '<label>Order<select data-f="type"><option value="limit"' + (p.type !== 'stop' ? ' selected' : '') + '>limit</option>'
                            + '<option value="stop"' + (p.type === 'stop' ? ' selected' : '') + '>stop-entry</option></select></label>' : '')
         + fields.map(([n, l, v]) => '<label>' + l + '<input data-f="' + n + '" type="number" step="any" value="' + v + '"></label>').join('')
-        + '<div class="pos-pop-btns">' + (p ? '<button data-a="del">Delete</button>' : '') + '<button data-a="ok">Apply</button></div>';
+        + '<div class="pos-pop-btns">' + (p ? '<button data-a="del">Delete</button>' : '') + '<button data-a="ok">Apply</button></div>' + mg;
       popHost().appendChild(box);
       const val = (n) => parseFloat(box.querySelector('[data-f="' + n + '"]').value);
       box.addEventListener('click', (e) => {
-        const a = e.target.dataset && e.target.dataset.a;
-        if (a === 'ok') {
+        const a = e.target.dataset && e.target.dataset.a, cur = this.bx(boxId);
+        if (a === 'mstop' && cur) {
+          if (!isNaN(val('mstop'))) moveStop(this.row, cur, clampStop(this.row, cur, roundTick(val('mstop'))));
+          box.remove();
+        } else if (a === 'flat' && cur) { flatten(this.row, cur); box.remove(); }
+        else if (a === 'unflat' && cur) { const q = Object.assign({}, cur); delete q.flat; putBox(this.row, q); box.remove(); }
+        else if (a === 'unstops' && cur) { const q = Object.assign({}, cur); delete q.stops; putBox(this.row, q); box.remove(); }
+        else if (a === 'ok') {
           if (val('account') > 0) settings.account = val('account');
           if (val('riskPct') > 0) settings.riskPct = val('riskPct');
           lsSet('settings', settings);
@@ -710,7 +786,8 @@
     + '.pos-pop input[type=range]{padding:0}.pos-sws{display:flex;gap:3px}'
     + '.pos-pop .pos-sw{width:15px;height:15px;padding:0;border:1px solid #363a45;border-radius:3px;cursor:pointer}'
     + '.pos-pop .pos-sw.on{outline:2px solid #d1d4dc;outline-offset:1px}'
-    + '.pos-pop-btns{display:flex;justify-content:flex-end;gap:6px;margin-top:4px}'
+    + '.pos-pop-btns{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:6px;margin-top:4px}'
+    + '.pos-pop-sep{border-top:1px solid #363a45;margin-top:6px;padding-top:6px;color:#ff9800}'
     + '.pos-pop button{background:#2962ff;color:#fff;border:0;border-radius:3px;padding:3px 10px;cursor:pointer}';
   document.head.appendChild(css);
 
