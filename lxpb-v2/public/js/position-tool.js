@@ -22,7 +22,7 @@
 // shades the stretch from the fill to the exit (or to the last price).
 //
 // The box itself carries no text (user, 2026-11-03): its numbers show in one small panel beside it (right of the box, left when
-// there is no room) while the box is hovered or dragged, headed by its trade number and side: target / stop = points and ticks, and $ at the risk $ of the settings
+// there is no room; since 2026-11-18 in the chart's top-left corner, so it never covers the candles around the box) while the box is hovered or dragged, headed by its trade number and side: target / stop = points and ticks, and $ at the risk $ of the settings
 // (Qty = risk $ / (stop points x $50), ES: 0.25 tick, $50 a point), and the risk / reward ratio.
 //
 // DRAWINGS (user, 2026-11-08), like TradingView's: a horizontal line (Alt+H or "─ Line", then click a point: a line across the
@@ -33,7 +33,8 @@
 // and times then show on the axes); drag a point to move it (rectangle: 4 corners, 4 edge midpoints), the line / inside to move
 // the whole drawing; Delete removes, Esc cancels, double-click opens its colours (7 swatches, user 2026-11-09: blue, orange, red,
 // bright green, dark green, white, pink; no colour picker), width, style and prices. The last style used becomes the default for
-// the next one.
+// the next one. A fib retracement (Alt+F or "⌇ Fib", user 2026-11-18): two points like a rectangle, levels 0 / 23.6 / 38.2 /
+// 61.8 / 78.6 / 100 each switchable in its popup, dotted by default, drawn behind the candles (see FIBS).
 //
 // IN-PLAY MANAGEMENT (user, 2026-11-18), for a trade that is open at the replay time (config.cursor): FLATTEN closes it at the
 // last price at the replay time (`flat: { t }`; the "✕ Flatten" button = the selected trade, or every open trade of the row; also
@@ -49,8 +50,15 @@
   const settings = Object.assign({ account: 50000, riskPct: 1, magnet: 'strong',
                                    rayStyle: { color: '#2962ff', width: 1, dash: 'solid' },
                                    hlineStyle: { color: '#2962ff', width: 1, dash: 'solid' },
-                                   rectStyle: { color: '#9c27b0', fill: '#9c27b0', alpha: 0.2, width: 1, dash: 'solid' } },
+                                   rectStyle: { color: '#9c27b0', fill: '#9c27b0', alpha: 0.2, width: 1, dash: 'solid' },
+                                   fibStyle: { color: '#2962ff', width: 1, dash: 'dotted', levels: [0, 0.236, 0.382, 0.618, 0.786, 1] } },
                                  lsGet('settings', {}));
+  // FIB RETRACEMENT (user, 2026-11-18): two points (p0 first click = 100, p1 second = 0), level r at p1 + (p0 - p1) x r, each
+  // level switchable in its double-click popup (the last set used is the next one's default); dotted, drawn BEHIND the candles
+  const FIBS = [[0, '0'], [0.236, '23.6'], [0.382, '38.2'], [0.618, '61.8'], [0.786, '78.6'], [1, '100']];
+  const fibPx = (d, r) => d.p1 + (d.p0 - d.p1) * r;
+  const fibOn = (d) => FIBS.filter(([r]) => (d.levels || []).indexOf(r) >= 0);
+  const two = (d) => d.type === 'rect' || d.type === 'fib';     // drawn from two points (t0, p0) - (t1, p1)
   const DASH = { solid: [], dashed: [6, 4], dotted: [1.5, 2.5] };
   const PALETTE = [['blue', '#2962ff'], ['orange', '#ff9800'], ['red', '#f23645'], ['bright green', '#00e676'],
                    ['dark green', '#1b8a3c'], ['white', '#ffffff'], ['pink', '#ff5cb8']];
@@ -123,11 +131,13 @@
     return out;
   };
 
-  function panel(ctx, rows, x0, x1, ymid, wMax) {       // [text, colour] rows in one box beside x0..x1, centred on ymid
+  // [text, colour] rows in one box in the chart's top-left corner (user 2026-11-18: beside the box it hid the candles one drags
+  // the stop against)
+  function panel(ctx, rows) {
     ctx.font = '12px Courier New, monospace';
     const w = Math.max(...rows.map(r => ctx.measureText(r[0]).width)) + 14, lh = 15, h = rows.length * lh + 8;
-    const x = x1 + 8 + w <= wMax ? x1 + 8 : x0 - 8 - w >= 0 ? x0 - 8 - w : Math.max(0, wMax - w), top = ymid - h / 2;
-    ctx.fillStyle = 'rgba(19, 23, 34, 0.92)'; ctx.strokeStyle = '#363a45'; ctx.lineWidth = 1;
+    const x = 6, top = 6;
+    ctx.fillStyle = 'rgba(19, 23, 34, 0.80)'; ctx.strokeStyle = '#363a45'; ctx.lineWidth = 1;
     ctx.beginPath();
     if (ctx.roundRect) ctx.roundRect(x, top, w, h, 3); else ctx.rect(x, top, w, h);
     ctx.fill(); ctx.stroke();
@@ -158,7 +168,9 @@
         detached() { tool.requestUpdate = null; },
         updateAllViews() {},
         paneViews() {
-          return [{ zOrder: () => 'top',
+          return [{ zOrder: () => 'bottom',           // fibs behind the candles
+                    renderer: () => ({ draw: (target) => target.useMediaCoordinateSpace(({ context }) => tool.drawFibs(context)) }) },
+                  { zOrder: () => 'top',
                     renderer: () => ({ draw: (target) => target.useMediaCoordinateSpace(({ context }) => tool.draw(context)) }) }];
         },
         // entry / target / stop prices as tags on the right-hand price axis, like TradingView's
@@ -175,7 +187,7 @@
             if (ms != null) tag(ms, '#ff9800');
           });
           getDraws(tool.dk).forEach(d => {          // a ray's price always; a rectangle's two prices while it is selected / hovered
-            if (d.type !== 'rect') tag(d.p, d.color);
+            if (!two(d)) tag(d.p, d.color);
             else if (tool.focus(d)) { tag(d.p0, d.color); tag(d.p1, d.color); }
           });
           return out;
@@ -184,7 +196,7 @@
           const d = tool.focused(), out = [];
           if (!d) return out;
           const f = tool.chart.options().localization.timeFormatter;
-          (d.type === 'rect' ? [d.t0, d.t1] : d.type === 'ray' ? [d.t] : []).forEach(t => {
+          (two(d) ? [d.t0, d.t1] : d.type === 'ray' ? [d.t] : []).forEach(t => {
             const x = tool.x(t);
             if (x != null) out.push({ coordinate: () => x, text: () => (f ? f(t) : String(t)), textColor: () => '#ffffff',
                                       backColor: () => d.color, visible: () => true, tickVisible: () => true });
@@ -248,8 +260,14 @@
         bar.insertBefore(b, fs || null);
         return b;
       };
-      if (!this.drawOnly) this.bLong = mk('▲ Long', 'Long position: click, then a candle (adds a trade: any number per row, numbered 1, 2, 3 ... in the order drawn)', () => this.armFor('long'));
-      if (!this.drawOnly) this.bShort = mk('▼ Short', 'Short position: click, then a candle (adds a trade: any number per row, numbered 1, 2, 3 ... in the order drawn)', () => this.armFor('short'));
+      // L / S / F side by side, full names on hover (user 2026-11-18)
+      if (!this.drawOnly) this.bLong = mk('▲ L', 'Long position: click, then a candle (adds a trade: any number per row, numbered 1, 2, 3 ... in the order drawn)', () => this.armFor('long'));
+      if (!this.drawOnly) this.bShort = mk('▼ S', 'Short position: click, then a candle (adds a trade: any number per row, numbered 1, 2, 3 ... in the order drawn)', () => this.armFor('short'));
+      if (!this.drawOnly) mk('✕ F', 'Flatten at the replay time, at the last price: the selected trade, or every open trade of this row '
+                                    + '(its R goes to the Manual R column). Step the replay back before it to undo', () => {
+        const sel = this.bx(this.selB), list = sel && isOpen(this.row, sel.id) ? [sel] : this.bxs().filter(p => isOpen(this.row, p.id));
+        list.forEach(p => flatten(this.row, this.bx(p.id)));
+      });
       this.bMag = mk('', 'Magnet: strong (always snaps to O/H/L/C) / weak (within 12 px) / off. Hold Ctrl to drag freely', () => {
         settings.magnet = { strong: 'weak', weak: 'off', off: 'strong' }[settings.magnet];
         lsSet('settings', settings);
@@ -258,11 +276,8 @@
       this.bHline = mk('─ Line', 'Horizontal line (Alt+H): click a point', () => this.armFor('hline'));
       this.bRay = mk('→ Ray', 'Horizontal ray (Alt+J): click a point', () => this.armFor('ray'));
       this.bRect = mk('▭ Rect', 'Rectangle (Alt+Shift+R): click two corners, or press, drag and release', () => this.armFor('rect'));
-      if (!this.drawOnly) mk('✕ Flatten', 'Flatten at the replay time, at the last price: the selected trade, or every open trade of this row '
-                                          + '(its R goes to the Manual R column). Step the replay back before it to undo', () => {
-        const sel = this.bx(this.selB), list = sel && isOpen(this.row, sel.id) ? [sel] : this.bxs().filter(p => isOpen(this.row, p.id));
-        list.forEach(p => flatten(this.row, this.bx(p.id)));
-      });
+      this.bFib = mk('⌇ Fib', 'Fib retracement (Alt+F): click two points (100 at the first, 0 at the second), or press, drag and release; '
+                              + 'double-click it to switch levels on / off', () => this.armFor('fib'));
       mk('⚙', 'Account size and risk', (b) => this.popover(b, false));
       this.syncButtons();
     }
@@ -273,6 +288,7 @@
       this.bHline.classList.toggle('pos-on', this.arm === 'hline');
       this.bRay.classList.toggle('pos-on', this.arm === 'ray');
       this.bRect.classList.toggle('pos-on', this.arm === 'rect');
+      this.bFib.classList.toggle('pos-on', this.arm === 'fib');
     }
     armFor(side) { this.cancelCreate(); this.arm = this.arm === side ? null : side; active = this; this.syncButtons(); }
     cancelCreate() { if (this.creating) { dropDraw(this.dk, this.creating.id); this.creating = null; this.selD = null; } }
@@ -352,12 +368,13 @@
       return id ? getDraws(this.dk).find(d => d.id === id) || null : null;
     }
     dGeom(d) {
-      if (d.type !== 'rect') { const x = this.x(d.t), y = this.y(d.p); return x == null || y == null ? null : { x, y }; }
+      if (!two(d)) { const x = this.x(d.t), y = this.y(d.p); return x == null || y == null ? null : { x, y }; }
       const x0 = this.x(d.t0), x1 = this.x(d.t1), y0 = this.y(d.p0), y1 = this.y(d.p1);
       return [x0, x1, y0, y1].some(v => v == null) ? null : { x0, x1, y0, y1 };
     }
     dHandles(d, g) {                              // [part, x, y]: c<t><p> corner, et<k> time edge, ep<k> price edge
-      if (d.type !== 'rect') return [['a', g.x, g.y]];
+      if (!two(d)) return [['a', g.x, g.y]];
+      if (d.type === 'fib') return [['c00', g.x0, g.y0], ['c11', g.x1, g.y1]];
       const mx = (g.x0 + g.x1) / 2, my = (g.y0 + g.y1) / 2;
       return [['c00', g.x0, g.y0], ['c01', g.x0, g.y1], ['c10', g.x1, g.y0], ['c11', g.x1, g.y1],
               ['et0', g.x0, my], ['et1', g.x1, my], ['ep0', mx, g.y0], ['ep1', mx, g.y1]];
@@ -365,6 +382,10 @@
     onLine(d, g, x, y) {                          // on a line, a ray or a rectangle's border
       if (d.type === 'hline') return Math.abs(y - g.y) <= HANDLE_PX;
       if (d.type === 'ray') return x >= g.x - HANDLE_PX && Math.abs(y - g.y) <= HANDLE_PX;
+      if (d.type === 'fib') {                     // on one of its levels, between its two points
+        if (x < Math.min(g.x0, g.x1) - HANDLE_PX || x > Math.max(g.x0, g.x1) + HANDLE_PX) return false;
+        return fibOn(d).some(([r]) => { const yl = this.y(fibPx(d, r)); return yl != null && Math.abs(y - yl) <= HANDLE_PX; });
+      }
       const l = Math.min(g.x0, g.x1), r = Math.max(g.x0, g.x1), t = Math.min(g.y0, g.y1), b = Math.max(g.y0, g.y1);
       const inX = x >= l - HANDLE_PX && x <= r + HANDLE_PX, inY = y >= t - HANDLE_PX && y <= b + HANDLE_PX;
       return (inY && (Math.abs(x - l) <= HANDLE_PX || Math.abs(x - r) <= HANDLE_PX))
@@ -402,8 +423,9 @@
     }
     newDraw(type, q) {
       const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-      const d = type !== 'rect' ? Object.assign({ id, type, t: q.t, p: q.p }, settings[type + 'Style'])
-                               : Object.assign({ id, type, t0: q.t, p0: q.p, t1: q.t, p1: q.p }, settings.rectStyle);
+      const st = JSON.parse(JSON.stringify(settings[type + 'Style']));
+      const d = type === 'rect' || type === 'fib' ? Object.assign({ id, type, t0: q.t, p0: q.p, t1: q.t, p1: q.p }, st)
+                                                  : Object.assign({ id, type, t: q.t, p: q.p }, st);
       setDraws(this.dk, getDraws(this.dk).concat([d]));
       this.selD = id; this.selB = null;
       return d;
@@ -420,6 +442,26 @@
         else context.fillRect(Math.min(g.x0, g.x1), 0, Math.abs(g.x1 - g.x0), mediaSize.height);
       }) }) }];
     }
+    drawFibs(ctx) {                               // behind the candles: each switched-on level, dotted, from point 1 to point 2, labelled
+      ctx.font = '11px Courier New, monospace'; ctx.textBaseline = 'bottom';
+      getDraws(this.dk).forEach(d => {
+        if (d.type !== 'fib') return;
+        const g = this.dGeom(d);
+        if (!g) return;
+        const l = Math.min(g.x0, g.x1), r = Math.max(g.x0, g.x1);
+        ctx.lineWidth = d.width || 1; ctx.strokeStyle = d.color; ctx.fillStyle = d.color;
+        fibOn(d).forEach(([v, name]) => {
+          const px = fibPx(d, v), y = this.y(px);
+          if (y == null) return;
+          const yc = (ctx.lineWidth % 2 ? Math.round(y) + 0.5 : Math.round(y));
+          ctx.setLineDash(DASH[d.dash] || []);
+          ctx.beginPath(); ctx.moveTo(l, yc); ctx.lineTo(Math.max(r, l + 1), yc); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.textAlign = 'right'; ctx.fillText(name + ' (' + px.toFixed(2) + ')', l - 4, yc + 5);
+        });
+      });
+      ctx.setLineDash([]);
+    }
     drawDraws(ctx) {
       const W = this.chart.timeScale().width();
       const crisp = (v, w) => (w % 2 ? Math.round(v) + 0.5 : Math.round(v));
@@ -427,7 +469,11 @@
         const g = this.dGeom(d);
         if (!g) return;
         ctx.lineWidth = d.width || 1; ctx.strokeStyle = d.color; ctx.setLineDash(DASH[d.dash] || []);
-        if (d.type !== 'rect') {
+        if (d.type === 'fib') {                    // its lines are drawn behind the candles (drawFibs); here only the handles
+          if (this.focus(d)) {                     // and, when selected / hovered, the dotted line joining its two points
+            ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(g.x0, g.y0); ctx.lineTo(g.x1, g.y1); ctx.stroke();
+          }
+        } else if (d.type !== 'rect') {
           const y = crisp(g.y, ctx.lineWidth);
           ctx.beginPath(); ctx.moveTo(d.type === 'hline' ? 0 : g.x, y); ctx.lineTo(Math.max(W, g.x), y); ctx.stroke();
         } else {
@@ -464,7 +510,7 @@
       if (r && r.stopNow != null && r.stopNow !== p.sl && (r.state === 'open' || r.hit === 'moved stop'))
         rows.push(['moved  ' + num(r.stopNow, 2) + '  ' + (r.atRisk > 0 ? num(r.atRisk, 2) + 'R at risk' : r.atRisk < 0 ? '+' + num(-r.atRisk, 2) + 'R locked' : 'risk 0R'), '#ff9800']);
       if (r && r.hit === 'flatten') rows.push(['flat   ' + num(r.exitPx, 2) + '  ' + (r.r >= 0 ? '+' : '') + num(r.r, 2) + 'R', '#d1d4dc']);
-      panel(ctx, rows, g.x0, g.x1, g.ye, this.chart.timeScale().width());
+      panel(ctx, rows);
     }
     drawBox(ctx, p) {
       const g = this.geom(p);
@@ -520,11 +566,11 @@
           if (d && d.t0 === d.t1 && d.p0 === d.p1) { dropDraw(this.dk, c.id); this.selD = null; }
           this.blockMouse = true; block(e); return;
         }
-        if (this.arm === 'hline' || this.arm === 'ray' || this.arm === 'rect') {
+        if (this.arm === 'hline' || this.arm === 'ray' || this.arm === 'rect' || this.arm === 'fib') {
           const q = { t: this.tAt(pt.x), p: this.snap(pt.x, pt.y, e.ctrlKey) };
           if (q.t != null && q.p != null) {
             const d = this.newDraw(this.arm, q);
-            if (this.arm === 'rect') this.creating = { id: d.id, x: pt.x, y: pt.y, moved: false };
+            if (this.arm === 'rect' || this.arm === 'fib') this.creating = { id: d.id, x: pt.x, y: pt.y, moved: false };
           }
           this.arm = null; this.syncButtons();
           this.blockMouse = true; block(e); return;
@@ -539,7 +585,7 @@
           const d0 = Object.assign({}, hh.d);
           this.selD = d0.id; this.selB = null;
           this.drag = { draw: d0.id, part: hh.part, d0, l0: this.chart.timeScale().coordinateToLogical(pt.x),
-                        dy: pt.y - this.y(d0.type === 'rect' ? d0.p0 : d0.p) };
+                        dy: pt.y - this.y(two(d0) ? d0.p0 : d0.p) };
           this.blockMouse = true; block(e);
           if (this.requestUpdate) this.requestUpdate();
           return;
@@ -641,7 +687,7 @@
         const sh = (t) => this.timeOf(this.logicalOf(t) + di);
         const ne = this.snap(x, y - d.dy, free);
         if (ne == null) return;
-        if (q.type !== 'rect') Object.assign(q, { t: sh(d0.t), p: ne });
+        if (!two(q)) Object.assign(q, { t: sh(d0.t), p: ne });
         else Object.assign(q, { t0: sh(d0.t0), t1: sh(d0.t1), p0: ne, p1: d0.p1 + ne - d0.p0 });
       } else {
         const t = this.tAt(x), p = this.snap(x, y, free), k = d.part;
@@ -668,8 +714,11 @@
       let h = row(d.type !== 'rect' ? 'Line' : 'Border', sws('color', d.color));
       if (d.type === 'rect') h += row('Fill', sws('fill', d.fill))
                                 + row('Opacity', '<input data-f="alpha" type="range" min="0" max="1" step="0.05" value="' + d.alpha + '">');
+      if (d.type === 'fib') h += '<div class="pos-fibs">' + FIBS.map(([v, n]) => '<label><input type="checkbox" data-lv="' + v + '"'
+                                 + ((d.levels || []).indexOf(v) >= 0 ? ' checked' : '') + '>' + n + '</label>').join('') + '</div>';
       h += row('Width', sel('width', [1, 2, 3, 4], d.width)) + row('Style', sel('dash', ['solid', 'dashed', 'dotted'], d.dash));
-      h += d.type !== 'rect' ? row('Price', numIn('p', d.p)) : row('Price 1', numIn('p0', d.p0)) + row('Price 2', numIn('p1', d.p1));
+      h += !two(d) ? row('Price', numIn('p', d.p))
+                   : row(d.type === 'fib' ? 'Price 100' : 'Price 1', numIn('p0', d.p0)) + row(d.type === 'fib' ? 'Price 0' : 'Price 2', numIn('p1', d.p1));
       box.innerHTML = h + '<div class="pos-pop-btns"><button data-a="del">Delete</button><button data-a="ok">Close</button></div>';
       popHost().appendChild(box);
       const val = (f) => { const n = box.querySelector('[data-f="' + f + '"]'); return n.classList.contains('pos-sws') ? n.dataset.v : n.value; };
@@ -678,9 +727,11 @@
         if (!cur) return;
         const q = Object.assign({}, cur, { color: val('color'), width: +val('width'), dash: val('dash') });
         if (cur.type === 'rect') Object.assign(q, { fill: val('fill'), alpha: +val('alpha') });
-        (cur.type !== 'rect' ? ['p'] : ['p0', 'p1']).forEach(f => { const v = parseFloat(val(f)); if (!isNaN(v)) q[f] = v; });
-        settings[cur.type + 'Style'] = cur.type !== 'rect' ? { color: q.color, width: q.width, dash: q.dash }   // the next one is drawn in this style
-                                                            : { color: q.color, fill: q.fill, alpha: q.alpha, width: q.width, dash: q.dash };
+        if (cur.type === 'fib') q.levels = [...box.querySelectorAll('[data-lv]')].filter(c => c.checked).map(c => +c.dataset.lv);
+        (!two(cur) ? ['p'] : ['p0', 'p1']).forEach(f => { const v = parseFloat(val(f)); if (!isNaN(v)) q[f] = v; });
+        settings[cur.type + 'Style'] = cur.type === 'rect' ? { color: q.color, fill: q.fill, alpha: q.alpha, width: q.width, dash: q.dash }   // the next one is drawn in this style
+                                     : cur.type === 'fib' ? { color: q.color, width: q.width, dash: q.dash, levels: q.levels.slice() }
+                                     : { color: q.color, width: q.width, dash: q.dash };
         lsSet('settings', settings);
         putDraw(this.dk, q);
       };
@@ -754,8 +805,8 @@
   document.addEventListener('keydown', (e) => {
     if (/INPUT|TEXTAREA|SELECT/.test((e.target.tagName || ''))) return;
     const to = under && !under.dead ? under : active;
-    if (to && e.altKey && !e.ctrlKey && to.bRay && (e.code === 'KeyH' || e.code === 'KeyJ' || (e.shiftKey && e.code === 'KeyR'))) {
-      to.armFor({ KeyH: 'hline', KeyJ: 'ray', KeyR: 'rect' }[e.code]); e.preventDefault(); return;
+    if (to && e.altKey && !e.ctrlKey && to.bRay && (e.code === 'KeyH' || e.code === 'KeyJ' || e.code === 'KeyF' || (e.shiftKey && e.code === 'KeyR'))) {
+      to.armFor({ KeyH: 'hline', KeyJ: 'ray', KeyR: 'rect', KeyF: 'fib' }[e.code]); e.preventDefault(); return;
     }
     if (!active) return;
     if ((e.key === 'Delete' || e.key === 'Backspace') && active.selD) {
@@ -787,6 +838,8 @@
     + '.pos-pop .pos-sw{width:15px;height:15px;padding:0;border:1px solid #363a45;border-radius:3px;cursor:pointer}'
     + '.pos-pop .pos-sw.on{outline:2px solid #d1d4dc;outline-offset:1px}'
     + '.pos-pop-btns{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:6px;margin-top:4px}'
+    + '.pos-fibs{display:grid;grid-template-columns:repeat(3,1fr);gap:2px 6px}.pos-fibs label{justify-content:flex-start;gap:3px}'
+    + '.pos-fibs input{width:auto!important}'
     + '.pos-pop-sep{border-top:1px solid #363a45;margin-top:6px;padding-top:6px;color:#ff9800}'
     + '.pos-pop button{background:#2962ff;color:#fff;border:0;border-radius:3px;padding:3px 10px;cursor:pointer}';
   document.head.appendChild(css);

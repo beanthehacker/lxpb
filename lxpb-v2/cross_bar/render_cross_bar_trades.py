@@ -1327,11 +1327,13 @@ second reaching the stop or the target after the fill ends it (a second reaching
 row's Manual columns show the total of its trades (how many, closed / open / waiting, summed R and $) and each trade has its own
 line under the row, all as of the row's replay time (open = last price); the manual boxes above count trades, not rows.
 Manual R = (exit - fill) / (entry - stop), P&amp;L $ = R x the risk $ in the tool's settings (gear). A trade in play at the replay
-time can be FLATTENED (&#10005; Flatten on the chart: the selected trade, or every open one of the row; or Flatten in its double-click popup):
+time can be FLATTENED (&#10005; F on the chart, next to &#9650; L / &#9660; S: the selected trade, or every open one of the row; or Flatten in its double-click popup):
 it closes at the last price at the replay time and its R goes to Manual R. Its stop can be MOVED from the replay time on (drag the
 stop line, or Stop now + Move stop in the popup): the stop in force is drawn orange and the row shows the R still at risk (fill to that
 stop, in R of the planned stop: a long's stop moved halfway up = 0.50R at risk, hit later = -0.50R). Stepping the replay back before a
-flatten or a move undoes it; the popup's Undo flatten / Clear stop moves remove them. Boxes, replay times
+flatten or a move undoes it; the popup's Undo flatten / Clear stop moves remove them. A trade's numbers show in the chart's top-left corner while you hover or drag it.
+&#8999; Fib (Alt+F): a fib retracement from two points (100 at the first, 0 at the second), levels 0 / 23.6 / 38.2 / 61.8 / 78.6 / 100,
+each switched on / off in its double-click popup (the next fib keeps your choice), dotted and behind the candles. Boxes, replay times
 and settings are kept in this browser.</p>
 <p class="lead">NQ CHART. Beside the ES chart ("&minus; NQ chart" hides it and ES takes the full width), with its own timeframe buttons, built the same way from the
 NQ continuous series in E:\data_source (back-adjusted exactly as TradingView's NQ1!). "NQ sync on": NQ replays with ES, stepping either chart moves both, and picking a timeframe on the ES chart or NQ switches both
