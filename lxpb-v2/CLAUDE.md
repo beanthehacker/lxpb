@@ -710,6 +710,14 @@ exact for first touches): first second reaching stop or target, same second both
 & target / exit / R / P&L $ = R x tool risk $) show the trade as of the row's replay time; summary boxes count closed manual trades.
 Per-row data (H1 + M1 + 1 s path) is a side file `<report>_data/<row key>.js` loaded by script tag; committed as `.js.gz` next to the
 report and inflated by `scripts/decompress-gz-reports.mjs`. Boxes, replay times and settings live in the browser's localStorage.
+In-play management (user, 2026-11-18, same files): a trade open at the replay time can be FLATTENED (`flat: {t}`: closed at the
+last price at t = close of the last M1 bar closed by t, the price the open R shows; hit 'flatten') or get its stop MOVED
+(`stops: [{t, sl}]`, in force for every 1 s from t on; R stays measured on the plan's `sl`, so a halfway move hit = -0.5R, hit
+'moved stop'; rows show the R still at risk = fill to stop in force). Both made at the replay time; stepping back before them undoes
+them on screen, a new one at an earlier time drops the later ones; moves / flatten from before the fill are ignored.
+Buttons ▲ L / ▼ S / ✕ F side by side (full names on hover); a box's numbers panel sits in the chart's top-left corner (beside
+the box it hid the candles). Fib retracement (Alt+F, user 2026-11-18): two points, p0 = 100, p1 = 0, levels 0 / 23.6 / 38.2 / 61.8 /
+78.6 / 100 switchable per fib (last set = default), dotted, drawn behind the candles (primitive pane view zOrder 'bottom').
 Drawings (user, 2026-11-08, same file): TradingView-style horizontal rays (Alt+J) and rectangles (Alt+Shift+R), any number per row, shared by both panes, kept in time + price, magnet-snapped; hover shows points, drag points / line / inside, Delete, double-click = colour (7 swatches: blue, orange, red, bright green, dark green, white, pink) / width / style / prices.
 NQ chart (user, 2026-11-10, same file): an NQ chart BESIDE the ES one (own timeframe buttons, "- NQ chart" hides it and ES takes
 the full width), from `E:\data_source` (`nq_data.load_nq`, NQ back-adjusted exactly as TradingView's NQ1!; data_source is the single

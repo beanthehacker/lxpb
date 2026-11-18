@@ -705,23 +705,37 @@ function _fillAt(p, D, upto, barsOf) {                      // { f (1 s index), 
   for (let k = _lb(S.t, a); k < S.n && S.t[k] < upto; k++) if (hit(S.lo[k], S.hi[k])) return { f: k, fp: E, p1T: p1.time, tf };
   return { state: 'waiting', why: 'P1 ' + tf, p1T: p1.time, tf };
 }
+// IN-PLAY MANAGEMENT (user, 2026-11-18; the position tool's Flatten / Move stop, made at the replay time of the moment):
+// a MOVED STOP (p.stops = [{ t, sl }], oldest first) is the stop for every second from its time t on; the trade is still measured
+// in R of the plan's stop (p.sl), so a long whose stop was moved halfway to the fill and then hit closes at -0.5R ('moved stop').
+// FLATTEN (p.flat = { t }) closes a trade still open at t at the last price at t (the close of the last M1 bar closed by t, the
+// price the open R shows), exit time t ('flatten'). Moves / a flatten from before the fill are ignored (the entry was changed since).
 function _eval(p, D, upto, barsOf) {
   const S = D.s1, s = p.side === 'long' ? 1 : -1, risk = Math.abs(p.entry - p.sl);
   const F = _fillAt(p, D, upto, barsOf);
   if (F.f == null) return F;
-  const f = F.f, fp = F.fp;
-  const out = (state, j, px, hit) => ({ state, fillT: S.t[f], fillPx: fp, exitT: j == null ? null : S.t[j], exitPx: px, hit,
-                                        r: risk > 0 ? s * (px - fp) / risk : 0, p1T: F.p1T, tf: F.tf });
+  const f = F.f, fp = F.fp, t0 = S.t[f];
+  const mv = (p.stops || []).filter(m => m.t >= t0 && m.t <= upto);
+  const flatT = p.flat && p.flat.t > t0 && p.flat.t <= upto ? p.flat.t : null;
+  let sl = p.sl, k = 0;
+  const lastAt = (T) => { const last = _lastPx(D, T); return { last, px: last && last.t >= t0 - 60 ? last.px : fp }; };
+  const out = (state, j, px, hit, tx) => ({ state, fillT: t0, fillPx: fp, exitT: tx != null ? tx : j == null ? null : S.t[j], exitPx: px, hit,
+                                            r: risk > 0 ? s * (px - fp) / risk : 0, p1T: F.p1T, tf: F.tf,
+                                            stopNow: sl, atRisk: risk > 0 ? s * (fp - sl) / risk : 0 });
   for (let j = f; j < S.n && S.t[j] < upto; j++) {
-    const lo = S.lo[j], hi = S.hi[j], ref = j === f;
-    if (s > 0 ? lo <= p.sl : hi >= p.sl)
-      return out('closed', j, ref ? (s > 0 ? Math.min(p.sl, fp) : Math.max(p.sl, fp)) : (s > 0 ? Math.min(p.sl, hi) : Math.max(p.sl, lo)), 'stop');
+    if (flatT != null && S.t[j] >= flatT) return out('closed', null, lastAt(flatT).px, 'flatten', flatT);
+    while (k < mv.length && mv[k].t <= S.t[j]) sl = mv[k++].sl;
+    const lo = S.lo[j], hi = S.hi[j], ref = j === f, hit = sl === p.sl ? 'stop' : 'moved stop';
+    if (s > 0 ? lo <= sl : hi >= sl)
+      return out('closed', j, ref ? (s > 0 ? Math.min(sl, fp) : Math.max(sl, fp)) : (s > 0 ? Math.min(sl, hi) : Math.max(sl, lo)), hit);
     if (s > 0 ? hi >= p.tp : lo <= p.tp)
       return out('closed', j, ref ? (s > 0 ? Math.max(p.tp, fp) : Math.min(p.tp, fp)) : (s > 0 ? Math.max(p.tp, lo) : Math.min(p.tp, hi)), 'target');
   }
-  const last = _lastPx(D, upto);
-  const o = out('open', null, last && last.t >= S.t[f] - 60 ? last.px : fp, null);
-  o.lastT = last ? Math.max(last.t, S.t[f]) : S.t[f]; o.lastPx = o.exitPx;
+  while (k < mv.length) sl = mv[k++].sl;                    // a move made at the replay time itself
+  if (flatT != null) return out('closed', null, lastAt(flatT).px, 'flatten', flatT);
+  const L = lastAt(upto);
+  const o = out('open', null, L.px, null);
+  o.lastT = L.last ? Math.max(L.last.t, t0) : t0; o.lastPx = o.exitPx;
   return o;
 }
 function _evalRow(i) {                                     // every trade of the row: st.res = { box id: result }
@@ -745,6 +759,8 @@ const _ptTime = (t, sec) => new Date(t * 1000).toLocaleString('en-US', { timeZon
 const _riskUsd = () => PosTool.settings.account * PosTool.settings.riskPct / 100;
 const _sgn = (v, d) => (v >= 0 ? '+' : '') + v.toFixed(d);
 const _usd = (v) => _sgn(Math.round(v), 0).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+// the R a trade still risks at its stop in force (fill -> stop, in R of the plan's stop); a stop past the fill locks R in
+const _riskTxt = (r) => (r.atRisk > 0 ? r.atRisk.toFixed(2) + 'R at risk' : r.atRisk < 0 ? '+' + (-r.atRisk).toFixed(2) + 'R locked' : '0R at risk');
 function _waitText(r) {                                    // a trade with no fill (yet)
   if (!r) return 'open the row to replay';
   if (r.state === 'none') return 'no trade: ' + r.why + ' ' + _ptTime(r.t);
@@ -757,7 +773,8 @@ function _tradeCells(cell, b, r) {                          // one trade's five 
   cell('man-entry').innerHTML = '<span style="color:' + col + '">' + b.side + '</span> ' + (b.type === 'stop' ? 'stop ' : 'limit ') + _f2(b.entry)
     + '<br><span class="src-tag">' + (r && r.fillT != null ? (r.p1T != null ? 'P2 ' : '') + 'fill ' + _f2(r.fillPx) + ' ' + _ptTime(r.fillT, true)
                                                            : 'drawn on ' + b.pane) + '</span>';
-  cell('man-plan').innerHTML = _f2(b.sl) + ' / ' + _f2(b.tp) + '<br><span class="src-tag">' + rr.toFixed(2) + ' : 1</span>';
+  cell('man-plan').innerHTML = _f2(b.sl) + ' / ' + _f2(b.tp) + '<br><span class="src-tag">' + rr.toFixed(2) + ' : 1</span>'
+    + (r && r.stopNow != null && r.stopNow !== b.sl ? '<br><span style="color:#ff9800">stop moved ' + _f2(r.stopNow) + '</span><br><span class="src-tag">' + _riskTxt(r) + '</span>' : '');
   if (!r || r.state === 'waiting' || r.state === 'none') {
     cell('man-exit').innerHTML = '<span class="src-tag">' + _waitText(r) + '</span>';
     cell('man-r').innerHTML = ''; cell('man-usd').innerHTML = '';
@@ -765,7 +782,8 @@ function _tradeCells(cell, b, r) {                          // one trade's five 
   }
   const rc = r.r > 0 ? '#4ade80' : r.r < 0 ? '#f87171' : '#e5e7eb', usd = r.r * _riskUsd();
   if (r.state === 'open') {
-    cell('man-exit').innerHTML = '<span class="src-tag">open, last ' + _f2(r.exitPx) + '</span>';
+    cell('man-exit').innerHTML = '<span class="src-tag">open, last ' + _f2(r.exitPx) + '</span>'
+      + (r.stopNow != null ? '<br><span class="src-tag">stop ' + _f2(r.stopNow) + ', ' + _riskTxt(r) + '</span>' : '');
     cell('man-r').innerHTML = '<em style="color:' + rc + '">' + _sgn(r.r, 2) + '</em><br><span class="src-tag">open</span>';
     cell('man-usd').innerHTML = '<em style="color:' + rc + '">' + _usd(usd) + '</em>';
     return;
@@ -866,9 +884,9 @@ function _syncBar(i, msg) {
   bar.querySelector('.rp-end').textContent = 'runs to ' + _ptTime(st.end) + ' (' + CHARTS[i].endWhy + ')';
   const bs = PosTool.getBoxes(i);
   const one = (q) => !q || q.state === 'waiting' || q.state === 'none' ? _waitText(q)
-    : q.state === 'open' ? 'open since ' + _ptTime(q.fillT, true) + ', ' + _sgn(q.r, 2) + 'R'
+    : q.state === 'open' ? 'open since ' + _ptTime(q.fillT, true) + ', ' + _sgn(q.r, 2) + 'R, ' + _riskTxt(q)
     : q.hit + ' ' + _ptTime(q.exitT, true) + ', ' + _sgn(q.r, 2) + 'R';
-  const brief = (q) => !q ? 'waiting' : q.state === 'none' ? 'no trade' : q.state === 'waiting' ? (q.p1T != null ? 'P1, waiting' : 'waiting') : q.state === 'open' ? 'open ' + _sgn(q.r, 2) + 'R' : q.hit + ' ' + _sgn(q.r, 2) + 'R';
+  const brief = (q) => !q ? 'waiting' : q.state === 'none' ? 'no trade' : q.state === 'waiting' ? (q.p1T != null ? 'P1, waiting' : 'waiting') : q.state === 'open' ? 'open ' + _sgn(q.r, 2) + 'R (' + _riskTxt(q) + ')' : q.hit + ' ' + _sgn(q.r, 2) + 'R';
   bar.querySelector('.rp-trade').textContent = !bs.length ? 'draw a Long / Short on the chart' : !r ? ''
     : bs.length === 1 ? 'manual trade: ' + one(r[bs[0].id])
     : 'manual trades: ' + bs.map((b, k) => (k + 1) + ' ' + b.side + (b.type === 'stop' ? ' stop ' : ' limit ') + brief(r[b.id])).join(' · ');
@@ -1308,7 +1326,14 @@ past the entry: above for a long, below for a short), the very next candle inclu
 second reaching the stop or the target after the fill ends it (a second reaching both counts as the stop; no end-of-day flat). The
 row's Manual columns show the total of its trades (how many, closed / open / waiting, summed R and $) and each trade has its own
 line under the row, all as of the row's replay time (open = last price); the manual boxes above count trades, not rows.
-Manual R = (exit - fill) / (entry - stop), P&amp;L $ = R x the risk $ in the tool's settings (gear). Boxes, replay times
+Manual R = (exit - fill) / (entry - stop), P&amp;L $ = R x the risk $ in the tool's settings (gear). A trade in play at the replay
+time can be FLATTENED (&#10005; F on the chart, next to &#9650; L / &#9660; S: the selected trade, or every open one of the row; or Flatten in its double-click popup):
+it closes at the last price at the replay time and its R goes to Manual R. Its stop can be MOVED from the replay time on (drag the
+stop line, or Stop now + Move stop in the popup): the stop in force is drawn orange and the row shows the R still at risk (fill to that
+stop, in R of the planned stop: a long's stop moved halfway up = 0.50R at risk, hit later = -0.50R). Stepping the replay back before a
+flatten or a move undoes it; the popup's Undo flatten / Clear stop moves remove them. A trade's numbers show in the chart's top-left corner while you hover or drag it.
+&#8999; Fib (Alt+F): a fib retracement from two points (100 at the first, 0 at the second), levels 0 / 23.6 / 38.2 / 61.8 / 78.6 / 100,
+each switched on / off in its double-click popup (the next fib keeps your choice), dotted and behind the candles. Boxes, replay times
 and settings are kept in this browser.</p>
 <p class="lead">NQ CHART. Beside the ES chart ("&minus; NQ chart" hides it and ES takes the full width), with its own timeframe buttons, built the same way from the
 NQ continuous series in E:\data_source (back-adjusted exactly as TradingView's NQ1!). "NQ sync on": NQ replays with ES, stepping either chart moves both, and picking a timeframe on the ES chart or NQ switches both
