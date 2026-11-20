@@ -680,11 +680,12 @@ price comes back to after the bar closed takes the trade (an earlier one beats t
 spent. Fill = first 1 s bar reaching the level (open if gapped), no entry 12:45-15:00 PT. Stop 1 tick beyond the cross bar, no
 target, M1 fade managed bracket WITHOUT the RR floor (needs a target): thrust-P1 trail on the M5 ledger + 12:44 PT flat. The
 "Levels: stop or 1R first" column judges every level on its own (no seat, no trail, no EOD flat, same second = stop).
-`h1_cross_bar_trades_2026` (115 bars) is gzipped into `public/reports/cross_bar/`, NOT public: 82 trades, 39% win, -4.7R;
+`h1_cross_bar_trades_2026` (115 bars as of the Oct 26 regen) is gzipped into `public/reports/cross_bar/`, NOT public: 82 trades, 39% win, -4.7R;
 levels 118/234 1R first. `cross_bar/level_race_trail.py` = the same levels with a 1R target + trail: +15.6R, 53% win; 56 of 83
 cross bars with decided levels have at least one winner (49 in the plain race). Regen: `--all --since 2026-01-01 --vp --label
-"2026 Jan 2 - Oct 26"`, then gzip the page and every `_data/*.js` (last regen 2026-11-11 PT with the volume profile, NQ chart and
-20-day swing window: 115 rows, all with NQ, data ~67 MB gzipped).
+"2026 Jan 2 - <last day>" --store-label "2026 Jan 2 - Oct 26"` (the review store's key stays the Oct 26 label so Reviewed / Valid /
+Notes survive a new label), then gzip the page and every `_data/*.js`. Update `E:\data_source` first (its README: four ES steps,
+four NQ steps) when the ticks have moved on. A cross bar whose hour has not closed by the data's last minute is left out.
 
 Cross bar FORWARD REPLAY + manual trades (user, 2026-11-03), same report, which since then shows NO automated trade (user,
 2026-11-03: no automated entry / exit / R / race columns or boxes, no M5 trade / M2-LXPB panes; the functions stay for
@@ -716,9 +717,21 @@ last price at t = close of the last M1 bar closed by t, the price the open R sho
 'moved stop'; rows show the R still at risk = fill to stop in force). Both made at the replay time; stepping back before them undoes
 them on screen, a new one at an earlier time drops the later ones; moves / flatten from before the fill are ignored.
 Buttons ▲ L / ▼ S / ✕ F side by side (full names on hover); a box's numbers panel sits in the chart's top-left corner (beside
-the box it hid the candles). Fib retracement (Alt+F, user 2026-11-18): two points, p0 = 100, p1 = 0, levels 0 / 23.6 / 38.2 / 61.8 /
-78.6 / 100 switchable per fib (last set = default), dotted, drawn behind the candles (primitive pane view zOrder 'bottom').
+the box it hid the candles). Fib retracement (Alt+F, user 2026-11-18): two points, p0 = 100, p1 = 0, levels 0 / 23.6 / 38.2 / 50 / 61.8 /
+78.6 / 100 switchable per fib (last set = default; on at first 0 / 38.2 / 50 / 61.8 / 100, user 2026-11-20, a set saved before then is
+reset once by `settings.fibV`), dotted, drawn behind the candles (primitive pane view zOrder 'bottom'), labels RIGHT of the fib.
 Drawings (user, 2026-11-08, same file): TradingView-style horizontal rays (Alt+J) and rectangles (Alt+Shift+R), any number per row, shared by both panes, kept in time + price, magnet-snapped; hover shows points, drag points / line / inside, Delete, double-click = colour (7 swatches: blue, orange, red, bright green, dark green, white, pink) / width / style / prices.
+A rectangle has ONE colour like a line (user 2026-11-20: border = fill at its opacity; an old `fill` is ignored). Axis price / time
+tags print dark text on a light colour (white was unreadable), white on a dark one (`ink`). "↶ Undo" on each chart / Ctrl+Z over it
+(user 2026-11-20): undoes the last change to that chart's drawings (per drawing group: ES panes share one, NQ its own), one step per
+press / key / popup, in memory since the page opened; position boxes are not in it.
+Candle marks (user, 2026-11-20, every timeframe, ES and NQ): a closed candle patterns-pure's `find_hammer` / `find_shooting_star` flags
+= blue body + small triangle under / over it; `find_engulfing_bullish` / `_bearish` = dark green / maroon body (engulfing colour wins,
+triangle kept). Python (`pattern_flags`) builds the page's own D1 ... M1 candles from the row's bars (`tf_bucket` = `_bucket`) and
+ships the verdicts in the row's data file (`pat`), so no threshold lives in the page; the forming candle is never marked. Explicit
+exception to the "candles keep the default grey" rule of the M1 report. Below H1 the cross bar's hour has a dotted line at its first
+candle AND its last (shown once the replay reaches it); H1 and shorter charts shade every candle outside Mon - Fri 06:30 - 13:00 PT
+(Globex / ETH) light grey. The trade rows no longer have the "Confirmed by" column (user 2026-11-20).
 NQ chart (user, 2026-11-10, same file): an NQ chart BESIDE the ES one (own timeframe buttons, "- NQ chart" hides it and ES takes
 the full width), from `E:\data_source` (`nq_data.load_nq`, NQ back-adjusted exactly as TradingView's NQ1!; data_source is the single
 source of truth, never build NQ bars here). Since 2026-11-11 its 1-minute bars run without a break from Jun 2020 (the missing

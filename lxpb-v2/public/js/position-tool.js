@@ -31,10 +31,16 @@
 // or press, drag and release). Any number per row, shared by the row's panes like the box, kept in time and price, prices stuck to
 // O/H/L/C by the magnet (Ctrl: free), times to candles. Hover shows a drawing's points; click selects it (a rectangle's prices
 // and times then show on the axes); drag a point to move it (rectangle: 4 corners, 4 edge midpoints), the line / inside to move
-// the whole drawing; Delete removes, Esc cancels, double-click opens its colours (7 swatches, user 2026-11-09: blue, orange, red,
-// bright green, dark green, white, pink; no colour picker), width, style and prices. The last style used becomes the default for
-// the next one. A fib retracement (Alt+F or "⌇ Fib", user 2026-11-18): two points like a rectangle, levels 0 / 23.6 / 38.2 /
-// 61.8 / 78.6 / 100 each switchable in its popup, dotted by default, drawn behind the candles (see FIBS).
+// the whole drawing; Delete removes, Esc cancels, double-click opens its colour (7 swatches, user 2026-11-09: blue, orange, red,
+// bright green, dark green, white, pink; no colour picker), width, style and prices. A rectangle has ONE colour like a line (user
+// 2026-11-20: border and fill alike, the fill at its opacity). The last style used becomes the default for the next one. A
+// price tag on the axis prints dark text on a light colour (white, bright green ...), white text on a dark one. A fib
+// retracement (Alt+F or "⌇ Fib", user 2026-11-18): two points like a rectangle, levels 0 / 23.6 / 38.2 / 50 / 61.8 / 78.6 / 100
+// each switchable in its popup (on by default: 0 / 38.2 / 50 / 61.8 / 100, user 2026-11-20), dotted by default, drawn behind
+// the candles, each level's name and price right of the fib (see FIBS).
+// UNDO (user, 2026-11-20): "↶ Undo" on the chart (or Ctrl+Z over it) takes back the last change to its drawings (lines, rays,
+// rectangles, fibs: drawn, moved, restyled or deleted), one step per press, back to when the page was opened. Position boxes
+// are not in it.
 //
 // IN-PLAY MANAGEMENT (user, 2026-11-18), for a trade that is open at the replay time (config.cursor): FLATTEN closes it at the
 // last price at the replay time (`flat: { t }`; the "✕ Flatten" button = the selected trade, or every open trade of the row; also
@@ -45,17 +51,23 @@
 (function () {
   const PT_VALUE = 50, TICK = 0.25, MAGNET_PX = 12, HANDLE_PX = 6;
   const LS = 'postool_v1_';
+  const FIB_DEFAULT = [0, 0.382, 0.5, 0.618, 1];   // the fib levels on until changed (user 2026-11-20)
   const lsGet = (k, d) => { try { const v = localStorage.getItem(LS + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
   const lsSet = (k, v) => { try { localStorage.setItem(LS + k, JSON.stringify(v)); } catch (e) { /* private window */ } };
   const settings = Object.assign({ account: 50000, riskPct: 1, magnet: 'strong',
                                    rayStyle: { color: '#2962ff', width: 1, dash: 'solid' },
                                    hlineStyle: { color: '#2962ff', width: 1, dash: 'solid' },
-                                   rectStyle: { color: '#9c27b0', fill: '#9c27b0', alpha: 0.2, width: 1, dash: 'solid' },
-                                   fibStyle: { color: '#2962ff', width: 1, dash: 'dotted', levels: [0, 0.236, 0.382, 0.618, 0.786, 1] } },
+                                   rectStyle: { color: '#9c27b0', alpha: 0.2, width: 1, dash: 'solid' },
+                                   fibStyle: { color: '#2962ff', width: 1, dash: 'dotted', levels: FIB_DEFAULT.slice() } },
                                  lsGet('settings', {}));
+  if (settings.fibV !== 2) {                       // the levels on by default changed (user 2026-11-20): a saved set from before goes
+    settings.fibStyle = Object.assign({}, settings.fibStyle, { levels: FIB_DEFAULT.slice() });
+    settings.fibV = 2;
+    lsSet('settings', settings);
+  }
   // FIB RETRACEMENT (user, 2026-11-18): two points (p0 first click = 100, p1 second = 0), level r at p1 + (p0 - p1) x r, each
   // level switchable in its double-click popup (the last set used is the next one's default); dotted, drawn BEHIND the candles
-  const FIBS = [[0, '0'], [0.236, '23.6'], [0.382, '38.2'], [0.618, '61.8'], [0.786, '78.6'], [1, '100']];
+  const FIBS = [[0, '0'], [0.236, '23.6'], [0.382, '38.2'], [0.5, '50'], [0.618, '61.8'], [0.786, '78.6'], [1, '100']];
   const fibPx = (d, r) => d.p1 + (d.p0 - d.p1) * r;
   const fibOn = (d) => FIBS.filter(([r]) => (d.levels || []).indexOf(r) >= 0);
   const two = (d) => d.type === 'rect' || d.type === 'fib';     // drawn from two points (t0, p0) - (t1, p1)
@@ -63,6 +75,15 @@
   const PALETTE = [['blue', '#2962ff'], ['orange', '#ff9800'], ['red', '#f23645'], ['bright green', '#00e676'],
                    ['dark green', '#1b8a3c'], ['white', '#ffffff'], ['pink', '#ff5cb8']];
   const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return 'rgba(' + (n >> 16 & 255) + ',' + (n >> 8 & 255) + ',' + (n & 255) + ',' + a + ')'; };
+  // the text colour that reads on a tag of colour `hex` (user 2026-11-20: white on white was unreadable): dark on a light colour
+  // (white, bright green, orange), else white
+  const ink = (hex) => {
+    const n = parseInt(String(hex).slice(1, 7), 16);
+    if (isNaN(n)) return '#ffffff';
+    const lin = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    const L = 0.2126 * lin(n >> 16 & 255) + 0.7152 * lin(n >> 8 & 255) + 0.0722 * lin(n & 255);
+    return L > 0.35 ? '#131722' : '#ffffff';
+  };
   const tools = [];
   const config = { shared: [], mirror: [], drawOnly: [], group: {}, cursor: () => null, result: () => null, onChange: null };
   let active = null;                       // the tool last clicked: Delete / Esc go to it
@@ -111,20 +132,42 @@
     if (last == null) return v;
     return p.side === 'long' ? Math.min(v, last - TICK) : Math.max(v, last + TICK);
   }
-  // the row's drawings (lines, rays, rectangles): [{ id, type 'hline' / 'ray', t, p, color, width, dash }
-  //                                          | { id, type 'rect', t0, p0, t1, p1, color, fill, alpha, width, dash }]
+  // the row's drawings (lines, rays, rectangles, fibs): [{ id, type 'hline' / 'ray', t, p, color, width, dash }
+  //   | { id, type 'rect', t0, p0, t1, p1, color, alpha, width, dash } | { id, type 'fib', t0, p0, t1, p1, color, width, dash, levels }]
   // a pane in config.group keeps its own drawings (key '<row>:<group>', stored as draw_<file>_<row key>_<group>): another
   // instrument's prices are not the row's
   const drawKey = (i) => { const s = String(i).split(':'); return 'draw_' + FILE + '_' + rowKey(s[0]) + (s[1] ? '_' + s[1] : ''); };
   const draws = {};
   const getDraws = (i) => (i in draws ? draws[i] : (draws[i] = lsGet(drawKey(i), [])));
-  function setDraws(i, list) {
+  // UNDO: each drawing group's earlier lists, newest last. One step per gesture: the first change after a press / key / popup
+  // opening saves the list as it was; the changes after it (a drag, a rectangle being drawn, typing a price) join that step.
+  const undos = {};
+  let undoOpen = null;                     // the group whose step is open (null: the next change starts a new step)
+  const UNDO_MAX = 200;
+  const newStep = () => { undoOpen = null; };
+  function setDraws(i, list, noUndo) {
+    if (!noUndo && undoOpen !== i) {
+      const u = undos[i] = undos[i] || [];
+      u.push(getDraws(i));
+      if (u.length > UNDO_MAX) u.shift();
+      undoOpen = i;
+    }
     draws[i] = list;
     lsSet(drawKey(i), list);
-    tools.forEach(t => { if (t.dk === i && t.requestUpdate) t.requestUpdate(); });
+    tools.forEach(t => { if (t.dk === i) { if (t.requestUpdate) t.requestUpdate(); t.syncButtons(); } });
+  }
+  function undo(i) {
+    const u = undos[i];
+    if (!u || !u.length) return;
+    newStep();
+    tools.forEach(t => { if (t.dk === i) { t.selD = null; t.hoverD = null; t.creating = null; } });
+    setDraws(i, u.pop(), true);
+    newStep();
   }
   const putDraw = (i, d) => setDraws(i, getDraws(i).map(o => (o.id === d.id ? d : o)));
-  const dropDraw = (i, id) => setDraws(i, getDraws(i).filter(o => o.id !== id));
+  const dropDraw = (i, id, noUndo) => setDraws(i, getDraws(i).filter(o => o.id !== id), noUndo);
+  // a drawing taken back before it was finished (Esc, a rectangle of no size): as if it had never been started
+  const unstart = (i, id) => { dropDraw(i, id, true); const u = undos[i]; if (u && u.length) u.pop(); newStep(); tools.forEach(t => { if (t.dk === i) t.syncButtons(); }); };
   const lastAtOrBefore = (bars, t) => {          // index of the last bar starting at or before t (-1 if none)
     let lo = 0, hi = bars.length - 1, out = -1;
     while (lo <= hi) { const m = (lo + hi) >> 1; if (bars[m].time <= t) { out = m; lo = m + 1; } else hi = m - 1; }
@@ -178,7 +221,7 @@
           const out = [];
           const tag = (v, bg) => {
             const y = tool.y(v);
-            if (y != null) out.push({ coordinate: () => y, text: () => v.toFixed(2), textColor: () => '#ffffff', backColor: () => bg,
+            if (y != null) out.push({ coordinate: () => y, text: () => v.toFixed(2), textColor: () => ink(bg), backColor: () => bg,
                                       visible: () => true, tickVisible: () => true });
           };
           tool.bxs().forEach(p => {
@@ -198,7 +241,7 @@
           const f = tool.chart.options().localization.timeFormatter;
           (two(d) ? [d.t0, d.t1] : d.type === 'ray' ? [d.t] : []).forEach(t => {
             const x = tool.x(t);
-            if (x != null) out.push({ coordinate: () => x, text: () => (f ? f(t) : String(t)), textColor: () => '#ffffff',
+            if (x != null) out.push({ coordinate: () => x, text: () => (f ? f(t) : String(t)), textColor: () => ink(d.color),
                                       backColor: () => d.color, visible: () => true, tickVisible: () => true });
           });
           return out;
@@ -278,6 +321,8 @@
       this.bRect = mk('▭ Rect', 'Rectangle (Alt+Shift+R): click two corners, or press, drag and release', () => this.armFor('rect'));
       this.bFib = mk('⌇ Fib', 'Fib retracement (Alt+F): click two points (100 at the first, 0 at the second), or press, drag and release; '
                               + 'double-click it to switch levels on / off', () => this.armFor('fib'));
+      this.bUndo = mk('↶ Undo', 'Undo the last change to this chart\'s drawings: lines, rays, rectangles, fibs (Ctrl+Z over the chart)',
+                      () => undo(this.dk));
       mk('⚙', 'Account size and risk', (b) => this.popover(b, false));
       this.syncButtons();
     }
@@ -289,9 +334,10 @@
       this.bRay.classList.toggle('pos-on', this.arm === 'ray');
       this.bRect.classList.toggle('pos-on', this.arm === 'rect');
       this.bFib.classList.toggle('pos-on', this.arm === 'fib');
+      if (this.bUndo) this.bUndo.disabled = !(undos[this.dk] && undos[this.dk].length);
     }
     armFor(side) { this.cancelCreate(); this.arm = this.arm === side ? null : side; active = this; this.syncButtons(); }
-    cancelCreate() { if (this.creating) { dropDraw(this.dk, this.creating.id); this.creating = null; this.selD = null; } }
+    cancelCreate() { if (this.creating) { unstart(this.dk, this.creating.id); this.creating = null; this.selD = null; } }
 
     plotPoint(ev) {
       const r = this.el.getBoundingClientRect(), ts = this.chart.timeScale();
@@ -442,7 +488,7 @@
         else context.fillRect(Math.min(g.x0, g.x1), 0, Math.abs(g.x1 - g.x0), mediaSize.height);
       }) }) }];
     }
-    drawFibs(ctx) {                               // behind the candles: each switched-on level, dotted, from point 1 to point 2, labelled
+    drawFibs(ctx) {                               // behind the candles: each switched-on level, dotted, from point 1 to point 2, labelled on the right
       ctx.font = '11px Courier New, monospace'; ctx.textBaseline = 'bottom';
       getDraws(this.dk).forEach(d => {
         if (d.type !== 'fib') return;
@@ -457,7 +503,7 @@
           ctx.setLineDash(DASH[d.dash] || []);
           ctx.beginPath(); ctx.moveTo(l, yc); ctx.lineTo(Math.max(r, l + 1), yc); ctx.stroke();
           ctx.setLineDash([]);
-          ctx.textAlign = 'right'; ctx.fillText(name + ' (' + px.toFixed(2) + ')', l - 4, yc + 5);
+          ctx.textAlign = 'left'; ctx.fillText(name + ' (' + px.toFixed(2) + ')', Math.max(r, l + 1) + 4, yc + 5);   // right of it (user 2026-11-20)
         });
       });
       ctx.setLineDash([]);
@@ -478,7 +524,7 @@
           ctx.beginPath(); ctx.moveTo(d.type === 'hline' ? 0 : g.x, y); ctx.lineTo(Math.max(W, g.x), y); ctx.stroke();
         } else {
           const l = Math.min(g.x0, g.x1), t = Math.min(g.y0, g.y1), w = Math.abs(g.x1 - g.x0), h = Math.abs(g.y1 - g.y0);
-          ctx.fillStyle = rgba(d.fill, d.alpha); ctx.fillRect(l, t, w, h);
+          ctx.fillStyle = rgba(d.color, d.alpha); ctx.fillRect(l, t, w, h);   // one colour: border and fill (user 2026-11-20)
           ctx.strokeRect(crisp(l, ctx.lineWidth), crisp(t, ctx.lineWidth), Math.round(w), Math.round(h));
         }
         ctx.setLineDash([]);
@@ -563,7 +609,7 @@
         if (this.creating) {                       // a rectangle's second corner
           const c = this.creating, d = getDraws(this.dk).find(o => o.id === c.id);
           this.creating = null;
-          if (d && d.t0 === d.t1 && d.p0 === d.p1) { dropDraw(this.dk, c.id); this.selD = null; }
+          if (d && d.t0 === d.t1 && d.p0 === d.p1) { unstart(this.dk, c.id); this.selD = null; }
           this.blockMouse = true; block(e); return;
         }
         if (this.arm === 'hline' || this.arm === 'ray' || this.arm === 'rect' || this.arm === 'fib') {
@@ -698,7 +744,8 @@
       }
       putDraw(this.dk, q);
     }
-    drawPopover(id, cx, cy) {                     // a drawing's colours, width, style and prices
+    drawPopover(id, cx, cy) {                     // a drawing's colour, width, style and prices
+      newStep();                                  // the changes made in it (typing a price ...) are one undo step until the next press
       document.querySelectorAll('.pos-pop').forEach(n => n.remove());
       const d = getDraws(this.dk).find(o => o.id === id);
       if (!d) return;
@@ -711,9 +758,8 @@
       const numIn = (f, v) => '<input data-f="' + f + '" type="number" step="0.25" value="' + v + '">';
       const sws = (f, v) => '<span class="pos-sws" data-f="' + f + '" data-v="' + v + '">' + PALETTE.map(([n, c]) =>
         '<button type="button" class="pos-sw' + (c === v ? ' on' : '') + '" data-c="' + c + '" title="' + n + '" style="background:' + c + '"></button>').join('') + '</span>';
-      let h = row(d.type !== 'rect' ? 'Line' : 'Border', sws('color', d.color));
-      if (d.type === 'rect') h += row('Fill', sws('fill', d.fill))
-                                + row('Opacity', '<input data-f="alpha" type="range" min="0" max="1" step="0.05" value="' + d.alpha + '">');
+      let h = row(d.type !== 'rect' ? 'Line' : 'Colour', sws('color', d.color));
+      if (d.type === 'rect') h += row('Opacity', '<input data-f="alpha" type="range" min="0" max="1" step="0.05" value="' + d.alpha + '">');
       if (d.type === 'fib') h += '<div class="pos-fibs">' + FIBS.map(([v, n]) => '<label><input type="checkbox" data-lv="' + v + '"'
                                  + ((d.levels || []).indexOf(v) >= 0 ? ' checked' : '') + '>' + n + '</label>').join('') + '</div>';
       h += row('Width', sel('width', [1, 2, 3, 4], d.width)) + row('Style', sel('dash', ['solid', 'dashed', 'dotted'], d.dash));
@@ -726,10 +772,10 @@
         const cur = getDraws(this.dk).find(o => o.id === id);
         if (!cur) return;
         const q = Object.assign({}, cur, { color: val('color'), width: +val('width'), dash: val('dash') });
-        if (cur.type === 'rect') Object.assign(q, { fill: val('fill'), alpha: +val('alpha') });
+        if (cur.type === 'rect') { q.alpha = +val('alpha'); delete q.fill; }
         if (cur.type === 'fib') q.levels = [...box.querySelectorAll('[data-lv]')].filter(c => c.checked).map(c => +c.dataset.lv);
         (!two(cur) ? ['p'] : ['p0', 'p1']).forEach(f => { const v = parseFloat(val(f)); if (!isNaN(v)) q[f] = v; });
-        settings[cur.type + 'Style'] = cur.type === 'rect' ? { color: q.color, fill: q.fill, alpha: q.alpha, width: q.width, dash: q.dash }   // the next one is drawn in this style
+        settings[cur.type + 'Style'] = cur.type === 'rect' ? { color: q.color, alpha: q.alpha, width: q.width, dash: q.dash }   // the next one is drawn in this style
                                      : cur.type === 'fib' ? { color: q.color, width: q.width, dash: q.dash, levels: q.levels.slice() }
                                      : { color: q.color, width: q.width, dash: q.dash };
         lsSet('settings', settings);
@@ -808,9 +854,14 @@
     if (to && e.altKey && !e.ctrlKey && to.bRay && (e.code === 'KeyH' || e.code === 'KeyJ' || e.code === 'KeyF' || (e.shiftKey && e.code === 'KeyR'))) {
       to.armFor({ KeyH: 'hline', KeyJ: 'ray', KeyR: 'rect', KeyF: 'fib' }[e.code]); e.preventDefault(); return;
     }
+    if (to && to.bUndo && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === 'KeyZ') {   // undo the drawings of the chart under the mouse
+      undo(to.dk); e.preventDefault(); return;
+    }
     if (!active) return;
     if ((e.key === 'Delete' || e.key === 'Backspace') && active.selD) {
+      newStep();
       dropDraw(active.dk, active.selD); active.selD = null; active.hoverD = null; e.preventDefault();
+      newStep();
     } else if ((e.key === 'Delete' || e.key === 'Backspace') && active.selB) {
       const id = active.selB;
       active.selB = null; active.hoverB = null; dropBox(active.row, id); e.preventDefault();
@@ -821,6 +872,7 @@
     }
   });
   document.addEventListener('pointerdown', (e) => {
+    newStep();                             // every press starts a new undo step (a drag, a drawing, a swatch, a popup button)
     if (!e.target.closest('.pos-pop') && !e.target.closest('.pos-btn')) document.querySelectorAll('.pos-pop').forEach(n => n.remove());
   }, true);
 
