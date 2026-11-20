@@ -65,6 +65,13 @@ its price axis off auto-fit (the range on screen is kept), as dragging both axes
 again. A finger keeps the touch rules (a vertical drag scrolls the page, the axis strip stretches).
 CROSSHAIR SYNC (user, 2026-11-11): hovering the ES chart puts NQ's crosshair on the candle holding the same time, at the same
 height, and the other way round (none past the other chart's last candle). The 2nd ES chart is not linked.
+CANDLE MARKS (user, 2026-11-20): on every timeframe (ES and NQ), a CLOSED candle that patterns-pure's find_hammer /
+find_shooting_star calls a spike gets a blue body and a small triangle under (hammer) / over (shooting star) it; one that
+find_engulfing_bullish / find_engulfing_bearish calls engulfing a dark green / maroon body (engulfing colour first, triangle kept).
+The verdicts are computed here (pattern_flags) on the very candles the page builds and shipped in the row's data file, so the page
+never restates a threshold. The forming candle is not marked. Below H1 the cross bar's hour gets a dotted line at its first and
+at its last candle (the latter once the replay reaches it), and every candle outside Mon - Fri 06:30 - 13:00 PT (Globex / ETH) a
+light grey background on H1 and shorter charts. The trade rows no longer show which detector confirmed the cross bar.
 
 Usage:
     python cross_bar/render_cross_bar_trades.py --last 5 --output <file>.html
@@ -83,6 +90,10 @@ import render_cross_bar_report as CB              # noqa: E402  (sets up the imp
 from es_data import load_es                       # noqa: E402
 import vap                                        # noqa: E402  (volume at price from the .scid ticks, for the volume profiles)
 from nq_data import load_nq                       # noqa: E402  (E:\data_source: NQ continuous, for the NQ chart)
+from find_hammer import find_hammer               # noqa: E402  (patterns-pure: the candle marks of every timeframe)
+from find_shooting_star import find_shooting_star  # noqa: E402
+from find_engulfing_bullish import find_engulfing_bullish  # noqa: E402
+from find_engulfing_bearish import find_engulfing_bearish  # noqa: E402
 
 PT = CB.PT
 TICK = 0.25
@@ -301,6 +312,54 @@ def race(lv, row):
         a = b
 
 
+# ---------------------------------------------------------------- candle patterns on every chart timeframe (user, 2026-11-20)
+# The page builds its D1 ... M1 candles itself (MANUAL_JS _barsAt); the same candles are built here from the same bars, and
+# patterns-pure says which are hammers / shooting stars / bullish / bearish engulfing bars (never restated in the page).
+TF_SEC = {"D1": 86400, "H4": 14400, "H1": 3600, "M30": 1800, "M15": 900, "M5": 300, "M2": 120, "M1": 60}
+PAT_HAMMER, PAT_STAR, PAT_ENG_BULL, PAT_ENG_BEAR = 1, 2, 4, 8
+SESSION_ANCHOR = 15 * 3600            # D1 / H4 candles start at 15:00 PT (MANUAL_JS _bucket)
+
+
+def tf_bucket(sec, tf):
+    """Start (epoch s) of the tf candle holding each bar start in `sec` (epoch s array), as MANUAL_JS _bucket does."""
+    n = TF_SEC[tf]
+    if n <= 3600:
+        return sec // n * n
+    off = (pd.DatetimeIndex(pd.to_datetime(sec, unit="s", utc=True)).tz_convert(PT).tz_localize(None).asi8 // 1_000_000_000) - sec
+    loc = sec + off
+    return (loc - SESSION_ANCHOR) // n * n + SESSION_ANCHOR - off
+
+
+def tf_candles(bars, tf):
+    """OHLC candles of tf from `bars` (time-sorted, PT index), indexed by the candle start (epoch s)."""
+    sec = bars.index.asi8 // 1_000_000_000
+    g = bars.groupby(tf_bucket(sec, tf), sort=True)
+    return pd.DataFrame({"open": g["open"].first(), "high": g["high"].max(), "low": g["low"].min(), "close": g["close"].last()})
+
+
+def pattern_flags(h1, m1, cross_t):
+    """{tf: {"t0", "r": flat [minute step, code]}}: the candles of each chart timeframe that patterns-pure calls a hammer (1),
+    shooting star (2), bullish engulfing (4) or bearish engulfing bar (8), codes summed. The candles are the page's: H1 bars
+    before the cross bar's hour then M1 bars for H1 and up (M1 bars alone when there are no H1 bars), M1 bars for the rest. A
+    candle still forming at the replay time is not marked in the page."""
+    h1c = h1[["open", "high", "low", "close"]]
+    m1c = m1[["open", "high", "low", "close"]]
+    out = {}
+    for tf, n in TF_SEC.items():
+        src = pd.concat([h1c[h1c.index < cross_t], m1c[m1c.index >= cross_t]]) if n >= 3600 and len(h1c) else m1c
+        c = tf_candles(src, tf)
+        code = pd.Series(0, index=c.index, dtype=np.int64)
+        for ix, k in ((find_hammer(c, 0.0).index, PAT_HAMMER), (find_shooting_star(c, 0.0).index, PAT_STAR),
+                      (find_engulfing_bullish(c).index, PAT_ENG_BULL), (find_engulfing_bearish(c).index, PAT_ENG_BEAR)):
+            code.loc[ix] += k                 # (find_hammer / find_shooting_star take an ATR only for their "untested" flag: 0)
+        code = code[code > 0]
+        if not len(code):
+            continue
+        t = code.index.to_numpy(np.int64)
+        out[tf] = {"t0": int(t[0]), "r": np.column_stack([np.diff(t, prepend=t[0]) // 60, code.to_numpy()]).ravel().tolist()}
+    return out
+
+
 def m1_pack(bars):
     """Bars for the page's replay (M1 or H1), compact: flat [minute step, open, high, low, close], prices in ticks from a base."""
     tk = np.rint(bars[["open", "high", "low", "close"]].to_numpy(float) / TICK).astype(np.int64)
@@ -378,12 +437,18 @@ const _lb = (a, t) => { let lo = 0, hi = a.length; while (lo < hi) { const m = (
 const _offFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hourCycle: 'h23', year: 'numeric',
   month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 const _offCache = {};
-function _ptOff(t) {                                        // PT minus UTC in seconds (-8 h or -7 h); DST changes on a closed Sunday
-  const d = Math.floor(t / 86400);
-  if (d in _offCache) return _offCache[d];
-  const p = {};
-  _offFmt.formatToParts(new Date(t * 1000)).forEach(x => { p[x.type] = x.value; });
-  return (_offCache[d] = Date.UTC(+p.year, p.month - 1, +p.day, +p.hour, +p.minute, +p.second) / 1000 - t);
+function _ptOff(t) {                                        // PT minus UTC in seconds (-8 h or -7 h), per UTC hour (DST changes on the hour)
+  const h = Math.floor(t / 3600);
+  if (h in _offCache) return _offCache[h];
+  const p = {}, t0 = h * 3600;
+  _offFmt.formatToParts(new Date(t0 * 1000)).forEach(x => { p[x.type] = x.value; });
+  return (_offCache[h] = Date.UTC(+p.year, p.month - 1, +p.day, +p.hour, +p.minute, +p.second) / 1000 - t0);
+}
+// ETH / Globex (user, 2026-11-20): every candle outside the regular session (Mon - Fri 06:30 - 13:00 PT), ES and NQ alike, gets a
+// light grey background on the H1 and shorter charts (a candle is placed by its start: the 06:00 H1 candle is ETH)
+function _isEth(t) {
+  const loc = t + _ptOff(t), tod = ((loc % 86400) + 86400) % 86400, dow = (Math.floor(loc / 86400) + 4) % 7;   // 0 = Sunday
+  return !(dow >= 1 && dow <= 5 && tod >= 23400 && tod < 46800);
 }
 function _bucket(t, tf) {                                   // start of the tf candle holding time t
   const len = _LEN[tf];
@@ -404,14 +469,27 @@ function _bars(m) {
   }
   return out;
 }
+// patterns-pure's verdicts on each timeframe's candles (render_cross_bar_trades.pattern_flags): { tf: Map(candle start -> code) },
+// code = 1 hammer + 2 shooting star + 4 bullish engulfing + 8 bearish engulfing
+function _pats(p) {
+  const o = {};
+  Object.keys(p || {}).forEach(tf => {
+    const m = new Map(), r = p[tf].r;
+    let t = p[tf].t0;
+    for (let k = 0; k < r.length; k += 2) { t += r[k] * 60; m.set(t, r[k + 1]); }
+    o[tf] = m;
+  });
+  return o;
+}
 function _decode(d) {
   const M = _bars(d.m1), H = _bars(d.h1);
   const s = d.s1, n = s.r.length / 3, T = new Float64Array(n), L = new Float64Array(n), Hi = new Float64Array(n);
   let ts = s.t0, lo = s.b;
   for (let k = 0; k < n; k++) { ts += s.r[3 * k]; lo += s.r[3 * k + 1]; T[k] = ts; L[k] = lo * 0.25; Hi[k] = (lo + s.r[3 * k + 2]) * 0.25; }
-  const q = d.nq && d.nq.m1 ? { m1: _bars(d.nq.m1), h1: d.nq.h1 ? _bars(d.nq.h1) : [], vp: d.nq.vp } : null;
+  const q = d.nq && d.nq.m1 ? { m1: _bars(d.nq.m1), h1: d.nq.h1 ? _bars(d.nq.h1) : [], vp: d.nq.vp, pat: _pats(d.nq.pat) } : null;
   if (q) { q.m1t = q.m1.map(c => c.time); q.h1t = q.h1.map(c => c.time); }
-  return { m1: M, m1t: M.map(c => c.time), h1: H, h1t: H.map(c => c.time), s1: { n, t: T, lo: L, hi: Hi }, vp: d.vp, nq: q };
+  return { m1: M, m1t: M.map(c => c.time), h1: H, h1t: H.map(c => c.time), s1: { n, t: T, lo: L, hi: Hi }, vp: d.vp, nq: q,
+           pat: _pats(d.pat) };
 }
 // the NQ chart (pane 'n') reads the row's NQ bars and, with sync off, its own replay time
 const _isN = (pane) => pane === 'n';
@@ -460,9 +538,58 @@ function _hist(i, tf, pane) {                               // the tf candles be
   return st.hist[k];
 }
 function _barsAt(i, tf, pane) {                             // pane 'n' = NQ; anything else (or none) = ES
-  const D = _src(i, pane), h = _hist(i, tf, pane), out = h.slice();
-  _agg(D.m1, D.m1t, CHARTS[i].crossT, _Tof(i, pane), tf, out, { from: h.length });   // a D1 / H4 candle open at the hour goes on
+  const D = _src(i, pane), h = _hist(i, tf, pane), out = h.slice(), T = _Tof(i, pane);
+  _agg(D.m1, D.m1t, CHARTS[i].crossT, T, tf, out, { from: h.length });   // a D1 / H4 candle open at the hour goes on
+  return _marked(D, tf, out, T);
+}
+// CANDLE MARKS (user, 2026-11-20): a CLOSED candle patterns-pure calls a hammer or a shooting star gets a blue body (inside its
+// border only) and a small triangle under it (hammer) / over it (shooting star); a bullish / bearish engulfing candle a dark green /
+// maroon body (an engulfing candle that is also a spike: the engulfing colour, the triangle stays). The forming candle: none yet.
+const _SPIKE_BODY = '#2962ff', _ENG_BULL_BODY = '#1b8a3c', _ENG_BEAR_BODY = '#800000', _TRI = '#5b8cff', _ETH_BG = 'rgba(255, 255, 255, 0.07)';
+function _marked(D, tf, out, T) {
+  const P = D.pat && D.pat[tf], n = out.length, len = _LEN[tf];
+  if (!P || !P.size) return out;
+  for (let k = 0; k < n; k++) {
+    const code = P.get(out[k].time);
+    if (!code || (k === n - 1 && out[k].time + len > T)) continue;
+    out[k] = Object.assign({}, out[k], { pat: code, color: code & 4 ? _ENG_BULL_BODY : code & 8 ? _ENG_BEAR_BODY : _SPIKE_BODY });
+  }
   return out;
+}
+const _cIdx = (c, t) => { let lo = 0, hi = c.length; while (lo < hi) { const m = (lo + hi) >> 1; if (c[m].time < t) lo = m + 1; else hi = m; } return lo; };
+function _onScreen(chart, c) {                              // [a, b): the candles on screen (one either side)
+  const r = chart.timeScale().getVisibleRange();
+  return !r || !c.length ? [0, 0] : [Math.max(0, _cIdx(c, r.from) - 1), Math.min(c.length, _cIdx(c, r.to) + 2)];
+}
+function _drawTriangles(ctx, chart, series, cd) {           // hammer: under the low, pointing up; shooting star: over the high, pointing down
+  const c = cd.live || cd.candles, ts = chart.timeScale(), [a, b] = _onScreen(chart, c);
+  const hw = Math.max(2.5, Math.min(5, ts.options().barSpacing * 0.4)), ht = hw * 1.4, gap = 3;
+  ctx.fillStyle = _TRI;
+  for (let k = a; k < b; k++) {
+    const q = c[k];
+    if (!q.pat || !(q.pat & 3)) continue;
+    const x = ts.timeToCoordinate(q.time);
+    if (x == null) continue;
+    const tri = (y0, dir) => { ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x - hw, y0 + dir * ht); ctx.lineTo(x + hw, y0 + dir * ht); ctx.closePath(); ctx.fill(); };
+    if (q.pat & 1) { const y = series.priceToCoordinate(q.low); if (y != null) tri(y + gap, 1); }
+    if (q.pat & 2) { const y = series.priceToCoordinate(q.high); if (y != null) tri(y - gap, -1); }
+  }
+}
+function _drawEth(ctx, size, chart, cd) {                   // behind the candles: a grey band over every run of ETH candles
+  if (!(cd.barSec <= 3600)) return;
+  const c = cd.live || cd.candles, ts = chart.timeScale(), [a, b] = _onScreen(chart, c), half = ts.options().barSpacing / 2;
+  ctx.fillStyle = _ETH_BG;
+  const band = (j, k) => {
+    const x0 = ts.timeToCoordinate(c[j].time), x1 = ts.timeToCoordinate(c[k].time);
+    if (x0 != null && x1 != null) ctx.fillRect(Math.round(x0 - half), 0, Math.round(x1 - x0 + 2 * half), size.height);
+  };
+  let run = -1;
+  for (let k = a; k < b; k++) {
+    const eth = _isEth(c[k].time);
+    if (eth && run < 0) run = k;
+    else if (!eth && run >= 0) { band(run, k - 1); run = -1; }
+  }
+  if (run >= 0) band(run, b - 1);
 }
 
 // ---- one chart: candles + the cross bar's marks for its timeframe
@@ -471,10 +598,16 @@ function _paneCd(i, pane) {
   const times = bars.map(c => c.time);
   const snap = (t) => times[Math.max(0, _lb(times, _bucket(t, tf) + 1) - 1)];
   const up = m.bull, side = up ? 'belowBar' : 'aboveBar';
+  // the cross bar's hour below H1: a line at its first candle and (user 2026-11-20) one at its last, which shows once the replay
+  // has reached that candle
+  const D = _src(i, pane), k1 = _lb(D.m1t, m.close) - 1;
+  const endT = k1 >= 0 && D.m1[k1].time >= m.crossT ? _bucket(D.m1[k1].time, tf) : null;
+  const hourLines = (pre) => len >= 3600 ? [] : [{ time: snap(m.crossT), color: m.color, label: pre + 'H1 cross bar ' + m.crossLabel }]
+    .concat(endT == null ? [] : [{ time: endT, color: m.color, label: pre + 'H1 cross bar end ' + m.endLabel }]);
   if (_isN(pane)) {                                         // NQ: only where the ES cross bar is (its prices are ES prices)
     const cdN = { title: 'NQ·' + tf, tfName: tf, barSec: len, candles: bars, priceLines: [], rays: [], notes: [], precision: 2, dateOnly: false,
                   markers: len >= 3600 ? [{ time: snap(m.crossT), position: side, color: m.color, shape: up ? 'arrowUp' : 'arrowDown', text: 'ES cross bar', size: 2 }] : [],
-                  vlines: len < 3600 ? [{ time: snap(m.crossT), color: m.color, label: 'ES H1 cross bar ' + m.crossLabel }] : [] };
+                  vlines: hourLines('ES ') };
     cdN.fit = (chart) => { const n = (cdN.live || cdN.candles).length; chart.timeScale().setVisibleLogicalRange({ from: n - _NEAR, to: n + _NEAR * _BLANK / (1 - _BLANK) }); };
     return cdN;
   }
@@ -492,7 +625,7 @@ function _paneCd(i, pane) {
   };
   const rays = [ray(m.swingT, m.swingPx, 2, 'swept level', m.sweptLabel)]
     .concat(m.older.map(o => ray(o[0], o[1], 3, 'older swing', o[3])));
-  const vlines = len < 3600 ? [{ time: snap(m.crossT), color: m.color, label: 'H1 cross bar ' + m.crossLabel }] : [];
+  const vlines = hourLines('');
   const cd = { title: tf, tfName: tf, barSec: len, candles: bars, markers, priceLines: [], rays, vlines, notes: m.notes,
                precision: 2, dateOnly: false };
   cd.fit = (chart) => {
@@ -532,6 +665,7 @@ function _apply(i) {
       const d = bars.length - n0;
       ts.setVisibleLogicalRange(vr.to >= n0 - 1.5 ? { from: vr.from + d, to: vr.to + d } : vr);   // follow the right edge
     }
+    if (p.cd.requeue) p.cd.requeue();                       // place the vertical lines again (the hour's end line appears)
   });
   _evalRow(i);
   PosTool.refresh(i);
@@ -816,7 +950,7 @@ function _fillRow0(i, tr) {
     const sub = document.createElement('tr');
     sub.className = 'man-sub' + (tr.classList.contains('hidden') ? ' hidden' : '');
     sub.dataset.idx = i; sub.dataset.id = b.id;
-    sub.innerHTML = '<td colspan="5" class="man-sub-lbl">trade ' + (k + 1) + '</td><td class="left man-entry"></td><td class="man-plan"></td>'
+    sub.innerHTML = '<td colspan="4" class="man-sub-lbl">trade ' + (k + 1) + '</td><td class="left man-entry"></td><td class="man-plan"></td>'
       + '<td class="left man-exit"></td><td class="man-r"></td><td class="man-usd"></td><td colspan="4"></td>';
     sub.addEventListener('click', () => toggleChart(i));
     _tradeCells((q) => sub.querySelector('td.' + q), b, res && res[b.id]);
@@ -944,6 +1078,13 @@ const Replay = {
     if (!m) return;
     const pane = m[1], i = +m[2], st = _rp(i);
     st.panes[pane] = { chart, series, cd };
+    series.attachPrimitive({                        // the ETH background (behind everything) and the hammer / shooting star triangles
+      attached() {}, detached() {}, updateAllViews() {},
+      paneViews() {
+        return [{ zOrder: () => 'bottom', renderer: () => ({ draw: (target) => target.useMediaCoordinateSpace(({ context, mediaSize }) => _drawEth(context, mediaSize, chart, cd)) }) },
+                { zOrder: () => 'normal', renderer: () => ({ draw: (target) => target.useMediaCoordinateSpace(({ context }) => _drawTriangles(context, chart, series, cd)) }) }];
+      },
+    });
     if (cd.tfName === 'D1') {                       // a D1 candle starts 15:00 PT the day before: label it by its trading day
       const f = (t) => timeFmtD.format(new Date((t + 9 * 3600) * 1000));
       chart.applyOptions({ timeScale: { tickMarkFormatter: f }, localization: { timeFormatter: f } });
@@ -1125,13 +1266,13 @@ TF_BTN = ('\n    <button class="btn" id="tf-def-btn" type="button" title="The ti
 assert '<div class="toolbar">' in CB.TOOLBAR_HTML, "cross bar toolbar changed: re-check TF_BTN"
 HEAD_HTML = (
     "<th class=\"left\">#</th><th class=\"left\">Cross bar (H1 start)</th><th class=\"left\">Side</th>"
-    "<th class=\"left\">Confirmed by</th><th>Swept</th>"
+    "<th>Swept</th>"
     "<th class=\"left man-th\" title=\"Your manual trade, drawn with Long / Short on the H1, M5 or M2 pane (any number per row): the row shows how many, and each trade has its own line under it (trade 1, 2, 3 in the order drawn) with its side, entry price, and its fill once the replay reaches it\">Manual entry</th>"
     "<th class=\"man-th\" title=\"Stop / target and their reward to risk\">Manual stop / target</th>"
     "<th class=\"left man-th\" title=\"As of the row's replay time: the first second reaching the stop or the target after the fill, or still open (last price)\">Manual exit</th>"
     "<th class=\"man-th\">Manual R</th><th class=\"man-th\" title=\"R x the risk $ of the position tool's settings (gear)\">Manual P&amp;L $</th>"
     "<th>Reviewed</th><th>Valid</th><th class=\"left\">Notes</th><th class=\"expand-th\">\u25b6</th>")
-N_COLS = 14
+N_COLS = 13
 
 
 def _row_key(row):
@@ -1146,7 +1287,6 @@ def _row_html(i, row):
   <td class="left">{i + 1}</td>
   <td class="left">{CB._pt(row.Index)}</td>
   <td class="left" style="color:{CB.BULL if row.bullish else CB.BEAR}">{'Long' if row.bullish else 'Short'}</td>
-  <td class="left">{CB._confirmation(row)}</td>
   <td>{row.swing_price:.2f}</td>
   <td class="left man-entry"></td><td class="man-plan"></td><td class="left man-exit"></td><td class="man-r"></td><td class="man-usd"></td>
   <td onclick="event.stopPropagation();"><input type="checkbox" class="reviewed-cb"></td>
@@ -1207,6 +1347,7 @@ def prepare(rows, h1, data_dir, vp=False, until_min=None):
         chart = {"crossT": int(t.timestamp()), "close": int(closed.timestamp()), "start": int(start_t.timestamp()),
                  "bull": bool(bull),
                  "color": CB.BULL if bull else CB.BEAR, "swingColor": CB.SWING_COLOR, "crossLabel": CB._pt(t, False),
+                 "endLabel": CB._pt(closed, False),
                  "swingT": int(row.swing_time.timestamp()), "swingPx": float(row.swing_price),
                  "sweptLabel": f"swept swing {side} {row.swing_price:.2f} (swing bar {CB._pt(row.swing_time)})",
                  "sweepT": int(gone_t.timestamp()),
@@ -1228,14 +1369,15 @@ def prepare(rows, h1, data_dir, vp=False, until_min=None):
         start = m5.index[max(0, p5 - S1_HISTORY)]
         stop = until + pd.Timedelta(minutes=1)
         key = _row_key(row)
-        payload = {"h1": m1_pack(h1b[(h1b.index >= h1_from) & (h1b.index < t)]),
-                   "m1": m1_pack(m1.iloc[max(0, m1_from): int(m1.index.searchsorted(until, side="right"))]),
-                   "s1": s1_pack(s1_between(start, stop))}
+        h1r = h1b[(h1b.index >= h1_from) & (h1b.index < t)]
+        m1r = m1.iloc[max(0, m1_from): int(m1.index.searchsorted(until, side="right"))]
+        payload = {"h1": m1_pack(h1r), "m1": m1_pack(m1r), "s1": s1_pack(s1_between(start, stop)),
+                   "pat": pattern_flags(h1r, m1r, t)}
         # NQ (the NQ chart): the same stretches of H1 and M1 bars, where the NQ ticks reach
         a1 = m1.index[max(0, m1_from)]
         nqm = nq_m1[(nq_m1.index >= a1) & (nq_m1.index <= until)]
         nqh = nq_h1[(nq_h1.index >= h1_from) & (nq_h1.index < t)]
-        payload["nq"] = ({"h1": m1_pack(nqh) if len(nqh) else None, "m1": m1_pack(nqm)}
+        payload["nq"] = ({"h1": m1_pack(nqh) if len(nqh) else None, "m1": m1_pack(nqm), "pat": pattern_flags(nqh, nqm, t)}
                          if len(nqm) and nqm.index[0] <= t else None)
         if vp:
             fine = trading_day(m1.index[max(0, c1 - M1_HISTORY)])
@@ -1270,7 +1412,8 @@ def page_js(charts, storage_key, data_rel, vp=False, extra_js=""):
     js = CB._js(charts, storage_key)
     assert js.count(hook) == 1, "M1 report chart JS changed: re-check the position tool hook"
     js = "<script>\n" + pos_tool + "\n</script>\n" + js.replace(
-        hook, hook + "\n  if (window.PosTool) PosTool.attach(chart, series, el, titleEl, cd);"
+        hook, hook + "\n  cd.requeue = queueThin;"
+                     + "\n  if (window.PosTool) PosTool.attach(chart, series, el, titleEl, cd);"
                      + "\n  if (window.Replay) Replay.attach(chart, series, el, titleEl, cd);"
                      + ("\n  if (window.VolProfile) VolProfile.attach(chart, series, el, titleEl, cd);" if vp else ""))
     old_stack = ("_renderChartPane(i, 'main', cd.main);\n  _renderChartPane(i, 'ctx', cd.ctx);\n"
@@ -1287,12 +1430,13 @@ def page_js(charts, storage_key, data_rel, vp=False, extra_js=""):
     return js.replace("l5: 'M5-LXPB'", "a: 'chart', b: '2nd chart', n: 'NQ', l5: 'M5-LXPB'")
 
 
-def render(rows, h1, output, label, vp=False):
+def render(rows, h1, output, label, vp=False, store_label=None):
     data_dir = os.path.splitext(output)[0] + "_data"
     charts = prepare(rows, h1, data_dir, vp)
     trs = [_row_html(i, row) for i, row in enumerate(rows.itertuples())]
     title = "ES H1 cross bar trades" + (f" ({label})" if label else "")
-    storage_key = "lxpb_cross_bar_trades_v1_" + "".join(c if c.isalnum() else "-" for c in label.lower()).strip("-")
+    # the review store (Reviewed / Valid / Notes) is keyed by a label: --store-label keeps an older one when the label changes
+    storage_key = "lxpb_cross_bar_trades_v1_" + "".join(c if c.isalnum() else "-" for c in (store_label or label).lower()).strip("-")
     js = page_js(charts, storage_key, os.path.basename(data_dir), vp)
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -1332,9 +1476,12 @@ it closes at the last price at the replay time and its R goes to Manual R. Its s
 stop line, or Stop now + Move stop in the popup): the stop in force is drawn orange and the row shows the R still at risk (fill to that
 stop, in R of the planned stop: a long's stop moved halfway up = 0.50R at risk, hit later = -0.50R). Stepping the replay back before a
 flatten or a move undoes it; the popup's Undo flatten / Clear stop moves remove them. A trade's numbers show in the chart's top-left corner while you hover or drag it.
-&#8999; Fib (Alt+F): a fib retracement from two points (100 at the first, 0 at the second), levels 0 / 23.6 / 38.2 / 61.8 / 78.6 / 100,
-each switched on / off in its double-click popup (the next fib keeps your choice), dotted and behind the candles. Boxes, replay times
-and settings are kept in this browser.</p>
+&#8999; Fib (Alt+F): a fib retracement from two points (100 at the first, 0 at the second), levels 0 / 23.6 / 38.2 / 50 / 61.8 / 78.6 / 100
+(on at first: 0 / 38.2 / 50 / 61.8 / 100), each switched on / off in its double-click popup (the next fib keeps your choice), dotted and
+behind the candles, each level's name and price on its right. A rectangle has one colour, like a line (its fill at the opacity you set).
+&#8630; Undo on the chart (or Ctrl+Z over it) takes back the last change to its drawings (lines, rays, rectangles, fibs), one step per
+press, back to when the page was opened; the position boxes are not part of it. Boxes, replay times and settings are kept in this
+browser.</p>
 <p class="lead">NQ CHART. Beside the ES chart ("&minus; NQ chart" hides it and ES takes the full width), with its own timeframe buttons, built the same way from the
 NQ continuous series in E:\data_source (back-adjusted exactly as TradingView's NQ1!). "NQ sync on": NQ replays with ES, stepping either chart moves both, and picking a timeframe on the ES chart or NQ switches both
 (the 2nd ES chart keeps its own). "NQ sync off": NQ keeps its own replay time and timeframe, so
@@ -1347,6 +1494,12 @@ days before today (its label says "last 2 visits" or "last 5 days").</p>
 <p class="lead">MOVING A CHART. Drag a chart to move it any way, up and down as well as sideways (the price axis stops auto-fitting
 from the first press); double-click the price axis to fit the candles again. The crosshair is shared between the ES chart and NQ:
 hovering one shows the same time on the other.</p>
+<p class="lead">CANDLES. On every timeframe, a closed candle that patterns-pure calls a hammer has a small blue triangle under it, a
+shooting star one over it, and both have a blue body; a bullish engulfing candle has a dark green body, a bearish one a maroon body
+(an engulfing candle that is also a hammer / shooting star: the engulfing colour, with its triangle). The candle still forming at the
+replay time is not marked. On H1 and shorter charts the cross bar's hour has a dotted line at its first candle and one at its last
+(shown once the replay reaches it), and every candle outside the regular session (Mon - Fri 06:30 - 13:00 PT: Globex / ETH) has a
+light grey background, ES and NQ alike.</p>
 <div class="summary">
   <div class="box"><strong>{len(rows)}</strong>cross bars</div>
   <div class="box man-box"><strong id="man-n">0</strong>manual trades closed</div>
@@ -1382,19 +1535,23 @@ def main():
     ap.add_argument("--label", default="")
     ap.add_argument("--output", required=True)
     ap.add_argument("--vp", action="store_true", help="volume profiles (sample)")
+    ap.add_argument("--store-label", default="", help="label the review store is keyed by (default: --label); the 2026 page keeps "
+                    "\"2026 Jan 2 - Oct 26\" so its Reviewed / Valid / Notes stay")
     a = ap.parse_args()
     if not (a.all or a.last or a.at):
         ap.error("pass --all, --last N or --at")
     h1 = load_es("1h", tz=PT)
     rows = CB.collect(h1)
     rows = rows.loc[rows.index >= pd.Timestamp(a.since, tz=PT)]
+    last_m1 = load_es("1m", start=h1.index[-1] - pd.Timedelta(hours=2), tz=PT).index[-1]
+    rows = rows.loc[rows.index + pd.Timedelta(hours=1) <= last_m1 + pd.Timedelta(minutes=1)]   # data ending mid-hour: that bar is still forming
     if a.at:
         want = [pd.Timestamp(x.strip(), tz=PT) for x in a.at.split(",")]
         rows = rows.loc[rows.index.isin(want)]
     elif a.last:
         rows = pd.concat([g.tail(a.last) for _, g in rows.groupby("bullish")]).sort_index()
     rows = rows.sort_index()                      # oldest first
-    render(rows, h1, a.output, a.label or "sample", vp=a.vp)
+    render(rows, h1, a.output, a.label or "sample", vp=a.vp, store_label=a.store_label or None)
 
 
 if __name__ == "__main__":
