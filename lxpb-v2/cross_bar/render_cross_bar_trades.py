@@ -66,8 +66,11 @@ again. A finger keeps the touch rules (a vertical drag scrolls the page, the axi
 CROSSHAIR SYNC (user, 2026-11-11): hovering the ES chart puts NQ's crosshair on the candle holding the same time, at the same
 height, and the other way round (none past the other chart's last candle). The 2nd ES chart is not linked.
 CANDLE MARKS (user, 2026-11-20): on every timeframe (ES and NQ), a CLOSED candle that patterns-pure's find_hammer /
-find_shooting_star calls a spike gets a blue body and a small triangle under (hammer) / over (shooting star) it; one that
-find_engulfing_bullish / find_engulfing_bearish calls engulfing a dark green / maroon body (engulfing colour first, triangle kept).
+find_shooting_star calls a spike gets a small triangle under (hammer) / over (shooting star) it; one that find_engulfing_bullish /
+find_engulfing_bearish calls engulfing a dark green / maroon body; one that find_inside_bar calls an inside bar (its whole range,
+wicks included, within the previous candle's: high <= previous high and low >= previous low) a blue body (user, 2026-11-24: blue
+is for true inside candles only, no longer for spikes). A candle that is both (a bearish engulfing bar with exactly the
+previous candle's high and low, closing at that low) keeps the engulfing colour.
 The verdicts are computed here (pattern_flags) on the very candles the page builds and shipped in the row's data file, so the page
 never restates a threshold. The forming candle is not marked. Below H1 the cross bar's hour gets a dotted line at its first and
 at its last candle (the latter once the replay reaches it), and every candle outside Mon - Fri 06:30 - 13:00 PT (Globex / ETH) a
@@ -94,6 +97,7 @@ from find_hammer import find_hammer               # noqa: E402  (patterns-pure: 
 from find_shooting_star import find_shooting_star  # noqa: E402
 from find_engulfing_bullish import find_engulfing_bullish  # noqa: E402
 from find_engulfing_bearish import find_engulfing_bearish  # noqa: E402
+from find_inside_bar import find_inside_bar        # noqa: E402
 
 PT = CB.PT
 TICK = 0.25
@@ -314,9 +318,9 @@ def race(lv, row):
 
 # ---------------------------------------------------------------- candle patterns on every chart timeframe (user, 2026-11-20)
 # The page builds its D1 ... M1 candles itself (MANUAL_JS _barsAt); the same candles are built here from the same bars, and
-# patterns-pure says which are hammers / shooting stars / bullish / bearish engulfing bars (never restated in the page).
+# patterns-pure says which are hammers / shooting stars / bullish / bearish engulfing / inside bars (never restated in the page).
 TF_SEC = {"D1": 86400, "H4": 14400, "H1": 3600, "M30": 1800, "M15": 900, "M5": 300, "M2": 120, "M1": 60}
-PAT_HAMMER, PAT_STAR, PAT_ENG_BULL, PAT_ENG_BEAR = 1, 2, 4, 8
+PAT_HAMMER, PAT_STAR, PAT_ENG_BULL, PAT_ENG_BEAR, PAT_INSIDE = 1, 2, 4, 8, 16
 SESSION_ANCHOR = 15 * 3600            # D1 / H4 candles start at 15:00 PT (MANUAL_JS _bucket)
 
 
@@ -339,7 +343,7 @@ def tf_candles(bars, tf):
 
 def pattern_flags(h1, m1, cross_t):
     """{tf: {"t0", "r": flat [minute step, code]}}: the candles of each chart timeframe that patterns-pure calls a hammer (1),
-    shooting star (2), bullish engulfing (4) or bearish engulfing bar (8), codes summed. The candles are the page's: H1 bars
+    shooting star (2), bullish engulfing (4), bearish engulfing (8) or inside bar (16), codes summed. The candles are the page's: H1 bars
     before the cross bar's hour then M1 bars for H1 and up (M1 bars alone when there are no H1 bars), M1 bars for the rest. A
     candle still forming at the replay time is not marked in the page."""
     h1c = h1[["open", "high", "low", "close"]]
@@ -350,7 +354,8 @@ def pattern_flags(h1, m1, cross_t):
         c = tf_candles(src, tf)
         code = pd.Series(0, index=c.index, dtype=np.int64)
         for ix, k in ((find_hammer(c, 0.0).index, PAT_HAMMER), (find_shooting_star(c, 0.0).index, PAT_STAR),
-                      (find_engulfing_bullish(c).index, PAT_ENG_BULL), (find_engulfing_bearish(c).index, PAT_ENG_BEAR)):
+                      (find_engulfing_bullish(c).index, PAT_ENG_BULL), (find_engulfing_bearish(c).index, PAT_ENG_BEAR),
+                      (find_inside_bar(c).index, PAT_INSIDE)):
             code.loc[ix] += k                 # (find_hammer / find_shooting_star take an ATR only for their "untested" flag: 0)
         code = code[code > 0]
         if not len(code):
@@ -470,7 +475,7 @@ function _bars(m) {
   return out;
 }
 // patterns-pure's verdicts on each timeframe's candles (render_cross_bar_trades.pattern_flags): { tf: Map(candle start -> code) },
-// code = 1 hammer + 2 shooting star + 4 bullish engulfing + 8 bearish engulfing
+// code = 1 hammer + 2 shooting star + 4 bullish engulfing + 8 bearish engulfing + 16 inside bar
 function _pats(p) {
   const o = {};
   Object.keys(p || {}).forEach(tf => {
@@ -542,17 +547,19 @@ function _barsAt(i, tf, pane) {                             // pane 'n' = NQ; an
   _agg(D.m1, D.m1t, CHARTS[i].crossT, T, tf, out, { from: h.length });   // a D1 / H4 candle open at the hour goes on
   return _marked(D, tf, out, T);
 }
-// CANDLE MARKS (user, 2026-11-20): a CLOSED candle patterns-pure calls a hammer or a shooting star gets a blue body (inside its
-// border only) and a small triangle under it (hammer) / over it (shooting star); a bullish / bearish engulfing candle a dark green /
-// maroon body (an engulfing candle that is also a spike: the engulfing colour, the triangle stays). The forming candle: none yet.
-const _SPIKE_BODY = '#2962ff', _ENG_BULL_BODY = '#1b8a3c', _ENG_BEAR_BODY = '#800000', _TRI = '#5b8cff', _ETH_BG = 'rgba(255, 255, 255, 0.07)';
+// CANDLE MARKS (user, 2026-11-20): a CLOSED candle patterns-pure calls a hammer or a shooting star gets a small triangle under it
+// (hammer) / over it (shooting star); a bullish / bearish engulfing candle a dark green / maroon body; an inside bar (whole range,
+// wicks included, within the previous candle's) a blue body (user, 2026-11-24: blue = inside candles only, spikes keep the grey
+// body; one that is also engulfing: the engulfing colour). Bodies only, inside their border. The forming candle: none yet.
+const _INSIDE_BODY = '#2962ff', _ENG_BULL_BODY = '#1b8a3c', _ENG_BEAR_BODY = '#800000', _TRI = '#5b8cff', _ETH_BG = 'rgba(255, 255, 255, 0.07)';
 function _marked(D, tf, out, T) {
   const P = D.pat && D.pat[tf], n = out.length, len = _LEN[tf];
   if (!P || !P.size) return out;
   for (let k = 0; k < n; k++) {
     const code = P.get(out[k].time);
     if (!code || (k === n - 1 && out[k].time + len > T)) continue;
-    out[k] = Object.assign({}, out[k], { pat: code, color: code & 4 ? _ENG_BULL_BODY : code & 8 ? _ENG_BEAR_BODY : _SPIKE_BODY });
+    const color = code & 4 ? _ENG_BULL_BODY : code & 8 ? _ENG_BEAR_BODY : code & 16 ? _INSIDE_BODY : null;
+    out[k] = Object.assign({}, out[k], color ? { pat: code, color } : { pat: code });
   }
   return out;
 }
@@ -1495,8 +1502,9 @@ days before today (its label says "last 2 visits" or "last 5 days").</p>
 from the first press); double-click the price axis to fit the candles again. The crosshair is shared between the ES chart and NQ:
 hovering one shows the same time on the other.</p>
 <p class="lead">CANDLES. On every timeframe, a closed candle that patterns-pure calls a hammer has a small blue triangle under it, a
-shooting star one over it, and both have a blue body; a bullish engulfing candle has a dark green body, a bearish one a maroon body
-(an engulfing candle that is also a hammer / shooting star: the engulfing colour, with its triangle). The candle still forming at the
+shooting star one over it; a bullish engulfing candle has a dark green body, a bearish one a maroon body; a true inside candle (its
+whole range, wicks included, within the previous candle's) has a blue body (one that is also engulfing keeps the engulfing
+colour). The candle still forming at the
 replay time is not marked. On H1 and shorter charts the cross bar's hour has a dotted line at its first candle and one at its last
 (shown once the replay reaches it), and every candle outside the regular session (Mon - Fri 06:30 - 13:00 PT: Globex / ETH) has a
 light grey background, ES and NQ alike.</p>
