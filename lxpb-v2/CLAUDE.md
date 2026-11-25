@@ -726,8 +726,10 @@ tags print dark text on a light colour (white was unreadable), white on a dark o
 (user 2026-11-20): undoes the last change to that chart's drawings (per drawing group: ES panes share one, NQ its own), one step per
 press / key / popup, in memory since the page opened; position boxes are not in it.
 Candle marks (user, 2026-11-20, every timeframe, ES and NQ): a closed candle patterns-pure's `find_hammer` / `find_shooting_star` flags
-= blue body + small triangle under / over it; `find_engulfing_bullish` / `_bearish` = dark green / maroon body (engulfing colour wins,
-triangle kept). Python (`pattern_flags`) builds the page's own D1 ... M1 candles from the row's bars (`tf_bucket` = `_bucket`) and
+= small triangle under / over it (grey body); `find_engulfing_bullish` / `_bearish` = dark green / maroon body; `find_inside_bar` = blue
+body (user 2026-11-24: blue only for a TRUE inside candle, whole range wicks included within the previous candle's, both bounds
+inclusive; spikes no longer get it; a candle that is also engulfing, possible only for a bearish one with exactly the previous
+high and low closing at that low, keeps the engulfing colour). Python (`pattern_flags`) builds the page's own D1 ... M1 candles from the row's bars (`tf_bucket` = `_bucket`) and
 ships the verdicts in the row's data file (`pat`), so no threshold lives in the page; the forming candle is never marked. Explicit
 exception to the "candles keep the default grey" rule of the M1 report. Below H1 the cross bar's hour has a dotted line at its first
 candle AND its last (shown once the replay reaches it); H1 and shorter charts shade every candle outside Mon - Fri 06:30 - 13:00 PT
