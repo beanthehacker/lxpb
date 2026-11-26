@@ -49,7 +49,11 @@
 // drawn orange from the time it was moved, and the panel shows the R still at risk (fill to that stop, in R of the plan's stop).
 // Stepping the replay back before a flatten / a move undoes it on screen; doing it again at an earlier time replaces the later ones.
 (function () {
-  const PT_VALUE = 50, TICK = 0.25, MAGNET_PX = 12, HANDLE_PX = 6;
+  const PT_VALUE = 50, TICK = 0.25, MAGNET_PX = 12;
+  // how close (px) the pointer must be to a line / point to grab it: 6 for a mouse or trackpad, 16 for a finger (user 2026-11-25,
+  // iPad), set from the pointer of the last press / move; points are drawn bigger while it is a finger
+  let HANDLE_PX = 6;
+  const dotR = () => (HANDLE_PX > 6 ? 8 : 5);
   const LS = 'postool_v1_';
   const FIB_DEFAULT = [0, 0.382, 0.5, 0.618, 1];   // the fib levels on until changed (user 2026-11-20)
   const lsGet = (k, d) => { try { const v = localStorage.getItem(LS + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
@@ -396,6 +400,11 @@
       if (Math.hypot(x - g.x0, y - g.ye) <= 2 * HANDLE_PX) return 'start';   // the start point: its time and the entry price
       if (Math.abs(x - g.x1) <= HANDLE_PX && y >= top && y <= bot) return 'right';
       if (Math.abs(x - g.x0) <= HANDLE_PX && y >= top && y <= bot) return 'left';
+      if (HANDLE_PX > 6) {                        // a finger reaches far: the nearest of target / stop / entry, not the first listed
+        const near = [['tp', g.yt], ['sl', g.ys], ['entry', g.ye]].map(([k, v]) => [k, Math.abs(y - v)])
+          .filter(o => o[1] <= HANDLE_PX).sort((a, b) => a[1] - b[1]);
+        if (near.length) return near[0][0];
+      }
       if (Math.abs(y - g.yt) <= HANDLE_PX) return 'tp';
       if (Math.abs(y - g.ys) <= HANDLE_PX) return 'sl';
       if (Math.abs(y - g.ye) <= HANDLE_PX) return 'entry';
@@ -530,7 +539,7 @@
         ctx.setLineDash([]);
         if (this.edit && this.focus(d)) this.dHandles(d, g).forEach(([, hx, hy]) => {
           ctx.fillStyle = '#131722'; ctx.strokeStyle = '#2962ff'; ctx.lineWidth = 2;
-          ctx.beginPath(); ctx.arc(hx, hy, 5, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+          ctx.beginPath(); ctx.arc(hx, hy, dotR(), 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
         });
       });
     }
@@ -594,7 +603,7 @@
       if (this.selB === p.id && this.edit) {
         [[g.x0, g.yt], [g.x0, g.ys], [g.x0, g.ye], [g.x1, g.ye]].forEach(([hx, hy]) => {
           ctx.fillStyle = '#131722'; ctx.strokeStyle = '#2962ff'; ctx.lineWidth = 2;
-          ctx.beginPath(); ctx.arc(hx, hy, 5, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+          ctx.beginPath(); ctx.arc(hx, hy, dotR(), 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
         });
       }
     }
@@ -606,6 +615,17 @@
         const pt = this.plotPoint(e);
         if (!pt) return;
         active = this;
+        if (e.pointerType === 'touch' && !this.arm && !this.creating) {   // a finger has no double-click: a double tap opens the popup
+          const now = Date.now(), lt = this.lastTap;
+          this.lastTap = { t: now, x: e.clientX, y: e.clientY };
+          const h2 = lt && now - lt.t < 350 && Math.hypot(e.clientX - lt.x, e.clientY - lt.y) < 30 ? this.hitAll(pt.x, pt.y) : null;
+          if (h2) {
+            this.lastTap = null; this.drag = null; this.blockMouse = true; block(e);
+            const cx = e.clientX, cy = e.clientY + 18;          // just under the finger, so the lifting finger does not tap it
+            setTimeout(() => { if (h2.d) this.drawPopover(h2.d.id, cx, cy); else this.popover(null, h2.id, cx, cy); }, 0);
+            return;
+          }
+        }
         if (this.creating) {                       // a rectangle's second corner
           const c = this.creating, d = getDraws(this.dk).find(o => o.id === c.id);
           this.creating = null;
@@ -624,9 +644,11 @@
         if (this.arm) { this.place(pt, e.ctrlKey); this.blockMouse = true; block(e); return; }
         const hh = this.hitAll(pt.x, pt.y);
         if (!hh) {
+          if (e.pointerType === 'touch') { this.hoverB = null; this.hoverD = null; }
           if (this.selB || this.selD) { this.selB = null; this.selD = null; if (this.requestUpdate) this.requestUpdate(); }
           return;
         }
+        if (e.pointerType === 'touch') { this.hoverB = hh.box ? hh.id : null; this.hoverD = hh.d ? hh.d.id : null; }
         if (hh.d) {                                // a drawing: select it, drag a point or the whole of it
           const d0 = Object.assign({}, hh.d);
           this.selD = d0.id; this.selB = null;
@@ -712,10 +734,12 @@
         }
         putBox(this.row, p);
       });
-      window.addEventListener('pointerup', () => {
+      const up = () => {
         if (this.creating && this.creating.moved) this.creating = null;   // press, drag, release: done
         this.drag = null; setTimeout(() => { this.blockMouse = false; }, 0);
-      });
+      };
+      window.addEventListener('pointerup', up);
+      window.addEventListener('pointercancel', up);   // a finger the browser took back (iPad): the drag ends too
       el.addEventListener('dblclick', (e) => {
         const pt = this.plotPoint(e), h = pt && this.hitAll(pt.x, pt.y);
         if (!h) return;
@@ -871,7 +895,10 @@
       document.querySelectorAll('.pos-pop').forEach(n => n.remove());
     }
   });
+  const padFor = (e) => { HANDLE_PX = e.pointerType === 'touch' ? 16 : 6; };
+  window.addEventListener('pointermove', padFor, true);
   document.addEventListener('pointerdown', (e) => {
+    padFor(e);
     newStep();                             // every press starts a new undo step (a drag, a drawing, a swatch, a popup button)
     if (!e.target.closest('.pos-pop') && !e.target.closest('.pos-btn')) document.querySelectorAll('.pos-pop').forEach(n => n.remove());
   }, true);

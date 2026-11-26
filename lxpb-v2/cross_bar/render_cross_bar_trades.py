@@ -62,7 +62,15 @@ LAST VISIT -> NOW (user, 2026-11-11): when the last visit was the previous tradi
 visit before it and 5 trading days before today.
 FREE MOVEMENT (user, 2026-11-11): every chart pans freely in both directions with the mouse. The first press on a chart takes
 its price axis off auto-fit (the range on screen is kept), as dragging both axes used to; double-click the price axis to auto-fit
-again. A finger keeps the touch rules (a vertical drag scrolls the page, the axis strip stretches).
+again. A finger keeps the touch rules (a vertical drag scrolls the page, the axis strip stretches) except on an iPad (below).
+IPAD (user, 2026-11-25, iPad Air 11" M4, finger + Magic Trackpad): public/js/touch-ui.js, on only when the page detects an iPad
+(or a tablet whose main pointer is a finger) or with ?ipad=1 (?ipad=0 off, remembered; an "iPad layout" switch in the toolbar
+on touch screens). Desktop is unchanged. Layout: no sideways page scroll, ES and NQ stacked full width, bigger wrapping buttons,
+16 px inputs. Finger: one finger drags the chart any way (with momentum sideways), pinch = time zoom, tap = crosshair; price axis
+strip drag = stretch, double tap = auto-fit; time axis strip sideways = zoom, up / down = scroll the page, double tap = fit.
+Trackpad: click-drag as a mouse, two-finger swipe sideways = time, up / down = the page (over the price axis: stretch), pinch
+where iPadOS passes it on; - / + / fit buttons on each chart. Position tool by finger: 16 px reach (nearest line wins), bigger
+points, double tap = its popup, a tap on a box shows its numbers, a cancelled finger ends the drag.
 CROSSHAIR SYNC (user, 2026-11-11): hovering the ES chart puts NQ's crosshair on the candle holding the same time, at the same
 height, and the other way round (none past the other chart's last candle). The 2nd ES chart is not linked.
 CANDLE MARKS (user, 2026-11-20): on every timeframe (ES and NQ), a CLOSED candle that patterns-pure's find_hammer /
@@ -118,6 +126,7 @@ VP_JS = os.path.join(CB._REPO_ROOT, "public", "js", "volume-profile.js")     # v
 VP_COARSE = 1800                      # volume at price per 30 minutes before the M1 history, per minute from there on
 VP_DAYS = 35                          # ... reaching back at least this many days (weekly levels, 20-day composite)
 POS_TOOL_JS = os.path.join(CB._REPO_ROOT, "public", "js", "position-tool.js")   # TradingView-style long / short position tool
+TOUCH_JS = os.path.join(CB._REPO_ROOT, "public", "js", "touch-ui.js")          # iPad layout + finger / trackpad gestures (iPad only)
 
 
 # ---------------------------------------------------------------- 1 s bars (one month file read once)
@@ -1140,8 +1149,8 @@ const Replay = {
       return b;
     };
     _TFS.forEach((tf, k) => { mk(tf, 'Show ' + tf + ' candles (key ' + (k + 1) + ')', () => _setTf(i, pane, tf), 'tf-btn').dataset.tf = tf; });
-    mk('◀', 'Replay back one candle of this chart (left arrow)', () => _stepTf(i, st.tf[pane], -1, pane));
-    mk('▶', 'Replay forward one candle of this chart (right arrow)', () => _stepTf(i, st.tf[pane], 1, pane));
+    mk('◀', 'Replay back one candle of this chart (left arrow)', () => _stepTf(i, st.tf[pane], -1, pane), 'tu-nav');
+    mk('▶', 'Replay forward one candle of this chart (right arrow)', () => _stepTf(i, st.tf[pane], 1, pane), 'tu-nav');
     _syncBar(i);
   },
 };
@@ -1416,10 +1425,15 @@ def page_js(charts, storage_key, data_rel, vp=False, extra_js=""):
     hook = "_touchPriceAxis(chart, el, series, rayInfo.map(r => r.series), queueThin);"
     with open(POS_TOOL_JS, encoding="utf-8") as f:
         pos_tool = f.read()
+    with open(TOUCH_JS, encoding="utf-8") as f:
+        touch_ui = f.read()
     js = CB._js(charts, storage_key)
     assert js.count(hook) == 1, "M1 report chart JS changed: re-check the position tool hook"
-    js = "<script>\n" + pos_tool + "\n</script>\n" + js.replace(
-        hook, hook + "\n  cd.requeue = queueThin;"
+    # iPad (TouchUI.on): the touch layer replaces the old finger rules of the price axis; anywhere else nothing changes
+    touch_hook = ("if (window.TouchUI && TouchUI.on) TouchUI.attach(chart, el, series, rayInfo.map(r => r.series), queueThin, cd);\n  else "
+                  + hook)
+    js = "<script>\n" + touch_ui + "\n</script>\n<script>\n" + pos_tool + "\n</script>\n" + js.replace(
+        hook, touch_hook + "\n  cd.requeue = queueThin;"
                      + "\n  if (window.PosTool) PosTool.attach(chart, series, el, titleEl, cd);"
                      + "\n  if (window.Replay) Replay.attach(chart, series, el, titleEl, cd);"
                      + ("\n  if (window.VolProfile) VolProfile.attach(chart, series, el, titleEl, cd);" if vp else ""))
@@ -1501,6 +1515,13 @@ days before today (its label says "last 2 visits" or "last 5 days").</p>
 <p class="lead">MOVING A CHART. Drag a chart to move it any way, up and down as well as sideways (the price axis stops auto-fitting
 from the first press); double-click the price axis to fit the candles again. The crosshair is shared between the ES chart and NQ:
 hovering one shows the same time on the other.</p>
+<p class="lead">IPAD. On an iPad the page switches to a touch layout by itself (the "iPad layout" button in the toolbar turns it
+off or on again; add ?ipad=1 to the address to try it on any screen): the charts stacked full width and bigger buttons. One finger drags
+a chart any way, two fingers pinch to zoom time, a tap shows that candle's O H L C. Drag the price axis to stretch the candles (double tap:
+auto-fit); drag the time axis sideways to zoom, up / down to scroll the page (double tap: fit). With the Magic Trackpad, click and
+drag as with a mouse; a two-finger swipe sideways moves the chart, up / down scrolls the page (over the price axis: stretches it);
+&minus; / + / fit on each chart zoom where the trackpad's pinch does not reach the page. Position boxes and drawings: tap to select,
+drag a line or point with a finger, double tap for the popup (Delete is in it).</p>
 <p class="lead">CANDLES. On every timeframe, a closed candle that patterns-pure calls a hammer has a small blue triangle under it, a
 shooting star one over it; a bullish engulfing candle has a dark green body, a bearish one a maroon body; a true inside candle (its
 whole range, wicks included, within the previous candle's) has a blue body (one that is also engulfing keeps the engulfing

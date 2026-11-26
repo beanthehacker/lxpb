@@ -752,7 +752,20 @@ visit before it and 5 trading days before today (label "last 2 visits" / "last 5
 VP defaults (user, 2026-11-11, `public/js/volume-profile.js`): only the last visit -> now profile is on; day, past days and the
 day / week levels (0 / 0) are off until ticked in the VP popover (settings key bumped to `vp_settings4` so old saved settings don't hold).
 Free movement (user, 2026-11-11, same file): the first mouse press on a chart turns its price axis's auto-fit off (range on screen
-kept), so dragging pans up / down too; double-click the price axis = auto-fit again. Touch keeps `_touchPriceAxis` (no change).
+kept), so dragging pans up / down too; double-click the price axis = auto-fit again. Touch keeps `_touchPriceAxis` (no change)
+except on an iPad.
+iPad layer (user, 2026-11-25, iPad Air 11" M4, finger + Magic Trackpad; `public/js/touch-ui.js`, desktop untouched): on only when
+the page detects an iPad (`maxTouchPoints > 1` + Mac/iPad UA, or `(hover: none) and (pointer: coarse)`) or `?ipad=1` (`?ipad=0`
+off; remembered in `lxpb_ipad_mode`; toolbar switch on touch screens). `html.ipad` CSS: no sideways page scroll, ES / NQ stacked,
+chart stack = the table box's visible width (`--tu-wrap-w`), 38 px wrapping buttons, 16 px inputs (Safari zooms into smaller).
+`TouchUI.attach` replaces `_touchPriceAxis` there and turns the library's own finger handling off: one finger = pan both ways (price
+held through `autoscaleInfoProvider`, as `_touchPriceAxis` did), pinch = time zoom, tap = `setCrosshairPosition`; price strip =
+stretch / double tap auto-fit; time strip sideways = zoom, vertical = page scroll, double tap = fit; trackpad wheel sideways = pan,
+vertical = page (price strip: stretch), ctrl+wheel / Safari gesture events = zoom; - / + / fit buttons. iPadOS may keep a trackpad
+pinch for page zoom, hence the buttons. It leaves the finger to the position tool whenever that is placing / drawing / dragging.
+Position tool by finger (same file set): `HANDLE_PX` 16 for a finger (6 mouse), nearest of target / stop / entry wins, bigger points,
+double tap = popup, tap shows a box's numbers, `pointercancel` ends a drag. Tested in Chrome's iPad emulation (CDP touch); not on a
+real iPad.
 Crosshair sync (user, 2026-11-11, same file): ES chart <-> NQ, the other chart's candle holding the hovered time at the same
 height (`setCrosshairPosition`, LWC 4.1+); none past its last candle; the 2nd ES chart is not linked.
 
