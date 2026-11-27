@@ -756,7 +756,7 @@ kept), so dragging pans up / down too; double-click the price axis = auto-fit ag
 except on an iPad.
 iPad layer (user, 2026-11-25, iPad Air 11" M4, finger + Magic Trackpad; `public/js/touch-ui.js`, desktop untouched): on only when
 the page detects an iPad (`maxTouchPoints > 1` + Mac/iPad UA, or `(hover: none) and (pointer: coarse)`) or `?ipad=1` (`?ipad=0`
-off; remembered in `lxpb_ipad_mode`; toolbar switch on touch screens). `html.ipad` CSS: no sideways page scroll, ES / NQ stacked,
+off; remembered in `lxpb_ipad_mode`; toolbar switch on touch screens). `html.ipad` CSS: no sideways page scroll,
 chart stack = the table box's visible width (`--tu-wrap-w`), 38 px wrapping buttons, 16 px inputs (Safari zooms into smaller).
 `TouchUI.attach` replaces `_touchPriceAxis` there and turns the library's own finger handling off: one finger = pan both ways (price
 held through `autoscaleInfoProvider`, as `_touchPriceAxis` did), pinch = time zoom, tap = `setCrosshairPosition`; price strip =
@@ -764,8 +764,15 @@ stretch / double tap auto-fit; time strip sideways = zoom, vertical = page scrol
 vertical = page (price strip: stretch), ctrl+wheel / Safari gesture events = zoom; - / + / fit buttons. iPadOS may keep a trackpad
 pinch for page zoom, hence the buttons. It leaves the finger to the position tool whenever that is placing / drawing / dragging.
 Position tool by finger (same file set): `HANDLE_PX` 16 for a finger (6 mouse), nearest of target / stop / entry wins, bigger points,
-double tap = popup, tap shows a box's numbers, `pointercancel` ends a drag. Tested in Chrome's iPad emulation (CDP touch); not on a
-real iPad.
+double tap = popup, tap shows a box's numbers, `pointercancel` ends a drag. Fixes (user, 2026-11-26): (1) the pane's ResizeObserver
+refit the candles on EVERY size change, and iPad Safari resizes the pane when its bars show / hide (a touch or scroll outside the chart)
+or the keyboard opens: there `TouchUI.keep(cd, width)` keeps the chart unless the width changed and it was never moved by hand
+(`cd.tuHeld`; fit clears it); desktop still refits. Pane heights use `svh` so they do not follow Safari's bars. (2) A finger tap nudged
+a box onto the strong magnet: a finger drag starts only after 8 px. (3) Under a finger the strong magnet acts as the weak one (12 px),
+else a dragged line can only take the 4 prices of one candle. (4) Finger hit order: start point and lines (nearest) before the left /
+right edges (a narrow box's edge stole the stop drag of an open trade, so Move stop by dragging failed). Layout: ES + NQ side by side
+in landscape, stacked in portrait, both filling the screen under the replay bar (`--tu-top` measured per open row); opening a row
+scrolls its charts to the top. Tested in Chrome's iPad emulation (CDP touch); not on a real iPad.
 Crosshair sync (user, 2026-11-11, same file): ES chart <-> NQ, the other chart's candle holding the hovered time at the same
 height (`setCrosshairPosition`, LWC 4.1+); none past its last candle; the 2nd ES chart is not linked.
 

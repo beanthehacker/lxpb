@@ -361,7 +361,8 @@
       const c = this.candles[i];
       let best = null, bd = Infinity;
       [c.open, c.high, c.low, c.close].forEach(v => { const d = Math.abs(this.y(v) - y); if (d < bd) { bd = d; best = v; } });
-      return settings.magnet === 'strong' || bd <= MAGNET_PX ? best : roundTick(raw);
+      // a finger (iPad): the strong magnet works as the weak one, else a dragged line could only take the 4 prices of one candle
+      return (settings.magnet === 'strong' && HANDLE_PX <= 6) || bd <= MAGNET_PX ? best : roundTick(raw);
     }
 
     place(pt, free) {
@@ -397,14 +398,18 @@
           && x <= Math.max(g.x1, this.x(config.cursor(this.row)) || g.x1) + HANDLE_PX) return 'msl';
       if (x < g.x0 - HANDLE_PX || x > g.x1 + HANDLE_PX) return null;
       const top = Math.min(g.yt, g.ys), bot = Math.max(g.yt, g.ys);
+      if (HANDLE_PX > 6) {                        // a finger reaches far: the nearest part wins, not the first listed; the start point
+        // and the lines come before the left / right edges (on a narrow box an edge is always close to the line being dragged)
+        const pick = (l) => { const n = l.filter(o => o[1] <= HANDLE_PX).sort((a, b) => a[1] - b[1]); return n.length ? n[0][0] : null; };
+        const ln = pick([['start', Math.hypot(x - g.x0, y - g.ye)], ['tp', Math.abs(y - g.yt)], ['sl', Math.abs(y - g.ys)], ['entry', Math.abs(y - g.ye)]]);
+        if (ln) return ln;
+        const ed = y >= top && y <= bot ? pick([['right', Math.abs(x - g.x1)], ['left', Math.abs(x - g.x0)]]) : null;
+        if (ed) return ed;
+        return y > top && y < bot ? 'body' : null;
+      }
       if (Math.hypot(x - g.x0, y - g.ye) <= 2 * HANDLE_PX) return 'start';   // the start point: its time and the entry price
       if (Math.abs(x - g.x1) <= HANDLE_PX && y >= top && y <= bot) return 'right';
       if (Math.abs(x - g.x0) <= HANDLE_PX && y >= top && y <= bot) return 'left';
-      if (HANDLE_PX > 6) {                        // a finger reaches far: the nearest of target / stop / entry, not the first listed
-        const near = [['tp', g.yt], ['sl', g.ys], ['entry', g.ye]].map(([k, v]) => [k, Math.abs(y - v)])
-          .filter(o => o[1] <= HANDLE_PX).sort((a, b) => a[1] - b[1]);
-        if (near.length) return near[0][0];
-      }
       if (Math.abs(y - g.yt) <= HANDLE_PX) return 'tp';
       if (Math.abs(y - g.ys) <= HANDLE_PX) return 'sl';
       if (Math.abs(y - g.ye) <= HANDLE_PX) return 'entry';
@@ -654,6 +659,7 @@
           this.selD = d0.id; this.selB = null;
           this.drag = { draw: d0.id, part: hh.part, d0, l0: this.chart.timeScale().coordinateToLogical(pt.x),
                         dy: pt.y - this.y(two(d0) ? d0.p0 : d0.p) };
+          if (e.pointerType === 'touch') Object.assign(this.drag, { fx: e.clientX, fy: e.clientY, still: true });
           this.blockMouse = true; block(e);
           if (this.requestUpdate) this.requestUpdate();
           return;
@@ -663,6 +669,7 @@
         const p = this.bx(hh.id);
         this.drag = { box: hh.id, part: h, p0: Object.assign({}, p), l0: this.chart.timeScale().coordinateToLogical(pt.x),
                       dy: pt.y - this.y(p.entry), open: isOpen(this.row, hh.id) };
+        if (e.pointerType === 'touch') Object.assign(this.drag, { fx: e.clientX, fy: e.clientY, still: true });
         this.blockMouse = true;
         block(e);
         if (this.requestUpdate) this.requestUpdate();
@@ -690,6 +697,10 @@
           const hb = h && h.box ? h.id : null, hd = h && h.d ? h.d.id : null;
           if (hb !== this.hoverB || hd !== this.hoverD) { this.hoverB = hb; this.hoverD = hd; if (this.requestUpdate) this.requestUpdate(); }
           return;
+        }
+        if (this.drag.still) {                     // a finger: 8 px of real movement first (a tap, or a finger's tremble, moves nothing)
+          if (Math.hypot(e.clientX - this.drag.fx, e.clientY - this.drag.fy) < 8) return;
+          this.drag.still = false;
         }
         if (this.drag.draw) { this.dragDraw(x, y, e.ctrlKey); return; }
         const d = this.drag, cur = this.bx(d.box);

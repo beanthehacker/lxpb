@@ -1443,7 +1443,10 @@ def page_js(charts, storage_key, data_rel, vp=False, extra_js=""):
     js = js.replace(old_stack, "_openRow(i);")
     fit = "_fitBars(chart, cd.candles.length);"
     assert js.count(fit) == 2, "M1 report chart JS changed: re-check the candle fit"
-    js = js.replace(fit, "(cd.fit ? cd.fit(chart) : _fitBars(chart, cd.candles.length));")   # a replay chart: the last candles
+    refit = "(cd.fit ? cd.fit(chart) : _fitBars(chart, cd.candles.length));"     # a replay chart: the last candles
+    js = js.replace(fit, refit, 1)
+    # the second one is the pane's ResizeObserver: on an iPad a resize (Safari's bars, the keyboard) keeps the chart as it is
+    js = js.replace(fit, "if (!(window.TouchUI && TouchUI.keep(cd, r.width))) " + refit, 1)
     js = js + "<script>\n" + MANUAL_JS.replace("__DATA_DIR__", data_rel) + extra_js + "\nwindow.Replay = Replay;\n</script>\n"
     if vp:
         with open(VP_JS, encoding="utf-8") as f:
@@ -1516,12 +1519,14 @@ days before today (its label says "last 2 visits" or "last 5 days").</p>
 from the first press); double-click the price axis to fit the candles again. The crosshair is shared between the ES chart and NQ:
 hovering one shows the same time on the other.</p>
 <p class="lead">IPAD. On an iPad the page switches to a touch layout by itself (the "iPad layout" button in the toolbar turns it
-off or on again; add ?ipad=1 to the address to try it on any screen): the charts stacked full width and bigger buttons. One finger drags
+off or on again; add ?ipad=1 to the address to try it on any screen): bigger buttons, and the charts fill the screen (ES and NQ side by
+side when the iPad is held sideways, one above the other when upright). One finger drags
 a chart any way, two fingers pinch to zoom time, a tap shows that candle's O H L C. Drag the price axis to stretch the candles (double tap:
 auto-fit); drag the time axis sideways to zoom, up / down to scroll the page (double tap: fit). With the Magic Trackpad, click and
 drag as with a mouse; a two-finger swipe sideways moves the chart, up / down scrolls the page (over the price axis: stretches it);
 &minus; / + / fit on each chart zoom where the trackpad's pinch does not reach the page. Position boxes and drawings: tap to select,
-drag a line or point with a finger, double tap for the popup (Delete is in it).</p>
+drag a line or point with a finger, double tap for the popup (Delete, Move stop, Flatten are in it); a trade in play: drag its stop line
+to move the stop from the replay time on.</p>
 <p class="lead">CANDLES. On every timeframe, a closed candle that patterns-pure calls a hammer has a small blue triangle under it, a
 shooting star one over it; a bullish engulfing candle has a dark green body, a bearish one a maroon body; a true inside candle (its
 whole range, wicks included, within the previous candle's) has a blue body (one that is also engulfing keeps the engulfing

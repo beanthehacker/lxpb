@@ -37,8 +37,15 @@ html.ipad .replay-bar { gap: 8px; padding: 8px 10px; font-size: 14px; }
 html.ipad .replay-bar button, html.ipad .replay-bar select { min-height: 38px; padding: 0 12px; font-size: 15px; touch-action: manipulation; }
 html.ipad tr.chart-row > td { padding: 4px 0 !important; }
 html.ipad .chart-stack { width: var(--tu-wrap-w, 100%) !important; position: sticky !important; left: 0 !important; box-sizing: border-box; }
-html.ipad .es-nq-row.two { grid-template-columns: 1fr; }
-html.ipad .chart-pane { height: clamp(420px, 74dvh, 980px); }
+/* one chart = the screen's height under the replay bar (svh: the height with Safari's bars showing, so it never changes while
+   the page scrolls); ES + NQ: side by side in landscape, one above the other in portrait, both on the screen at once */
+html.ipad .chart-pane { height: max(300px, calc(100svh - var(--tu-top, 90px) - 8px)); }
+html.ipad .es-nq-row.two { grid-template-columns: 1fr 1fr; gap: 6px; }
+@media (orientation: portrait) {
+  html.ipad .es-nq-row.two { grid-template-columns: 1fr; }
+  html.ipad .es-nq-row.two > .chart-pane { height: max(260px, calc((100svh - var(--tu-top, 90px) - 14px) / 2)); }
+}
+html.ipad .replay-bar { position: sticky; top: 0; }
 html.ipad .chart-title.chart-title-split { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; height: auto; padding: 4px 6px; }
 html.ipad .chart-title-split .ct-ohlc { flex: 1 1 auto; text-align: left; }
 html.ipad .pos-bar { flex: 1 1 100%; flex-wrap: wrap; justify-content: flex-start; gap: 6px; }
@@ -52,6 +59,11 @@ html.ipad .pos-pop button { min-height: 38px; padding: 0 14px; font-size: 15px; 
 html.ipad .pos-pop .pos-sw { width: 28px; height: 28px; }
 html.ipad .pos-pop .pos-fibs input { width: 22px !important; height: 22px; }
 html.ipad .chart-ph { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+@media (orientation: landscape) {
+  html.ipad .es-nq-row.two .pos-btn, html.ipad .es-nq-row.two .fs-btn { min-height: 32px; min-width: 30px; padding: 0 5px; font-size: 12px; line-height: 30px; }
+  html.ipad .es-nq-row.two .chart-title-split { gap: 3px 6px; }
+  html.ipad .es-nq-row.two .pos-bar { gap: 4px; }
+}
 .tu-mode { margin-left: 6px; }
 `;
   document.head.appendChild(css);
@@ -59,12 +71,27 @@ html.ipad .chart-ph { touch-action: none; -webkit-user-select: none; user-select
   const wrapW = () => {
     const w = document.querySelector('.table-wrap');
     if (w) document.documentElement.style.setProperty('--tu-wrap-w', w.clientWidth + 'px');
+    // each open row: what sits above its charts (replay bar, padding) -> the charts take the rest of the screen's height
+    document.querySelectorAll('tr.chart-row:not(.hidden)').forEach(row => {
+      const st = row.querySelector('.chart-stack'), enr = row.querySelector('.es-nq-row');
+      if (st && enr) st.style.setProperty('--tu-top', Math.ceil(enr.getBoundingClientRect().top - row.getBoundingClientRect().top) + 'px');
+    });
   };
   if (on) {
     window.addEventListener('DOMContentLoaded', wrapW);
     window.addEventListener('load', wrapW);
     window.addEventListener('resize', wrapW);
     window.addEventListener('orientationchange', () => setTimeout(wrapW, 400));
+    document.addEventListener('click', (e) => {      // a row opened: its charts fill the screen from the top
+      const b = e.target.closest && e.target.closest('.expand-btn');
+      if (!b) return;
+      setTimeout(() => {
+        const row = document.getElementById('chart-row-' + b.dataset.idx);
+        if (!row || row.classList.contains('hidden')) return;
+        wrapW();
+        window.scrollTo({ top: row.getBoundingClientRect().top + window.scrollY - 2, behavior: 'smooth' });
+      }, 60);
+    }, true);
   }
 
   // a switch in the toolbar on any device that has a touch screen (and wherever the layer is on): reloads the page in the other mode
@@ -103,7 +130,9 @@ html.ipad .chart-ph { touch-action: none; -webkit-user-select: none; user-select
       return true;
     };
     const autoFit = () => { manual = null; ps.applyOptions({ autoScale: true }); refresh(); };
+    const hold = () => { if (cd) cd.tuHeld = true; };
     const fit = () => {
+      if (cd) cd.tuHeld = false;
       autoFit();
       if (cd && cd.fit) cd.fit(chart);
       else if (typeof _fitBars === 'function') _fitBars(chart, ((cd && (cd.live || cd.candles)) || []).length);
@@ -119,12 +148,15 @@ html.ipad .chart-ph { touch-action: none; -webkit-user-select: none; user-select
       const span = (r0.to - r0.from) / k;
       if (span < 8 || span > 20000) return;
       ts.setVisibleLogicalRange({ from: la - (la - r0.from) / k, to: la - (la - r0.from) / k + span });
+      hold();
     };
     const panPx = (r0, dx) => {              // the chart moved dx px to the right
       if (!r0) return;
       const sh = -dx * (r0.to - r0.from) / Math.max(1, ts.width());
       ts.setVisibleLogicalRange({ from: r0.from + sh, to: r0.to + sh });
+      hold();
     };
+    el.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'touch' && zone(e.clientX, e.clientY) !== 'price') hold(); }, true);   // a trackpad click-drag
     const busy = () => !!(window.PosTool && PosTool.tools.some(t => t.el === el && !t.dead && (t.blockMouse || t.drag || t.creating || t.arm)));
 
     let g = null, lastTap = { t: 0, x: 0, y: 0, z: '' }, mom = 0;
@@ -185,6 +217,7 @@ html.ipad .chart-ph { touch-action: none; -webkit-user-select: none; user-select
         if (!r0) return;
         const span = Math.min(20000, Math.max(8, (r0.to - r0.from) * Math.exp(-dx / (ts.width() * 0.5))));
         ts.setVisibleLogicalRange({ from: r0.to - span, to: r0.to });
+        hold();
       }
     }, { capture: true, passive: false });
     const end = (e) => {
@@ -262,5 +295,14 @@ html.ipad .chart-ph { touch-action: none; -webkit-user-select: none; user-select
     });
   }
 
-  window.TouchUI = { on, attach };
+  // the pane's size changed (Safari's bars, the keyboard, a rotation): true = keep what is on screen, false = fit the candles
+  // (the first real size, or a new width while the chart was never moved by hand)
+  function keep(cd, w) {
+    if (!on || !cd) return false;
+    const same = cd.tuW != null && Math.abs(cd.tuW - w) < 1;
+    cd.tuW = w;
+    return same || !!cd.tuHeld;
+  }
+
+  window.TouchUI = { on, attach, keep };
 })();
